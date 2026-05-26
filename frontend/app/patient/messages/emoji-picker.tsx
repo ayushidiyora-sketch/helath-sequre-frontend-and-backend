@@ -143,7 +143,7 @@ export function EmojiPicker({ onPick }: { onPick: (value: string) => void }) {
   const stickerGroup = STICKER_GROUPS[stickerIdx];
 
   return (
-    <div className="absolute bottom-10 left-0 z-20 w-80 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-lift)]">
+    <div className="fixed inset-x-2 bottom-2 z-30 mx-auto w-auto max-w-[20rem] overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-lift)] sm:absolute sm:inset-x-auto sm:bottom-10 sm:left-0 sm:right-auto sm:mx-0 sm:w-80">
       {/* Mode tabs */}
       <div className="flex border-b border-[var(--color-border)]">
         {(["emoji", "gif", "sticker"] as Mode[]).map((m) => (

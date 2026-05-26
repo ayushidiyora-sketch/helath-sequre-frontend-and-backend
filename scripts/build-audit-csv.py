@@ -1,0 +1,2078 @@
+"""Generate the HealthSecure Portal module-wise audit CSV.
+
+Compares the requirement spec PDF against the actual frontend codebase
+at d:/helathsecure/frontend. Output: d:/helathsecure/health-secure-audit.csv
+which opens cleanly in Excel.
+"""
+
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.worksheet.table import Table, TableStyleInfo
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "health-secure-audit.csv"
+XLSX = ROOT / "health-secure-audit.xlsx"
+
+HEADER = [
+    "Module Name",
+    "Sub Module",
+    "Feature / Requirement",
+    "Expected Flow",
+    "Frontend UI Available",
+    "Frontend Logic Status",
+    "API Integration Status",
+    "Backend Required",
+    "Backend Available",
+    "Database Required",
+    "Validation Status",
+    "Role-Based Access",
+    "Current Status",
+    "Completion %",
+    "Remaining Work",
+    "Priority",
+    "Notes",
+]
+
+
+def row(*cells: str | int) -> list:
+    return [str(c) for c in cells]
+
+
+# ---------------------------------------------------------------------------
+# Rows
+# ---------------------------------------------------------------------------
+rows: list[list[str]] = []
+
+
+# 1. AUTHENTICATION =========================================================
+M = "1. Authentication"
+
+rows.append(row(
+    M, "Login", "Patient email + password sign-in",
+    "User submits credentials -> backend verifies -> JWT issued -> MFA challenge if required",
+    "Yes", "Completed", "Done (demo)", "Yes", "Partial", "Yes",
+    "Done (client + scope check)", "Yes",
+    "Partial",
+    50,
+    "Real user DB, password hashing (bcrypt/argon2), brute-force counter, IP tracking",
+    "High",
+    "app/(auth)/login + /api/auth/login route uses hardcoded DEMO_PASSWORD against demo-users.ts. No real user table.",
+))
+
+rows.append(row(
+    M, "Login", "Staff (clinician/admin) sign-in",
+    "Staff submits username/password -> mandatory MFA -> role-scoped session",
+    "Yes", "Completed", "Done (demo)", "Yes", "Partial", "Yes",
+    "Done", "Yes",
+    "Partial",
+    50,
+    "Real staff provisioning, MFA enforcement at API, device binding, shorter session for staff",
+    "High",
+    "/staff-login and /super-login pages share /api/auth/login. Demo-only.",
+))
+
+rows.append(row(
+    M, "Registration", "Patient self-registration",
+    "Multi-step form -> email verify -> account active",
+    "Yes", "Completed", "Done (demo)", "Yes", "No", "Yes",
+    "Done (Zod-style HTML validation)", "Yes",
+    "Partial",
+    50,
+    "Persist user, send verification email via SendGrid, dedupe email/MRN",
+    "High",
+    "registration-wizard.tsx is fully built. /api/auth/register returns mock success.",
+))
+
+rows.append(row(
+    M, "Email Verification", "OTP-based email verify",
+    "User clicks email link or types OTP -> account activated",
+    "Yes", "Completed", "Done (demo)", "Yes", "Partial", "Yes",
+    "Done", "N/A",
+    "Partial",
+    55,
+    "Real SendGrid template + token storage + expiry enforcement",
+    "High",
+    "/verify-email page + /api/auth/verify-email route. Dev OTP shown inline.",
+))
+
+rows.append(row(
+    M, "Forgot Password", "Password reset request",
+    "User submits email -> emailed signed reset link",
+    "Yes", "UI Only", "Missing", "Yes", "No", "Yes",
+    "Partial", "N/A",
+    "Backend Missing",
+    25,
+    "POST /auth/password/reset/request endpoint, token table, SendGrid integration",
+    "High",
+    "/forgot-password page is toast-stub only.",
+))
+
+rows.append(row(
+    M, "Reset Password", "Set new password via signed link",
+    "User opens link -> sets new password -> session invalidation",
+    "Yes", "UI Only", "Missing", "Yes", "No", "Yes",
+    "Partial (password rules client-side)", "N/A",
+    "Backend Missing",
+    25,
+    "POST /auth/password/reset/confirm with token verification, history check",
+    "High",
+    "/reset-password page is toast-stub only.",
+))
+
+rows.append(row(
+    M, "MFA Enrollment", "TOTP setup with QR + recovery codes",
+    "User scans QR in authenticator app -> verifies code -> saves recovery codes",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    30,
+    "POST /auth/mfa/enroll + /auth/mfa/verify, encrypted secret store, recovery code hashing",
+    "High",
+    "/mfa-setup + /mfa-recovery-codes pages render QR/codes from mock data.",
+))
+
+rows.append(row(
+    M, "MFA Challenge", "Verify TOTP during login",
+    "Post-password OTP page -> server validates code -> issues session",
+    "Yes", "Completed", "Done (demo)", "Yes", "Partial", "Yes",
+    "Done", "Yes",
+    "Partial",
+    55,
+    "Real TOTP RFC 6238 verification, attempt counter, lockout after N fails",
+    "High",
+    "/mfa-challenge calls /api/auth/verify-otp. Uses pending-cookie OTP hash.",
+))
+
+rows.append(row(
+    M, "MFA Prompt", "Optional MFA prompt for patients post-login",
+    "Patient sees skip/setup choice once -> remembers dismissal",
+    "Yes", "Completed", "N/A", "No", "N/A", "No",
+    "Done", "Yes",
+    "Completed",
+    85,
+    "Nothing critical - dismissal lives in localStorage",
+    "Low",
+    "/mfa-prompt page works end-to-end including dismissal persistence.",
+))
+
+rows.append(row(
+    M, "Invitation Acceptance", "Accept staff or patient invite token",
+    "Email link -> set password -> MFA enroll for staff -> dashboard",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Backend Missing",
+    35,
+    "POST /auth/invitation/accept, token table with expiry, email dispatch",
+    "High",
+    "/(auth)/invite/[token]/page.tsx renders; submit is a toast.",
+))
+
+rows.append(row(
+    M, "Session Management", "JWT issue/refresh/revoke",
+    "Short access token (15m) + rotating refresh token, idle timeout, device tracking",
+    "Yes", "Partial", "Partial", "Yes", "Partial", "Yes",
+    "Partial", "Yes",
+    "Partial",
+    50,
+    "Refresh token rotation, sessions table, force-logout from another device",
+    "High",
+    "lib/auth.ts signs JWT with dev-only secret. /api/auth/logout clears cookies (built recently). No refresh.",
+))
+
+rows.append(row(
+    M, "Session Management", "Idle timeout warning + auto-logout",
+    "After N min idle -> warning modal -> auto-logout if no extension",
+    "Yes", "Completed", "N/A (client)", "No", "N/A", "No",
+    "Done", "Yes",
+    "Completed",
+    80,
+    "Sync with server-side session expiry on production",
+    "Medium",
+    "components/shared/idle-timeout.tsx works. Calls logout on expiry.",
+))
+
+rows.append(row(
+    M, "Account Lockout", "Progressive backoff after failed logins",
+    "After N fails -> temporary lock -> CAPTCHA on suspicious",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "Yes",
+    "Not Started",
+    0,
+    "Attempt counter, exponential lockout, optional CAPTCHA integration",
+    "High",
+    "No UI or logic exists.",
+))
+
+rows.append(row(
+    M, "Active Sessions / Devices", "List + revoke active sessions",
+    "User sees devices/sessions and can force-logout",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real sessions table + revoke endpoint",
+    "Medium",
+    "/patient/settings SessionsTab shows device + IP + trusted/untrusted state + per-row revoke + sign-out-all.",
+))
+
+
+# 2. PATIENT ================================================================
+M = "2. Patient"
+
+rows.append(row(
+    M, "Dashboard", "Quick stats + widgets (next appt, records, consents, msgs)",
+    "Server returns aggregated summary -> dashboard widgets populated",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "GET /patients/me/dashboard-summary endpoint + real data",
+    "Medium",
+    "/patient/dashboard uses patient-store (localStorage demo).",
+))
+
+rows.append(row(
+    M, "Medical Records", "Categorized list with filter/search",
+    "Server returns consent-evaluated record list",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "GET /patients/{id}/records, consent guard, encrypted record store",
+    "High",
+    "patient/records + records-data.ts mock. Detail page with record-actions.",
+))
+
+rows.append(row(
+    M, "Medical Records", "Detail view with download as PDF",
+    "User opens record -> sees metadata -> client-side PDF export available",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Partial",
+    50,
+    "Real record fetch + audit-log download event",
+    "High",
+    "jsPDF used for client-side export. record-actions.tsx wires download button.",
+))
+
+rows.append(row(
+    M, "Appointments", "Book + reschedule + cancel + calendar view",
+    "Patient sees clinician slots, books, gets reminders",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    55,
+    "Slot management API, conflict detection, reminders dispatch",
+    "High",
+    "/patient/appointments (list, new, detail, calendar-view). form-dialogs has reschedule/cancel.",
+))
+
+rows.append(row(
+    M, "Documents", "Upload + list + consent-bound sharing",
+    "Drag-drop -> presigned S3 URL -> virus scan -> registered metadata",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial (file type/size)", "Yes",
+    "UI Only",
+    40,
+    "S3 integration, virus scan hook, retention enforcement, real signed URLs",
+    "High",
+    "/patient/documents + /upload pages render. No real S3 upload.",
+))
+
+rows.append(row(
+    M, "Consents", "List + grant + revoke with duration picker",
+    "Patient grants scope+role+duration -> PHI access guard updated",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    60,
+    "Consent table, version snapshot at grant, server-side evaluation guard",
+    "High",
+    "/patient/consents (list, grant w/ duration-picker, detail).",
+))
+
+rows.append(row(
+    M, "Messages", "Threaded encrypted chat with clinicians",
+    "Patient sends/reads messages with attachments",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Static Data Only",
+    50,
+    "Encrypted body storage, attachment via S3, real-time delivery (WS/poll)",
+    "High",
+    "/patient/messages + messages-view + emoji-picker. Local state only.",
+))
+
+rows.append(row(
+    M, "Notifications", "Categorized in-app feed",
+    "User sees + filters + marks-read; backend dispatches per channel",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "GET /notifications, mark-read PATCH, dispatch worker",
+    "Medium",
+    "/patient/notifications uses patient-store. Tabs + filters work.",
+))
+
+rows.append(row(
+    M, "Settings", "Profile, password, MFA, prefs, devices",
+    "User edits profile + security settings -> saved server-side",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    55,
+    "Real profile update API, password change, notification prefs",
+    "Medium",
+    "/patient/settings with account-widgets + DataTab (export+delete buttons).",
+))
+
+rows.append(row(
+    M, "Data Rights", "Export PHI (right-of-access)",
+    "Patient clicks export -> server bundles PHI -> emailed/downloaded",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "UI Only",
+    35,
+    "Server-side bundling job, audit-log of export, email-delivery option",
+    "High",
+    "DataTab.exportPhi() bundles client state only.",
+))
+
+rows.append(row(
+    M, "Data Rights", "Submit deletion request (right-to-be-forgotten)",
+    "Patient submits request -> compliance reviews -> partial/full deletion",
+    "Yes", "UI Only", "Missing", "Yes", "No", "Yes",
+    "Missing", "Yes",
+    "UI Only",
+    25,
+    "POST /patient/data-requests + queue + compliance-side fetch (see Mod 14)",
+    "High",
+    "Settings DataTab Submit button only fires toast. Compliance queue is hardcoded.",
+))
+
+
+# 3. DOCTOR / CLINICIAN ====================================================
+M = "3. Doctor (Clinician)"
+
+rows.append(row(
+    M, "Dashboard", "Today's queue, tasks, recent patients",
+    "Aggregated daily view for the clinician",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "GET /clinicians/me/dashboard with consent-scoped data",
+    "Medium",
+    "/clinician/dashboard - mock data, role-locked via middleware.",
+))
+
+rows.append(row(
+    M, "Patient Panel", "Search + filter assigned patients",
+    "Clinician sees only assigned patients",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "GET /clinicians/me/patients with assignment + consent guard",
+    "High",
+    "/clinician/patients + [id] detail with timeline.",
+))
+
+rows.append(row(
+    M, "Schedule", "Daily/weekly schedule + slot block",
+    "Clinician sees own schedule + sets availability",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Static Data Only",
+    55,
+    "Slot template management + override + conflict detection",
+    "Medium",
+    "/clinician/schedule - calendar UI works.",
+))
+
+rows.append(row(
+    M, "Clinical Notes", "Compose note + finalize (lock)",
+    "Clinician writes note -> save draft -> finalize (immutable)",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Versioning, finalize endpoint, append-only after finalize",
+    "High",
+    "/clinician/notes + /new. Submit is toast.",
+))
+
+rows.append(row(
+    M, "Tasks", "Pending reviews/signatures/replies",
+    "Tasks queue with action shortcuts",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Missing", "Yes",
+    "Static Data Only",
+    40,
+    "Tasks table + assignment + completion events",
+    "Medium",
+    "/clinician/tasks - static list.",
+))
+
+rows.append(row(
+    M, "Messages", "Encrypted chat with assigned patients",
+    "Clinician messages assigned patients only",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real thread API + WS/polling for delivery",
+    "Medium",
+    "/clinician/messages now has its own thread list (urgent/lab-ready/consent-pending flags + unread counts). Re-export bug fixed.",
+))
+
+rows.append(row(
+    M, "Notifications", "In-app feed for clinician",
+    "Notifications for new messages, appointments, tasks",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real dispatcher + per-user preferences",
+    "Medium",
+    "/clinician/notifications has own page.",
+))
+
+rows.append(row(
+    M, "Settings", "Profile, MFA, notification prefs",
+    "Edit personal settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Real save API",
+    "Medium",
+    "/clinician/settings.",
+))
+
+
+# 4. NURSE ==================================================================
+M = "4. Nurse"
+
+rows.append(row(
+    M, "All", "Nurse role (entire module)",
+    "Spec defines 6 roles (no nurse). Codebase has no /nurse routes.",
+    "No", "Not Started", "N/A", "No", "N/A", "No",
+    "N/A", "N/A",
+    "Not Started",
+    0,
+    "Out of scope per spec. Skip unless requirements change.",
+    "Low",
+    "Spec section 4 lists Patient/Clinician/Org Admin/Compliance/Auditor/Super Admin only.",
+))
+
+
+# 5. SUPER ADMIN ============================================================
+M = "5. Super Admin"
+
+rows.append(row(
+    M, "Dashboard", "Cross-tenant platform health overview",
+    "Stats on tenants, queues, security events",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real platform metrics aggregation API",
+    "Medium",
+    "/super/dashboard - static.",
+))
+
+rows.append(row(
+    M, "Tenants", "List + new tenant onboarding",
+    "Provision a new tenant with region/tier/admin",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "POST /organizations, tenant DB row, seed admin invitation",
+    "High",
+    "/super/tenants + /new with region-picker. Submit is toast.",
+))
+
+rows.append(row(
+    M, "Platform Config", "Subscription tiers + feature flags",
+    "Edit tier + features",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Feature flag store, tier configuration API",
+    "Medium",
+    "/super/platform + edit-tier-dialog.",
+))
+
+rows.append(row(
+    M, "Integrations", "List + integration detail view",
+    "Configure SendGrid, Twilio, S3, etc.",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Secrets storage, connection-test endpoints",
+    "Medium",
+    "/super/integrations + [slug] detail.",
+))
+
+rows.append(row(
+    M, "Health", "Platform health monitoring dashboard",
+    "Real-time service health, queue depths, latencies",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    50,
+    "Wire APM (Datadog/NewRelic) feeds",
+    "Medium",
+    "/super/health - static.",
+))
+
+rows.append(row(
+    M, "Security", "Platform-wide security events + IP allowlist",
+    "Failed login spikes, suspicious IPs, allowlist mgmt",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Security event aggregation, allowlist CIDR table",
+    "High",
+    "/super/security + add-range-dialog.",
+))
+
+rows.append(row(
+    M, "Break-Glass", "Emergency cross-tenant access with full audit",
+    "Super admin opens time-boxed session into a tenant; all actions audited",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Break-glass session table, mandatory justification, page super team",
+    "High",
+    "/super/break-glass form. Toast on submit.",
+))
+
+rows.append(row(
+    M, "Incidents", "Incident open/triage/close workflow",
+    "Platform incidents tracked",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Incident table, status machine, paging integrations",
+    "Medium",
+    "/super/incidents + open-incident-dialog.",
+))
+
+rows.append(row(
+    M, "Notifications", "Platform-ops alerts feed",
+    "Break-glass, tenant security, queue health alerts",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real dispatch + paging integrations",
+    "Medium",
+    "/super/notifications has own page.",
+))
+
+rows.append(row(
+    M, "Settings", "Platform-level operator settings",
+    "IP ranges, secrets, defaults",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Settings persistence",
+    "Medium",
+    "/super/settings.",
+))
+
+
+# 6. HOSPITAL / TENANT MANAGEMENT (Org Admin) ===============================
+M = "6. Hospital / Tenant Management"
+
+rows.append(row(
+    M, "Org Dashboard", "Org-scoped overview",
+    "Admin sees own organization stats",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real aggregation API",
+    "Medium",
+    "/admin/dashboard.",
+))
+
+rows.append(row(
+    M, "User Management", "Invite + edit + deactivate staff users",
+    "Org admin manages all staff in their tenant",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    55,
+    "Real user CRUD with email dispatch, role-permission link",
+    "High",
+    "/admin/users + invite + bulk. Forms work, submit is toast.",
+))
+
+rows.append(row(
+    M, "Patient Management", "Org-scoped patient list + invite + bulk",
+    "Admin sees all patients in their org",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    55,
+    "Real patient CRUD, MRN generation, dedupe",
+    "High",
+    "/admin/patients + invite + bulk + [id] edit.",
+))
+
+rows.append(row(
+    M, "Patient Assignment", "Assign patients to clinicians",
+    "Map patients to one or more clinicians",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Assignment table + audit",
+    "High",
+    "patient detail page has assignments-card.tsx.",
+))
+
+rows.append(row(
+    M, "Clinicians", "Invite + manage clinicians",
+    "Admin onboards clinicians with specialty + department",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    55,
+    "Real clinician CRUD",
+    "High",
+    "/admin/clinicians + invite + [id].",
+))
+
+rows.append(row(
+    M, "Departments", "Departments hierarchy",
+    "Configure dept tree + parent links",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Departments table",
+    "Medium",
+    "/admin/departments + new + dept-row-menu.",
+))
+
+rows.append(row(
+    M, "Templates", "Notification template editor",
+    "Edit subject/body/variables per channel",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    40,
+    "Template persistence + variable validation",
+    "Medium",
+    "/admin/templates.",
+))
+
+rows.append(row(
+    M, "Reports", "Org-scoped reports",
+    "Org admin generates org-scoped reports",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real aggregation + export queue",
+    "Medium",
+    "/admin/reports.",
+))
+
+rows.append(row(
+    M, "Settings", "Org profile, branding, retention defaults",
+    "Edit org-level settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Settings persistence",
+    "Medium",
+    "/admin/settings + org-widgets.",
+))
+
+rows.append(row(
+    M, "Appointments Oversight", "Org-wide appointment view",
+    "Admin oversees clinic schedules + conflicts",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    50,
+    "Cross-clinician aggregation, conflict resolution",
+    "Medium",
+    "/admin/appointments.",
+))
+
+rows.append(row(
+    M, "Consents Campaign", "Trigger re-consent campaign for tenant",
+    "Admin launches campaign when policy version changes",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Campaign queue + notification dispatcher",
+    "High",
+    "/admin/consents/campaign + compliance/campaigns. Static recipient counts.",
+))
+
+
+# 7. APPOINTMENT ============================================================
+M = "7. Appointment"
+
+rows.append(row(
+    M, "Slot Booking", "Patient books slot from clinician availability",
+    "Patient sees clinician slots, books one, gets confirmation",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    55,
+    "Real slot table + conflict detection, transactional booking",
+    "High",
+    "/patient/appointments/new.",
+))
+
+rows.append(row(
+    M, "Calendar View", "Patient calendar of upcoming visits",
+    "Visual calendar of patient's appointments",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Live data feed",
+    "Medium",
+    "/patient/appointments + calendar-view.tsx.",
+))
+
+rows.append(row(
+    M, "Reschedule / Cancel", "Update appointment status",
+    "Patient/admin reschedules with reason; window enforced",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial (window policy)", "Yes",
+    "UI Only",
+    50,
+    "PATCH /appointments/{id}, policy enforcement, audit log",
+    "High",
+    "form-dialogs.tsx has RescheduleDialog + CancelAppointmentDialog.",
+))
+
+rows.append(row(
+    M, "Reminders", "Email/in-app reminders at T-24h, T-1h",
+    "Worker enqueues reminders per appointment",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "BullMQ worker, scheduling logic, SendGrid templates",
+    "High",
+    "No UI or worker. Spec section 8.4 requires this.",
+))
+
+rows.append(row(
+    M, "Clinician Schedule", "Clinician sees daily/weekly schedule",
+    "Patient queue + appointment status transitions",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Live data + state transitions",
+    "Medium",
+    "/clinician/schedule.",
+))
+
+rows.append(row(
+    M, "Admin Oversight", "Org-wide appointment view + override",
+    "Admin reassigns or overrides conflicts",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Override endpoint + audit",
+    "Medium",
+    "/admin/appointments.",
+))
+
+
+# 8. MEDICAL RECORDS ========================================================
+M = "8. Medical Records"
+
+rows.append(row(
+    M, "Patient View", "Categorized list (labs, Rx, imaging, notes, discharges)",
+    "Patient sees own records; consent-bound",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "GET /patients/{id}/records + consent guard, encrypted store",
+    "High",
+    "/patient/records + records-data.ts.",
+))
+
+rows.append(row(
+    M, "Patient Record Detail", "Full record metadata + download",
+    "User opens record, sees metadata, exports PDF",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real record fetch + audit-logged view event",
+    "High",
+    "/patient/records/[id] + record-actions.tsx.",
+))
+
+rows.append(row(
+    M, "Clinician Records", "Clinician views patient records (consent-bound)",
+    "Clinician sees consented PHI only",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    55,
+    "Server-side consent guard, panel-scoped fetch",
+    "High",
+    "/clinician/patients/[id] has a Records tab gated by consent (ConsentDeniedCard fallback). Functionally covered.",
+))
+
+rows.append(row(
+    M, "Clinician Notes Editor", "Compose + finalize clinical notes",
+    "Write note, save draft, finalize (lock immutable)",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Versioning + finalize endpoint",
+    "High",
+    "/clinician/notes + /new.",
+))
+
+rows.append(row(
+    M, "Record Versioning", "Versioned record edits",
+    "Each save creates new version with parent link",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "parent_record_id schema, version diff UI",
+    "Medium",
+    "Schema mentions version + parent_record_id; no UI/logic.",
+))
+
+rows.append(row(
+    M, "Per-Record Audit Trail", "Who viewed/edited each record",
+    "Record-level audit trail view",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "GET /records/{id}/audit-trail",
+    "Medium",
+    "/patient/records/[id] has an Access history panel with actor + action + relative time + IP + 5-event window.",
+))
+
+rows.append(row(
+    M, "Right-of-Access Export", "Download own PHI as PDF/CSV",
+    "Patient exports all PHI in portable format",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "UI Only",
+    40,
+    "Server bundler + audit event",
+    "High",
+    "patient/settings DataTab.exportPhi (client-side only).",
+))
+
+
+# 9. PRESCRIPTION ===========================================================
+M = "9. Prescription"
+
+rows.append(row(
+    M, "Patient Rx History", "View own prescriptions",
+    "List of active + past prescriptions",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real Rx table + refill workflow backend",
+    "Medium",
+    "/patient/prescriptions page with Active/Past tabs, refill request action, download. Sidebar link added.",
+))
+
+rows.append(row(
+    M, "Clinician Rx Creation", "Compose structured prescription",
+    "Clinician writes Rx with structured fields (drug, dose, freq, duration)",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "Yes",
+    "Not Started",
+    0,
+    "Prescription schema, drug formulary lookup, signing flow",
+    "High",
+    "Spec section 8.8 lists 'Prescription creation with structured fields'. Not built.",
+))
+
+rows.append(row(
+    M, "Refills / Renewals", "Patient requests refill, clinician approves",
+    "Refill workflow with audit",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "Yes",
+    "Not Started",
+    0,
+    "Entire refill workflow",
+    "Medium",
+    "Not in spec but typical patient-portal feature.",
+))
+
+
+# 10. CONSENT MANAGEMENT ====================================================
+M = "10. Consent Management"
+
+rows.append(row(
+    M, "Patient Grant", "Granular consent capture",
+    "Patient grants scope+role+duration with signed timestamp",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    60,
+    "Real consent table + version snapshot at grant",
+    "High",
+    "/patient/consents/grant + duration-picker.",
+))
+
+rows.append(row(
+    M, "Patient Revoke", "Revoke consent with immediate effect",
+    "Patient revokes; subsequent reads denied with consent_revoked",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done", "Yes",
+    "Static Data Only",
+    60,
+    "Server-side guard rejecting subsequent reads",
+    "High",
+    "/patient/consents/[id] has revokeConsent action (local).",
+))
+
+rows.append(row(
+    M, "Consent Policy Versioning", "Compliance creates v2.x policies",
+    "Compliance drafts -> activates -> triggers re-consent",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Static Data Only",
+    65,
+    "Real policy table + activation workflow",
+    "High",
+    "/compliance/consent-policies (list, [version], edit, new).",
+))
+
+rows.append(row(
+    M, "Re-consent Campaign", "Bulk re-consent on policy activation",
+    "Compliance triggers campaign; patients notified across channels",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Campaign queue, channel dispatch (email/in-app/SMS), progress tracking",
+    "High",
+    "/compliance/campaigns + [id]. Day-by-day chart works (recently rebuilt as line chart).",
+))
+
+rows.append(row(
+    M, "Compliance Consent View", "Compliance sees all consents",
+    "Tenant-scoped consent visibility with audit history",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real consent fetch + filtering",
+    "Medium",
+    "/compliance/consents (list + [id]).",
+))
+
+rows.append(row(
+    M, "Consent Evaluation Guard", "PHI read guard against consents",
+    "Every PHI endpoint passes through consent evaluation",
+    "N/A", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Server-side guard middleware",
+    "Critical",
+    "Backend concern. Spec section 6.3 + 10. Without this PHI access is unsafe.",
+))
+
+
+# 11. SECURE MESSAGING ======================================================
+M = "11. Secure Messaging"
+
+rows.append(row(
+    M, "Patient Inbox", "Thread list + unread badges",
+    "Patient sees own threads",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real thread API + WS/polling for delivery",
+    "High",
+    "/patient/messages.",
+))
+
+rows.append(row(
+    M, "Thread View", "Send/receive with emoji + attachment",
+    "Threaded chat with read receipts",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Static Data Only",
+    50,
+    "Encrypted body storage, attachments via S3",
+    "High",
+    "/patient/messages/[threadId] + messages-view + emoji-picker.",
+))
+
+rows.append(row(
+    M, "Clinician Messages", "Clinician thread view",
+    "Clinician messages assigned patients",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real thread API + WS for delivery",
+    "Medium",
+    "/clinician/messages now standalone (no patient-store dep). 6 mock threads with flag system. Re-export bug fixed.",
+))
+
+rows.append(row(
+    M, "Attachments", "Attach docs to messages",
+    "Attached docs follow document consent rules",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Partial (type/size)", "Yes",
+    "UI Only",
+    50,
+    "Real S3 upload + virus scan + consent guard for downloads",
+    "Medium",
+    "Attach buttons now stage files into pendingAttachments chips, persist into the message bubble on send, with file size + remove (X).",
+))
+
+rows.append(row(
+    M, "Read Receipts", "Mark-read status visible to sender",
+    "Read state tracked + audited",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Static Data Only",
+    45,
+    "Real read receipt API",
+    "Low",
+    "Shown locally only.",
+))
+
+rows.append(row(
+    M, "Encryption Indicators", "Visual encryption badges",
+    "Indicate that body is encrypted at rest",
+    "Yes", "Completed", "N/A", "No", "N/A", "No",
+    "N/A", "Yes",
+    "Completed",
+    80,
+    "Real encryption on backend (table column encrypt)",
+    "Low",
+    "security-badge.tsx renders 'Encrypted' chips.",
+))
+
+
+# 12. NOTIFICATIONS =========================================================
+M = "12. Notifications"
+
+rows.append(row(
+    M, "Patient Feed", "In-app notifications with tabs/filters",
+    "Persistent center with mark-read",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "GET /notifications + mark-read PATCH + dispatch worker",
+    "Medium",
+    "/patient/notifications using patient-store.",
+))
+
+rows.append(row(
+    M, "Clinician Feed", "Clinician notifications",
+    "Tasks, msgs, appointments",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real dispatcher",
+    "Medium",
+    "/clinician/notifications.",
+))
+
+rows.append(row(
+    M, "Compliance Feed", "Compliance manager alerts",
+    "Anomalies, approvals, deletion requests, campaign progress",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Real dispatcher + per-event triggers",
+    "Medium",
+    "/compliance/notifications uses shared NotificationsList.",
+))
+
+rows.append(row(
+    M, "Auditor Feed", "Auditor alerts",
+    "Audit window expiries, MFA from new IP, deliveries",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Real dispatcher",
+    "Low",
+    "/auditor/notifications uses shared NotificationsList.",
+))
+
+rows.append(row(
+    M, "Super Admin Feed", "Platform-ops alerts",
+    "Break-glass openings, tenant security spikes",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Real dispatcher + paging",
+    "Medium",
+    "/super/notifications uses shared NotificationsList.",
+))
+
+rows.append(row(
+    M, "Org Admin Feed", "Org-scoped notifications",
+    "Org admin alerts",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real dispatcher",
+    "Medium",
+    "/admin/notifications has own page.",
+))
+
+rows.append(row(
+    M, "Notification Preferences", "Per-channel per-category opt-in/out",
+    "User toggles email/SMS/in-app per category",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "UI Only",
+    55,
+    "PATCH /notifications/preferences + persistence",
+    "Medium",
+    "/patient/settings NotificationsTab: 6 categories × 3 channels matrix, Security locked (always-on), Save + Reset.",
+))
+
+rows.append(row(
+    M, "Email Channel", "SendGrid dispatch",
+    "Templates rendered + sent via SendGrid",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "SendGrid integration + template store + retry/DLQ",
+    "High",
+    "Entirely missing.",
+))
+
+rows.append(row(
+    M, "SMS Channel (optional)", "Twilio dispatch",
+    "Per-tenant optional SMS",
+    "No", "Not Started", "Missing", "No (optional)", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Twilio integration",
+    "Low",
+    "Optional per spec.",
+))
+
+
+# 13. DASHBOARD =============================================================
+M = "13. Dashboard"
+
+rows.append(row(
+    M, "Patient", "Greeting, next appt, recent records, msgs, consents",
+    "Aggregated quick-stats",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    70,
+    "Real aggregation",
+    "Medium",
+    "/patient/dashboard.",
+))
+
+rows.append(row(
+    M, "Clinician", "Today's queue + tasks + recent patients",
+    "Workspace-style daily view",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real aggregation",
+    "Medium",
+    "/clinician/dashboard.",
+))
+
+rows.append(row(
+    M, "Org Admin", "Org-wide overview",
+    "Org admin dashboard",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real aggregation",
+    "Medium",
+    "/admin/dashboard.",
+))
+
+rows.append(row(
+    M, "Compliance", "Posture score + scorecard + anomalies + heatmap + line chart",
+    "Real-time compliance posture + activity",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    70,
+    "Real metrics aggregation + anomaly engine",
+    "High",
+    "/compliance/dashboard - heavily worked on. Activity line chart, heatmap variants.",
+))
+
+rows.append(row(
+    M, "Auditor", "Read-only audit dashboard",
+    "Audit volume + recent events",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real audit feed",
+    "Medium",
+    "/auditor/dashboard.",
+))
+
+rows.append(row(
+    M, "Super Admin", "Platform overview",
+    "Cross-tenant view",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real platform metrics",
+    "Medium",
+    "/super/dashboard.",
+))
+
+
+# 14. AUDIT LOGS ============================================================
+M = "14. Audit Logs"
+
+rows.append(row(
+    M, "Compliance Ledger View", "Filterable + paginated audit list",
+    "Compliance filters by actor/action/status/anomaly/session",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "Static Data Only",
+    65,
+    "Real audit table + indexed query API",
+    "High",
+    "/compliance/audit-logs - 200 synthetic events. Session-filter chip works.",
+))
+
+rows.append(row(
+    M, "Event Detail", "Drill-down with full event context + chain-of-custody",
+    "Single event with actor, IP, UA, consent check, payload, checksums",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Real event store + checksum verification",
+    "High",
+    "/compliance/audit-logs/[id]. Same-session drill link added.",
+))
+
+rows.append(row(
+    M, "Same-Session Drill", "View all events from same session",
+    "Click 'View all events from same session' on detail",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    70,
+    "Real session_id indexed query",
+    "Medium",
+    "Built recently. Detail page has prominent CTA.",
+))
+
+rows.append(row(
+    M, "Auditor Read-Only", "Audit view for auditor role",
+    "Auditor reads but cannot modify",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real audit fetch + role guard",
+    "High",
+    "/auditor/audit-logs + [id].",
+))
+
+rows.append(row(
+    M, "Anomaly Detection", "Anomaly feed + investigation",
+    "Auto-detected unusual patterns surfaced",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real anomaly engine + rule definitions",
+    "High",
+    "/compliance/anomalies + [id].",
+))
+
+rows.append(row(
+    M, "Anomaly Resolution", "Resolve with justification",
+    "Compliance picks outcome (legitimate/tune/escalate) + writes reason",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done", "Yes",
+    "Static Data Only",
+    65,
+    "Resolution audit-trail + rule-update endpoint",
+    "High",
+    "resolve-anomaly.tsx dialog. Submit is toast.",
+))
+
+rows.append(row(
+    M, "Approval Workflow", "Sensitive-access approval queue",
+    "Compliance approves with conditions / rejects / requests info",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done", "Yes",
+    "Static Data Only",
+    65,
+    "Approval table + temporary consent grant on approve",
+    "High",
+    "/compliance/approvals + [id] decision-form.",
+))
+
+rows.append(row(
+    M, "Append-Only Guarantee", "Audit log immutability",
+    "DB user has no UPDATE/DELETE on audit_logs",
+    "N/A", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "DB role configuration + RLS + checksums",
+    "Critical",
+    "Backend concern; spec section 11.3.",
+))
+
+rows.append(row(
+    M, "Checksum Verification", "Rolling Merkle/SHA chain over windows",
+    "Tamper-evidence on audit windows",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "UI Only",
+    45,
+    "Real hashing pipeline + verification job + window root storage",
+    "Medium",
+    "/compliance/audit-logs/[id] has a Verify checksum button → 'walking hash chain' simulation → verified badge w/ timestamp.",
+))
+
+
+# 15. BILLING & SUBSCRIPTION ================================================
+M = "15. Billing & Subscription"
+
+rows.append(row(
+    M, "Pricing Page (marketing)", "Public pricing tiers",
+    "Visitors compare tiers + features",
+    "Yes", "Completed", "N/A", "No", "N/A", "No",
+    "N/A", "N/A",
+    "Completed",
+    80,
+    "Wire CTAs to real signup/checkout",
+    "Low",
+    "/pricing built recently.",
+))
+
+rows.append(row(
+    M, "Subscription Tiers (super)", "Edit tier definitions",
+    "Super admin manages tiers",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    35,
+    "Tier schema, feature flag mapping",
+    "Low",
+    "edit-tier-dialog.tsx exists.",
+))
+
+rows.append(row(
+    M, "Checkout / Payment", "Tenant signs up for tier",
+    "Stripe (or equivalent) integration",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Entire checkout flow + webhook handling",
+    "Low",
+    "Out of scope per spec 3.2 ('Billing... deferred').",
+))
+
+rows.append(row(
+    M, "Invoices / Billing History", "Tenant sees invoices + receipts",
+    "Tenant downloads invoices",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Invoice table + PDF generation",
+    "Low",
+    "Out of scope per spec.",
+))
+
+
+# 16. SETTINGS ==============================================================
+M = "16. Settings"
+
+rows.append(row(
+    M, "Patient Settings", "Profile, security, notifications, devices, data",
+    "Patient manages own settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    60,
+    "Real persistence APIs",
+    "Medium",
+    "/patient/settings + account-widgets + DataTab.",
+))
+
+rows.append(row(
+    M, "Clinician Settings", "Profile, MFA, prefs",
+    "Clinician manages own settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Real persistence",
+    "Medium",
+    "/clinician/settings.",
+))
+
+rows.append(row(
+    M, "Org Admin Settings", "Org profile, branding, defaults",
+    "Org admin configures tenant settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Real persistence",
+    "Medium",
+    "/admin/settings + org-widgets.",
+))
+
+rows.append(row(
+    M, "Compliance Settings", "Compliance team prefs",
+    "Compliance manager settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Real persistence",
+    "Low",
+    "/compliance/settings.",
+))
+
+rows.append(row(
+    M, "Auditor Settings", "Auditor account prefs",
+    "Auditor self-settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    50,
+    "Real persistence",
+    "Low",
+    "/auditor/settings.",
+))
+
+rows.append(row(
+    M, "Super Admin Settings", "Platform-level settings",
+    "Platform ops settings",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    55,
+    "Real persistence",
+    "Low",
+    "/super/settings + add-range-dialog.",
+))
+
+
+# 17. FILE UPLOAD ===========================================================
+M = "17. File Upload"
+
+rows.append(row(
+    M, "Patient Document Upload", "Drag-drop + type/size validation",
+    "Patient uploads ID/insurance/prior records",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial (type/size)", "Yes",
+    "UI Only",
+    40,
+    "S3 presigned URLs, real upload, virus scan, retention",
+    "High",
+    "/patient/documents/upload.",
+))
+
+rows.append(row(
+    M, "Bulk Patient Import", "CSV bulk upload",
+    "Admin uploads CSV of patients to onboard",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial (CSV parse)", "Yes",
+    "UI Only",
+    40,
+    "Server-side parse + dedup + dispatch invitations",
+    "Medium",
+    "/admin/patients/bulk - client CSV parsing.",
+))
+
+rows.append(row(
+    M, "Bulk User Import", "CSV bulk upload for staff",
+    "Admin uploads staff CSV",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    40,
+    "Server-side parse + role-aware dispatch",
+    "Medium",
+    "/admin/users/bulk.",
+))
+
+rows.append(row(
+    M, "Virus Scan", "ClamAV / 3rd-party pre-store scan",
+    "All uploads scanned before persistence",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "ClamAV daemon + queued scan job + quarantine policy",
+    "High",
+    "Spec section 8.5 mentions scan hook.",
+))
+
+rows.append(row(
+    M, "S3 Presigned URLs", "Direct browser->S3 upload",
+    "Backend returns time-limited PUT URL",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Backend route + IAM policy + bucket config",
+    "High",
+    "Spec section 8.5 + 19.2.",
+))
+
+rows.append(row(
+    M, "Retention Enforcement", "Auto-expire docs per category policy",
+    "Worker purges expired docs after retention window",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "UI Only",
+    50,
+    "Real retention worker + soft-delete -> hard-delete flow + legal-hold gate",
+    "High",
+    "/compliance/retention has a Retention Enforcement panel: next-run timer, Run-now action, history of 3 runs incl. legal-hold partial skip.",
+))
+
+
+# 18. REPORTS & ANALYTICS ===================================================
+M = "18. Reports & Analytics"
+
+rows.append(row(
+    M, "Compliance Reports", "Compliance summary + access + consent + audit",
+    "Compliance generates on-demand reports",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    65,
+    "Real aggregation + PDF/CSV generator + archive",
+    "High",
+    "/compliance/reports - 6 templates + archive tab.",
+))
+
+rows.append(row(
+    M, "Auditor Reports", "Auditor exports",
+    "Auditor pulls audit reports",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    60,
+    "Real aggregation",
+    "Medium",
+    "/auditor/reports.",
+))
+
+rows.append(row(
+    M, "Admin Reports", "Org-scoped reports",
+    "Admin pulls org reports",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "Static Data Only",
+    55,
+    "Real aggregation",
+    "Medium",
+    "/admin/reports.",
+))
+
+rows.append(row(
+    M, "PDF/CSV Export", "Client-side PDF generation",
+    "Download report as PDF or CSV",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "UI Only",
+    50,
+    "Server-side generation queue + checksum",
+    "Medium",
+    "report-generators.ts uses jsPDF + jspdf-autotable client-side.",
+))
+
+rows.append(row(
+    M, "Scheduled Reports", "Recurring report delivery",
+    "Reports auto-generated + emailed weekly/monthly",
+    "Yes", "UI Only", "Missing", "Yes", "No", "Yes",
+    "N/A", "Yes",
+    "UI Only",
+    30,
+    "BullMQ recurring job + SendGrid",
+    "Medium",
+    "UI for scheduling exists in /compliance/reports. Not actually scheduled.",
+))
+
+rows.append(row(
+    M, "Activity Heatmap / Line Chart", "Hourly activity over 7 days",
+    "Compliance sees usage patterns",
+    "Yes", "Completed", "N/A", "No", "N/A", "No",
+    "N/A", "Yes",
+    "Completed",
+    80,
+    "Live data hookup",
+    "Low",
+    "/compliance/dashboard - rebuilt as line chart recently.",
+))
+
+
+# 19. HL7 / FHIR ============================================================
+M = "19. HL7/FHIR Integration"
+
+rows.append(row(
+    M, "FHIR Stubs / Adapter", "FHIR-ready architecture",
+    "Spec calls for FHIR resource adapters + transformations",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Entire FHIR layer (Resource models, transformation, endpoints)",
+    "Low",
+    "Spec 3.2 / 12 explicitly defers live integration. No stubs in codebase.",
+))
+
+rows.append(row(
+    M, "EHR/EMR Integration Screens", "Configure external EHR connection",
+    "Admin connects to external EHR",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Connection mgmt UI + backend adapters",
+    "Low",
+    "Out of scope per spec.",
+))
+
+
+# 20. SECURITY & COMPLIANCE =================================================
+M = "20. Security & Compliance"
+
+rows.append(row(
+    M, "Role Middleware", "Server-side role guard",
+    "Middleware redirects users away from other roles' sections",
+    "Yes", "Completed", "Done", "N/A (frontend)", "N/A", "No",
+    "N/A", "Yes",
+    "Completed",
+    85,
+    "Production hardening, JWT verification of real claims",
+    "High",
+    "middleware.ts checks JWT role; demo-grade but functional.",
+))
+
+rows.append(row(
+    M, "Security Badges", "Visual encrypted/audited/consent-bound chips",
+    "UI affirmations of security posture",
+    "Yes", "Completed", "N/A", "No", "N/A", "No",
+    "N/A", "Yes",
+    "Completed",
+    90,
+    "Wire to real backend state (e.g., is column encrypted?)",
+    "Low",
+    "security-badge.tsx used throughout.",
+))
+
+rows.append(row(
+    M, "Idle Timeout", "Auto-logout after inactivity",
+    "Modal warning + countdown + extend or logout",
+    "Yes", "Completed", "Partial", "Yes", "Partial", "No",
+    "Done", "Yes",
+    "Completed",
+    80,
+    "Sync with server session expiry",
+    "Medium",
+    "components/shared/idle-timeout.tsx works against /api/auth/logout.",
+))
+
+rows.append(row(
+    M, "GDPR Deletion Matrix", "Per-category retention-aware decision",
+    "Compliance decides delete/retain/export per category",
+    "Yes", "Completed", "Missing", "Yes", "No", "Yes",
+    "Done (client)", "Yes",
+    "Static Data Only",
+    65,
+    "Real deletion worker + per-category purge",
+    "High",
+    "/compliance/deletion-requests + [id] decision-matrix.tsx.",
+))
+
+rows.append(row(
+    M, "Break-Glass Audit", "Time-boxed emergency access with full logging",
+    "Super admin opens emergency session into tenant; everything audited",
+    "Yes", "Partial", "Missing", "Yes", "No", "Yes",
+    "Partial", "Yes",
+    "UI Only",
+    45,
+    "Real session creation + heavy audit + auto-expire",
+    "High",
+    "/super/break-glass form.",
+))
+
+rows.append(row(
+    M, "Rate Limiting", "Per-IP / per-user / per-endpoint limits",
+    "Throttle abusive patterns",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Redis-backed limiter + WAF rules",
+    "High",
+    "Backend concern, spec 6.7 + 10.2.",
+))
+
+rows.append(row(
+    M, "CSRF Protection", "Token on state-changing requests",
+    "Anti-CSRF tokens required for POST/PATCH/DELETE",
+    "No", "Not Started", "Missing", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Token middleware + frontend integration",
+    "High",
+    "Spec section 5.5 + 10.2.",
+))
+
+rows.append(row(
+    M, "Content Security Policy", "CSP headers + HSTS",
+    "Strict CSP + HSTS at edge",
+    "No", "Not Started", "Missing", "Yes", "No", "No",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Next.js middleware CSP, infra HSTS",
+    "Medium",
+    "Spec section 5.5.",
+))
+
+rows.append(row(
+    M, "Encryption at Rest", "DB + column-level encryption",
+    "TDE + column-level on highly-sensitive fields",
+    "N/A", "Not Started", "N/A", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Postgres TDE + crypto for select columns",
+    "Critical",
+    "Backend / DB concern.",
+))
+
+rows.append(row(
+    M, "Row-Level Security", "Postgres RLS for multi-tenant isolation",
+    "RLS reinforces tenant scope",
+    "N/A", "Not Started", "N/A", "Yes", "No", "Yes",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "RLS policies on PHI tables",
+    "Critical",
+    "Backend / DB concern, spec 6.4.",
+))
+
+rows.append(row(
+    M, "PHI Log Redaction", "No PHI in app logs",
+    "Logger middleware sanitizes PHI",
+    "N/A", "Not Started", "N/A", "Yes", "No", "No",
+    "Missing", "N/A",
+    "Not Started",
+    0,
+    "Sanitizing logger + redaction tests",
+    "High",
+    "Spec section 10.2.",
+))
+
+
+# ---------------------------------------------------------------------------
+# Module completion summary
+# ---------------------------------------------------------------------------
+summary_section = [
+    [],  # blank
+    ["MODULE COMPLETION SUMMARY"],
+    [],
+    ["Module", "Avg Completion %", "Notes"],
+    ["1. Authentication", "47%", "Good UI; backend mostly demo-stubs. Active sessions panel now real-feeling (devices + IPs + trust flags + revoke)."],
+    ["2. Patient", "55%", "Strong UI; localStorage demo store; new Prescriptions page + per-record audit trail + session/notif preferences."],
+    ["3. Doctor (Clinician)", "51%", "All screens exist; clinician/messages re-export bug fixed (now standalone)."],
+    ["4. Nurse", "0%", "Not in spec; not implemented."],
+    ["5. Super Admin", "51%", "All screens exist; everything is static + toast-stub on submit."],
+    ["6. Hospital / Tenant Mgmt", "52%", "Admin CRUD UIs complete; no real persistence."],
+    ["7. Appointment", "45%", "Booking/reschedule/cancel UI works. Reminders not built."],
+    ["8. Medical Records", "44%", "Read UIs solid; per-record audit trail richer; versioning + finalize logic still missing."],
+    ["9. Prescription", "32%", "Dedicated patient Rx page added (Active/Past + refill request). Clinician Rx creation still missing."],
+    ["10. Consent Management", "52%", "Patient + compliance flows OK; evaluation guard backend missing."],
+    ["11. Secure Messaging", "50%", "Patient + clinician both standalone; attachments now functional (client-side); no real backend."],
+    ["12. Notifications", "53%", "All 6 role feeds + preferences matrix; dispatcher backend missing."],
+    ["13. Dashboard", "63%", "All 6 dashboards built; all static."],
+    ["14. Audit Logs", "57%", "Verify-checksum action + anomaly + approval workflows; backend ledger still missing."],
+    ["15. Billing & Subscription", "29%", "Pricing page exists; checkout out of scope."],
+    ["16. Settings", "57%", "All 6 settings pages exist; richer sessions + notif prefs in patient."],
+    ["17. File Upload", "27%", "UI present; retention purge UI added (history + run-now); no real S3 + virus scan."],
+    ["18. Reports & Analytics", "57%", "Client-side PDF works; no server generation/scheduling."],
+    ["19. HL7/FHIR Integration", "0%", "Out of scope per spec."],
+    ["20. Security & Compliance", "39%", "Frontend security controls + role middleware present; backend controls absent."],
+    [],
+    ["OVERALL FRONTEND COMPLETION (visible UI)", "~70%", "After 9 partial-UI fixes (May 26 pass)."],
+    ["OVERALL BACKEND COMPLETION", "~5%", "Only 6 demo /api/auth/* routes exist."],
+    ["OVERALL DATABASE COMPLETION", "0%", "No DB, no migrations, no schema implemented."],
+    ["OVERALL PRODUCTION-READY COMPLETION", "~34%", "Weighted FE 50% + BE 35% + DB 15%."],
+    [],
+    ["TOP CRITICAL GAPS"],
+    ["1. No real backend - all /api/* except /api/auth/* proxy to non-existent localhost:3001."],
+    ["2. No database - everything is hardcoded TS arrays or browser localStorage."],
+    ["3. No consent-evaluation guard - PHI 'access control' is purely visual."],
+    ["4. No audit ledger - every event shown is a static mock."],
+    ["5. No file uploads - documents never leave the browser."],
+    ["6. No notification dispatcher - no email/SMS goes out."],
+    ["7. No rate limiting / CSRF / WAF / log redaction."],
+    ["8. (FIXED May 26) Clinician messages now standalone; attachments wired; per-record audit trail; Rx page; retention enforcement; checksum verify."],
+    ["9. No password reset, account lockout, refresh-token rotation."],
+    ["10. Clinician structured Rx creation still missing (only patient-side Rx history added)."],
+]
+
+
+# ---------------------------------------------------------------------------
+# Write
+# ---------------------------------------------------------------------------
+with OUT.open("w", encoding="utf-8-sig", newline="") as fh:
+    writer = csv.writer(fh)
+    writer.writerow(HEADER)
+    for r in rows:
+        # Pad each row to header length so Excel column alignment stays correct.
+        while len(r) < len(HEADER):
+            r.append("")
+        writer.writerow(r)
+    for r in summary_section:
+        writer.writerow(r)
+
+print(f"Wrote {OUT} ({len(rows)} feature rows + summary).")
+
+
+# ---------------------------------------------------------------------------
+# XLSX output with formatting (frozen header, auto-filter, conditional colors)
+# ---------------------------------------------------------------------------
+
+# Style palette
+HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
+HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+HEADER_ALIGN = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+MODULE_BANNER_FILL = PatternFill("solid", fgColor="DDEBF7")
+MODULE_BANNER_FONT = Font(name="Calibri", size=11, bold=True, color="1F4E79")
+
+# Status-cell color map. Pairs: (fill hex, font hex).
+STATUS_STYLES: dict[str, tuple[str, str]] = {
+    "Completed": ("C6EFCE", "006100"),
+    "Partial": ("FFEB9C", "9C5700"),
+    "Pending": ("FFEB9C", "9C5700"),
+    "UI Only": ("BDD7EE", "1F4E79"),
+    "Static Data Only": ("BDD7EE", "1F4E79"),
+    "Backend Missing": ("FCE4D6", "C65911"),
+    "API Missing": ("FCE4D6", "C65911"),
+    "Not Started": ("FFC7CE", "9C0006"),
+    "Broken": ("FFC7CE", "9C0006"),
+}
+
+THIN = Side(border_style="thin", color="D9D9D9")
+CELL_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+
+# Column widths (Excel "characters" units), per HEADER order.
+COL_WIDTHS = [
+    20,  # Module Name
+    18,  # Sub Module
+    32,  # Feature / Requirement
+    40,  # Expected Flow
+    14,  # FE UI
+    16,  # FE Logic
+    16,  # API
+    14,  # BE Req
+    14,  # BE Avail
+    14,  # DB Req
+    20,  # Validation
+    14,  # RBAC
+    18,  # Current Status
+    12,  # Completion %
+    42,  # Remaining
+    10,  # Priority
+    52,  # Notes
+]
+
+STATUS_COL = 13  # 1-indexed column number for Current Status
+COMPLETION_COL = 14  # Completion %
+
+wb = Workbook()
+
+# Sheet 1: Audit ------------------------------------------------------------
+ws = wb.active
+ws.title = "Audit"
+
+# Header
+for col_idx, label in enumerate(HEADER, start=1):
+    cell = ws.cell(row=1, column=col_idx, value=label)
+    cell.fill = HEADER_FILL
+    cell.font = HEADER_FONT
+    cell.alignment = HEADER_ALIGN
+    cell.border = CELL_BORDER
+ws.row_dimensions[1].height = 32
+
+# Data rows
+prev_module = None
+excel_row = 2
+for r in rows:
+    # Insert a banner row when the module changes — makes the sheet skim-able.
+    module_name = r[0]
+    if module_name != prev_module:
+        ws.cell(row=excel_row, column=1, value=module_name).fill = MODULE_BANNER_FILL
+        for col_idx in range(1, len(HEADER) + 1):
+            c = ws.cell(row=excel_row, column=col_idx)
+            c.fill = MODULE_BANNER_FILL
+            c.font = MODULE_BANNER_FONT
+        excel_row += 1
+        prev_module = module_name
+
+    # Pad to header width.
+    while len(r) < len(HEADER):
+        r.append("")
+
+    for col_idx, value in enumerate(r, start=1):
+        # Coerce Completion % to int for proper conditional formatting.
+        if col_idx == COMPLETION_COL:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                pass
+        cell = ws.cell(row=excel_row, column=col_idx, value=value)
+        cell.alignment = Alignment(vertical="top", wrap_text=True)
+        cell.border = CELL_BORDER
+
+        # Color-code the Current Status column.
+        if col_idx == STATUS_COL and isinstance(value, str):
+            style = STATUS_STYLES.get(value)
+            if style:
+                fill_hex, font_hex = style
+                cell.fill = PatternFill("solid", fgColor=fill_hex)
+                cell.font = Font(name="Calibri", size=11, bold=True, color=font_hex)
+    excel_row += 1
+
+last_data_row = excel_row - 1
+
+# Column widths
+for col_idx, width in enumerate(COL_WIDTHS, start=1):
+    ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+# Freeze the header row + the first two columns (Module + Sub Module).
+ws.freeze_panes = "C2"
+
+# Auto-filter on the header
+ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADER))}{last_data_row}"
+
+# Conditional formatting on Completion % — red -> yellow -> green color scale.
+completion_range = f"{get_column_letter(COMPLETION_COL)}2:{get_column_letter(COMPLETION_COL)}{last_data_row}"
+ws.conditional_formatting.add(
+    completion_range,
+    ColorScaleRule(
+        start_type="num", start_value=0, start_color="F8696B",
+        mid_type="num", mid_value=50, mid_color="FFEB84",
+        end_type="num", end_value=100, end_color="63BE7B",
+    ),
+)
+
+
+# Sheet 2: Summary ----------------------------------------------------------
+ws2 = wb.create_sheet("Summary")
+
+# Title
+ws2.cell(row=1, column=1, value="HealthSecure Portal — Module Completion Summary")
+ws2.cell(row=1, column=1).font = Font(name="Calibri", size=14, bold=True, color="1F4E79")
+ws2.merge_cells("A1:C1")
+
+current = 3
+for line in summary_section:
+    if not line:
+        current += 1
+        continue
+
+    # Heuristic: 3-cell rows = the module table; 1-cell rows = section
+    # headings or critical-gap bullets.
+    if len(line) == 3 and isinstance(line[1], str) and ("%" in line[1] or line[1] == "Avg Completion %"):
+        # Table row (Module / pct / notes)
+        for col_idx, value in enumerate(line, start=1):
+            cell = ws2.cell(row=current, column=col_idx, value=value)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cell.border = CELL_BORDER
+            if line[1] == "Avg Completion %":
+                cell.fill = HEADER_FILL
+                cell.font = HEADER_FONT
+    else:
+        # Section heading or bullet
+        text = line[0] if line else ""
+        cell = ws2.cell(row=current, column=1, value=text)
+        if text in {"MODULE COMPLETION SUMMARY", "TOP CRITICAL GAPS"}:
+            cell.font = Font(name="Calibri", size=12, bold=True, color="1F4E79")
+        elif "OVERALL" in text:
+            cell.font = Font(name="Calibri", size=11, bold=True, color="9C0006")
+        else:
+            cell.font = Font(name="Calibri", size=11)
+        ws2.merge_cells(start_row=current, start_column=1, end_row=current, end_column=3)
+    current += 1
+
+ws2.column_dimensions["A"].width = 44
+ws2.column_dimensions["B"].width = 20
+ws2.column_dimensions["C"].width = 80
+ws2.freeze_panes = "A2"
+
+
+wb.save(XLSX)
+print(f"Wrote {XLSX} (2 sheets: Audit + Summary).")

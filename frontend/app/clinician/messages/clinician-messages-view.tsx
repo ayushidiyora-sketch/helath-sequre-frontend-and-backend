@@ -7,20 +7,20 @@ import {
   Search,
   Paperclip,
   Send,
-  Lock,
-  Check,
   CheckCheck,
   Pin,
-  Plus,
   Filter,
   Smile,
   Image as ImageIcon,
   X,
+  Check,
+  Plus,
   MessagesSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Input, Textarea, Label } from "@/components/ui/input";
+import { Input, Label, Textarea } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import {
   Dialog,
@@ -29,7 +29,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogClose,
 } from "@/components/ui/dialog";
 import {
   DropdownMenu,
@@ -39,31 +38,31 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { EmojiPicker } from "./emoji-picker";
-import { usePatientStore, type MessageThread, type MessageAttachment } from "@/lib/patient-store";
+import { EmojiPicker } from "../../patient/messages/emoji-picker";
+import {
+  THREADS,
+  FLAG_META,
+  type ClinicianThread,
+  type ClinicianMessage,
+  type MsgAttachment,
+} from "./clinician-messages-data";
 
-const CARE_TEAM = [
-  { name: "Dr. Priya Shah", role: "Cardiology", initials: "PS" },
-  { name: "Dr. Rohan Iyer", role: "General Medicine", initials: "RI" },
-  { name: "Dr. Meera Nair", role: "Endocrinology", initials: "MN" },
-  { name: "Care coordinator", role: "Care Team", initials: "CC" },
-  { name: "Radiology Dept.", role: "Imaging", initials: "RD" },
-  { name: "Pharmacy", role: "Medication", initials: "PH" },
-] as const;
-
-function initials(name: string): string {
-  return name
-    .replace(/^Dr\.?\s*/, "")
-    .split(/\s+/)
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-}
+// Assigned panel — recipients available when composing a new thread.
+const PATIENT_PANEL = [
+  { name: "Aarav Mehta", initials: "AM", mrn: "MRN-44118", role: "Patient · Cardiology panel" },
+  { name: "Riya Mehta", initials: "RM", mrn: "MRN-44119", role: "Patient · Endocrinology panel" },
+  { name: "Tarun Mehta", initials: "TM", mrn: "MRN-44120", role: "Patient · Cardiology panel" },
+  { name: "Aanya Verma", initials: "AV", mrn: "MRN-44211", role: "Patient · Internal Medicine panel" },
+  { name: "Kabir Joshi", initials: "KJ", mrn: "MRN-44309", role: "Patient · Radiology referral" },
+  { name: "Meera Singh", initials: "MS", mrn: "MRN-44402", role: "Patient · Cardiology panel" },
+  { name: "Ramesh Patel", initials: "RP", mrn: "CITY-001234", role: "Patient · Cardiology panel" },
+  { name: "Sai Iyer", initials: "SI", mrn: "MRN-44501", role: "Patient · Cardiology panel" },
+];
 
 // Locale-independent formatters so server and client agree byte-for-byte
-// during hydration.
-const PT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// during hydration. Node's default LC_ALL on this machine emits "PM" while
+// the browser emits "pm" — that mismatch broke hydration on /clinician/messages.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function formatClock(date: Date): string {
   const h = date.getHours();
@@ -88,7 +87,7 @@ function relativeTime(iso: string): string {
     date.getMonth() === yest.getMonth() &&
     date.getDate() === yest.getDate();
   if (isYest) return "Yesterday";
-  return `${PT_MONTHS[date.getMonth()]} ${date.getDate()}`;
+  return `${MONTHS[date.getMonth()]} ${date.getDate()}`;
 }
 
 function formatSize(bytes: number): string {
@@ -97,96 +96,151 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function MessagesView({ initialThreadId }: { initialThreadId?: string } = {}) {
-  const { state, sendMessage, createThread, markThreadRead, togglePinThread } = usePatientStore();
+export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: string } = {}) {
   const search = useSearchParams();
   const queryThread = search.get("thread") ?? initialThreadId ?? null;
 
+  // Local mutable copy so pinning/unread/messages persist across the session.
+  const [threads, setThreads] = useState<ClinicianThread[]>(() =>
+    THREADS.map((t) => ({ ...t, messages: [...t.messages] })),
+  );
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<"inbox" | "pinned" | "all">("inbox");
   const [searchQuery, setSearchQuery] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [draft, setDraft] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<MsgAttachment[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState<MessageAttachment[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
 
-  // Pick an initial active thread once hydrated.
+  // Pick an initial active thread.
   useEffect(() => {
-    if (!state.hydrated) return;
-    if (activeId && state.threads.some((t) => t.id === activeId)) return;
+    if (activeId && threads.some((t) => t.id === activeId)) return;
     const target =
-      (queryThread && state.threads.find((t) => t.id === queryThread)?.id) ??
-      state.threads[0]?.id ??
+      (queryThread && threads.find((t) => t.id === queryThread)?.id) ??
+      threads[0]?.id ??
       null;
     setActiveId(target);
-    if (target) markThreadRead(target);
-  }, [state.hydrated, state.threads, queryThread, activeId, markThreadRead]);
+    if (target) markRead(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  if (!state.hydrated) {
-    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
-  }
+  const unreadTotal = threads.filter((t) => t.unread > 0).length;
 
-  if (state.threads.length === 0) return <EmptyInbox onCompose={() => setComposeOpen(true)} composeOpen={composeOpen} setComposeOpen={setComposeOpen} onStart={start} />;
-
-  const active = state.threads.find((t) => t.id === activeId) ?? state.threads[0];
-  const unreadTotal = state.threads.filter((t) => t.unread).length;
-
-  const visible = state.threads.filter((t) => {
-    if (tab === "pinned" && !t.pinned) return false;
-    if (unreadOnly && !t.unread) return false;
+  const visible = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return true;
-    const last = t.messages[t.messages.length - 1]?.body ?? "";
-    return (
-      t.with.toLowerCase().includes(q) ||
-      t.withRole.toLowerCase().includes(q) ||
-      last.toLowerCase().includes(q)
-    );
-  });
+    return threads.filter((t) => {
+      if (tab === "pinned" && !t.pinned) return false;
+      if (unreadOnly && t.unread === 0) return false;
+      if (!q) return true;
+      const last = t.messages[t.messages.length - 1]?.body ?? "";
+      return (
+        t.patient.toLowerCase().includes(q) ||
+        t.mrn.toLowerCase().includes(q) ||
+        t.role.toLowerCase().includes(q) ||
+        last.toLowerCase().includes(q)
+      );
+    });
+  }, [threads, tab, searchQuery, unreadOnly]);
+
+  const active = threads.find((t) => t.id === activeId) ?? visible[0] ?? threads[0];
 
   function openThread(id: string) {
     setActiveId(id);
-    markThreadRead(id);
+    markRead(id);
   }
 
-  function send() {
-    if (!active) return;
-    const hasBody = draft.trim().length > 0;
-    const hasAtt = pendingAttachments.length > 0;
-    if (!hasBody && !hasAtt) return;
-    sendMessage(active.id, draft.trim(), pendingAttachments);
-    setDraft("");
-    setPendingAttachments([]);
-    setEmojiOpen(false);
+  function markRead(id: string) {
+    setThreads((curr) =>
+      curr.map((t) => (t.id === id ? { ...t, unread: 0, read: true } : t)),
+    );
   }
 
-  function start(recipient: (typeof CARE_TEAM)[number], message: string) {
-    const thread = createThread({
-      with: recipient.name,
-      withRole: recipient.role,
-      subject: message.trim().slice(0, 40) || `New conversation with ${recipient.name}`,
-      initialBody: message.trim() || "Hello",
-    });
-    setActiveId(thread.id);
-    setComposeOpen(false);
-    toast.success("Conversation started", { description: `New message to ${recipient.name}` });
+  function togglePin(id: string) {
+    let pinnedNow = false;
+    setThreads((curr) =>
+      curr.map((t) => {
+        if (t.id !== id) return t;
+        pinnedNow = !t.pinned;
+        return { ...t, pinned: pinnedNow };
+      }),
+    );
+    toast.info(pinnedNow ? "Conversation pinned" : "Conversation unpinned");
   }
 
   function noteAttachment(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (f) {
-      const kind: MessageAttachment["kind"] = e.target === imageRef.current ? "image" : "file";
+      const kind: MsgAttachment["kind"] = e.target === imageRef.current ? "image" : "file";
       setPendingAttachments((curr) => [...curr, { name: f.name, size: f.size, kind }]);
-      toast.success("Attachment ready", { description: `${f.name} · scanned · clean · will send with your next message` });
+      toast.success("Attachment ready", {
+        description: `${f.name} · scanned · clean · will send with your next message`,
+      });
     }
     e.target.value = "";
   }
 
   function removePendingAttachment(name: string) {
     setPendingAttachments((curr) => curr.filter((a) => a.name !== name));
+  }
+
+  function send() {
+    if (!active) return;
+    const body = draft.trim();
+    const hasAtt = pendingAttachments.length > 0;
+    if (!body && !hasAtt) return;
+    const now = new Date().toISOString();
+    const msg: ClinicianMessage = {
+      id: `m-${Date.now()}`,
+      from: "clinician",
+      body,
+      at: now,
+      attachments: hasAtt ? pendingAttachments : undefined,
+    };
+    setThreads((curr) =>
+      curr.map((t) =>
+        t.id === active.id
+          ? { ...t, messages: [...t.messages, msg], lastActivity: now, sentByMe: true, read: true }
+          : t,
+      ),
+    );
+    setDraft("");
+    setPendingAttachments([]);
+    setEmojiOpen(false);
+    toast.success("Message sent", { description: `${active.patient} · audit-logged` });
+  }
+
+  function startThread(recipient: (typeof PATIENT_PANEL)[number], message: string) {
+    const body = message.trim() || "Hello";
+    const now = new Date().toISOString();
+    const id = `t-new-${Date.now()}`;
+    const thread: ClinicianThread = {
+      id,
+      patient: recipient.name,
+      initials: recipient.initials,
+      mrn: recipient.mrn,
+      role: recipient.role,
+      preview: body,
+      time: "Just now",
+      unread: 0,
+      sentByMe: true,
+      read: true,
+      lastActivity: now,
+      messages: [
+        {
+          id: `m-${Date.now()}`,
+          from: "clinician",
+          body,
+          at: now,
+        },
+      ],
+    };
+    setThreads((curr) => [thread, ...curr]);
+    setActiveId(id);
+    setComposeOpen(false);
+    toast.success("Conversation started", { description: `${recipient.name} · audit-logged` });
   }
 
   return (
@@ -197,12 +251,12 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
           <div className="border-b border-[var(--color-border)] p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-base font-semibold">Messages</h2>
-              <Button size="icon-sm" variant="outline" aria-label="New message" onClick={() => setComposeOpen(true)}>
+    <Button size="icon-sm" variant="outline" aria-label="New message" onClick={() => setComposeOpen(true)}>
                 <Plus />
               </Button>
             </div>
             <Input
-              placeholder="Search messages"
+              placeholder="Search patient, MRN, message…"
               leadingIcon={<Search />}
               className="h-9"
               value={searchQuery}
@@ -235,7 +289,12 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant={unreadOnly ? "soft" : "ghost"} size="icon-sm" className="ml-auto" aria-label="Filter">
+                  <Button
+                    variant={unreadOnly ? "soft" : "ghost"}
+                    size="icon-sm"
+                    className="ml-auto"
+                    aria-label="Filter"
+                  >
                     <Filter />
                   </Button>
                 </DropdownMenuTrigger>
@@ -245,7 +304,12 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
                   <DropdownMenuItem onSelect={() => setUnreadOnly((v) => !v)}>
                     <Check className={unreadOnly ? "" : "opacity-0"} /> Unread only
                   </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => { setUnreadOnly(false); setSearchQuery(""); }}>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setUnreadOnly(false);
+                      setSearchQuery("");
+                    }}
+                  >
                     <X /> Clear filters
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -262,33 +326,54 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
             {visible.map((t) => {
               const last = t.messages[t.messages.length - 1];
               const isActive = t.id === active?.id;
+              const flagMeta = t.flag ? FLAG_META[t.flag] : null;
               return (
                 <li key={t.id}>
                   <button
                     onClick={() => openThread(t.id)}
                     className={`group flex w-full items-start gap-3 rounded-lg p-3 text-left transition-colors ${
-                      isActive ? "bg-[var(--color-primary-50)]" : "hover:bg-[var(--color-muted)]/50"
+                      isActive
+                        ? "bg-[var(--color-primary-50)]"
+                        : "hover:bg-[var(--color-muted)]/50"
                     }`}
                   >
                     <Avatar className="size-10 shrink-0">
-                      <AvatarFallback>{initials(t.with)}</AvatarFallback>
+                      <AvatarFallback>{t.initials}</AvatarFallback>
                     </Avatar>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
-                        <p className={`flex items-center gap-1 truncate text-sm ${t.unread ? "font-semibold" : "font-medium"} ${isActive ? "text-[var(--color-primary-700)]" : ""}`}>
-                          {t.pinned && <Pin className="size-3 shrink-0 text-[var(--color-muted-foreground)]" />}
-                          {t.with}
+                        <p
+                          className={`flex items-center gap-1 truncate text-sm ${
+                            t.unread > 0 ? "font-semibold" : "font-medium"
+                          } ${isActive ? "text-[var(--color-primary-700)]" : ""}`}
+                        >
+                          {t.pinned && (
+                            <Pin className="size-3 shrink-0 text-[var(--color-muted-foreground)]" />
+                          )}
+                          {t.patient}
                         </p>
-                        <span className="text-[10px] text-[var(--color-muted-foreground)]">{relativeTime(t.lastActivity)}</span>
+                        <span className="text-[10px] text-[var(--color-muted-foreground)]">
+                          {relativeTime(t.lastActivity)}
+                        </span>
                       </div>
-                      <p className="text-[11px] text-[var(--color-muted-foreground)]">{t.withRole}</p>
+                      <p className="flex items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
+                        <span className="font-mono">{t.mrn}</span>
+                        {flagMeta && (
+                          <Badge variant={flagMeta.variant} size="sm" dot>
+                            {flagMeta.label}
+                          </Badge>
+                        )}
+                      </p>
                       <p className="mt-1 line-clamp-2 text-xs text-[var(--color-muted-foreground)]">
+                        {t.sentByMe && (
+                          <span className="mr-1 text-[var(--color-primary-700)]">You:</span>
+                        )}
                         {last?.body ?? "No messages yet"}
                       </p>
                     </div>
-                    {t.unread && (
+                    {t.unread > 0 && (
                       <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] px-1.5 text-[10px] font-semibold text-white">
-                        new
+                        {t.unread}
                       </span>
                     )}
                   </button>
@@ -300,15 +385,12 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
 
         {/* ---- Thread view ---- */}
         {active ? (
-          <ThreadView
+          <ThreadPane
             active={active}
             draft={draft}
             setDraft={setDraft}
             onSend={send}
-            onTogglePin={() => {
-              togglePinThread(active.id);
-              toast.info(active.pinned ? "Conversation unpinned" : "Conversation pinned");
-            }}
+            onTogglePin={() => togglePin(active.id)}
             emojiOpen={emojiOpen}
             setEmojiOpen={setEmojiOpen}
             fileRef={fileRef}
@@ -319,17 +401,94 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
           />
         ) : (
           <section className="flex items-center justify-center bg-[var(--color-background)] p-10">
-            <p className="text-sm text-[var(--color-muted-foreground)]">Pick a conversation from the list.</p>
+            <div className="text-center">
+              <MessagesSquare className="mx-auto size-8 text-[var(--color-muted-foreground)]" />
+              <p className="mt-3 text-sm text-[var(--color-muted-foreground)]">
+                Pick a conversation from the list.
+              </p>
+            </div>
           </section>
         )}
       </div>
 
-      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onStart={start} />
+      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onStart={startThread} />
     </div>
   );
 }
 
-function ThreadView({
+function ComposeDialog({
+  open,
+  onOpenChange,
+  onStart,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onStart: (recipient: (typeof PATIENT_PANEL)[number], message: string) => void;
+}) {
+  const [recipientIdx, setRecipientIdx] = useState(0);
+  const [message, setMessage] = useState("");
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    onStart(PATIENT_PANEL[recipientIdx], message);
+    setMessage("");
+    setRecipientIdx(0);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New message</DialogTitle>
+          <DialogDescription>
+            Start a secure, end-to-end encrypted conversation with a patient on your assigned panel.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form className="space-y-4 py-2" onSubmit={submit}>
+          <div className="space-y-1.5">
+            <Label htmlFor="compose-recipient">Recipient</Label>
+            <select
+              id="compose-recipient"
+              value={recipientIdx}
+              onChange={(e) => setRecipientIdx(Number(e.target.value))}
+              className="h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
+            >
+              {PATIENT_PANEL.map((p, i) => (
+                <option key={p.mrn} value={i}>
+                  {p.name} · {p.mrn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="compose-message">Message</Label>
+            <Textarea
+              id="compose-message"
+              rows={4}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="What would you like to say?"
+              required
+            />
+          </div>
+
+          <DialogFooter className="pt-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!message.trim()}>
+              <Send /> Start conversation
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ThreadPane({
   active,
   draft,
   setDraft,
@@ -343,7 +502,7 @@ function ThreadView({
   pendingAttachments,
   onRemoveAttachment,
 }: {
-  active: MessageThread;
+  active: ClinicianThread;
   draft: string;
   setDraft: (v: string) => void;
   onSend: () => void;
@@ -353,24 +512,45 @@ function ThreadView({
   fileRef: React.RefObject<HTMLInputElement | null>;
   imageRef: React.RefObject<HTMLInputElement | null>;
   onAttach: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  pendingAttachments: MessageAttachment[];
+  pendingAttachments: MsgAttachment[];
   onRemoveAttachment: (name: string) => void;
 }) {
   const messages = active.messages;
+  const flagMeta = active.flag ? FLAG_META[active.flag] : null;
+
   return (
     <section className="flex min-w-0 flex-col bg-[var(--color-background)]">
       <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-card)]/80 px-5 py-3 backdrop-blur">
         <Avatar className="size-9">
-          <AvatarFallback>{initials(active.with)}</AvatarFallback>
+          <AvatarFallback>{active.initials}</AvatarFallback>
         </Avatar>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">{active.with}</p>
-          <p className="text-[11px] text-[var(--color-muted-foreground)]">{active.withRole} · last active {relativeTime(active.lastActivity)}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold">{active.patient}</p>
+            <span className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{active.mrn}</span>
+            {flagMeta && (
+              <Badge variant={flagMeta.variant} size="sm" dot>
+                {flagMeta.label}
+              </Badge>
+            )}
+          </div>
+          <p className="text-[11px] text-[var(--color-muted-foreground)]">
+            {active.role} · last active {relativeTime(active.lastActivity)}
+          </p>
         </div>
         <SecurityBadge variant="encrypted" className="hidden sm:inline-flex" />
         <SecurityBadge variant="audited" className="hidden md:inline-flex" />
-        <Button variant="ghost" size="icon-sm" aria-label={active.pinned ? "Unpin" : "Pin"} onClick={onTogglePin}>
-          <Pin className={active.pinned ? "fill-[var(--color-primary)] text-[var(--color-primary)]" : ""} />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={active.pinned ? "Unpin" : "Pin"}
+          onClick={onTogglePin}
+        >
+          <Pin
+            className={
+              active.pinned ? "fill-[var(--color-primary)] text-[var(--color-primary)]" : ""
+            }
+          />
         </Button>
       </div>
 
@@ -385,22 +565,22 @@ function ThreadView({
 
         {messages.length === 0 ? (
           <p className="py-10 text-center text-sm text-[var(--color-muted-foreground)]">
-            No messages yet — say hello to {active.with}.
+            No messages yet — start the conversation with {active.patient}.
           </p>
         ) : (
           <div className="space-y-3">
             {messages.map((m) => (
-              <div key={m.id} className={`flex gap-2.5 ${m.from === "patient" ? "justify-end" : ""}`}>
-                {m.from === "clinician" && (
+              <div key={m.id} className={`flex gap-2.5 ${m.from === "clinician" ? "justify-end" : ""}`}>
+                {m.from === "patient" && (
                   <Avatar className="size-7 shrink-0">
-                    <AvatarFallback>{initials(active.with)}</AvatarFallback>
+                    <AvatarFallback>{active.initials}</AvatarFallback>
                   </Avatar>
                 )}
                 <div className="max-w-[70%] space-y-1">
                   {m.body && (
                     <div
                       className={`relative rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-[var(--shadow-soft)] ${
-                        m.from === "patient"
+                        m.from === "clinician"
                           ? "bg-[var(--color-primary)] text-white"
                           : "bg-[var(--color-card)] text-[var(--color-foreground)]"
                       }`}
@@ -409,9 +589,9 @@ function ThreadView({
                     </div>
                   )}
                   {m.attachments && m.attachments.length > 0 && (
-                    <div className={`flex flex-wrap gap-1.5 ${m.from === "patient" ? "justify-end" : ""}`}>
+                    <div className={`flex flex-wrap gap-1.5 ${m.from === "clinician" ? "justify-end" : ""}`}>
                       {m.attachments.map((a) => {
-                        const isMine = m.from === "patient";
+                        const isMine = m.from === "clinician";
                         const Icon = a.kind === "image" ? ImageIcon : Paperclip;
                         return (
                           <span
@@ -432,9 +612,15 @@ function ThreadView({
                       })}
                     </div>
                   )}
-                  <div className={`flex items-center gap-1 text-[10px] text-[var(--color-muted-foreground)] ${m.from === "patient" ? "justify-end" : ""}`}>
+                  <div
+                    className={`flex items-center gap-1 text-[10px] text-[var(--color-muted-foreground)] ${
+                      m.from === "clinician" ? "justify-end" : ""
+                    }`}
+                  >
                     <span>{relativeTime(m.at)}</span>
-                    {m.from === "patient" && <CheckCheck className="size-3.5 text-[var(--color-primary)]" />}
+                    {m.from === "clinician" && (
+                      <CheckCheck className="size-3.5 text-[var(--color-primary)]" />
+                    )}
                   </div>
                 </div>
               </div>
@@ -473,7 +659,7 @@ function ThreadView({
         )}
         <div className="relative rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-2">
           <Textarea
-            placeholder="Write a message… End-to-end encrypted, scanned for attachments."
+            placeholder={`Reply to ${active.patient}… End-to-end encrypted, audit-logged.`}
             className="min-h-12 resize-none border-0 bg-transparent px-3 py-2 focus:outline-none focus:ring-0"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -488,14 +674,29 @@ function ThreadView({
             <div className="flex items-center gap-1">
               <input ref={fileRef} type="file" hidden onChange={onAttach} />
               <input ref={imageRef} type="file" accept="image/*" hidden onChange={onAttach} />
-              <Button variant="ghost" size="icon-sm" aria-label="Attach file" onClick={() => fileRef.current?.click()}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Attach file"
+                onClick={() => fileRef.current?.click()}
+              >
                 <Paperclip />
               </Button>
-              <Button variant="ghost" size="icon-sm" aria-label="Attach image" onClick={() => imageRef.current?.click()}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Attach image"
+                onClick={() => imageRef.current?.click()}
+              >
                 <ImageIcon />
               </Button>
               <div className="relative">
-                <Button variant="ghost" size="icon-sm" aria-label="Emoji" onClick={() => setEmojiOpen((v) => !v)}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Emoji"
+                  onClick={() => setEmojiOpen((v) => !v)}
+                >
                   <Smile />
                 </Button>
                 {emojiOpen && (
@@ -510,115 +711,12 @@ function ThreadView({
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-muted-foreground)]">
-                <Lock className="size-3" /> Encrypted
-              </span>
-              <Button size="sm" onClick={onSend} disabled={!draft.trim()}>
-                <Send /> Send
-              </Button>
-            </div>
+            <Button size="sm" onClick={onSend} disabled={!draft.trim() && pendingAttachments.length === 0}>
+              <Send /> Send
+            </Button>
           </div>
         </div>
       </div>
     </section>
-  );
-}
-
-function ComposeDialog({
-  open,
-  onOpenChange,
-  onStart,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  onStart: (recipient: (typeof CARE_TEAM)[number], message: string) => void;
-}) {
-  const [recipientIdx, setRecipientIdx] = useState(0);
-  const [message, setMessage] = useState("");
-  const recipients = useMemo(() => CARE_TEAM, []);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[440px]">
-        <DialogHeader>
-          <DialogTitle>New message</DialogTitle>
-          <DialogDescription>
-            Start a secure, end-to-end encrypted conversation with your care team.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          className="space-y-4 pt-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            onStart(recipients[recipientIdx], message);
-            setMessage("");
-            setRecipientIdx(0);
-          }}
-        >
-          <div className="space-y-1.5">
-            <Label htmlFor="recipient">Recipient</Label>
-            <select
-              id="recipient"
-              value={recipientIdx}
-              onChange={(e) => setRecipientIdx(Number(e.target.value))}
-              className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
-            >
-              {recipients.map((c, i) => (
-                <option key={c.name} value={i}>
-                  {c.name} · {c.role}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="first-message">Message</Label>
-            <Textarea
-              id="first-message"
-              rows={3}
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="What would you like to ask?"
-            />
-          </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline">Cancel</Button>
-            </DialogClose>
-            <Button type="submit">
-              <Send /> Start conversation
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function EmptyInbox({
-  onCompose,
-  composeOpen,
-  setComposeOpen,
-  onStart,
-}: {
-  onCompose: () => void;
-  composeOpen: boolean;
-  setComposeOpen: (v: boolean) => void;
-  onStart: (recipient: (typeof CARE_TEAM)[number], message: string) => void;
-}) {
-  return (
-    <>
-      <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-12 text-center">
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
-          <MessagesSquare className="size-6" />
-        </div>
-        <p className="text-sm font-semibold">No conversations yet</p>
-        <p className="max-w-md text-xs text-[var(--color-muted-foreground)]">
-          Send a secure, encrypted message to anyone on your care team — clinicians, care coordinators, or your pharmacy.
-        </p>
-        <Button onClick={onCompose} className="mt-1"><Plus /> Start a conversation</Button>
-      </div>
-      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onStart={onStart} />
-    </>
   );
 }

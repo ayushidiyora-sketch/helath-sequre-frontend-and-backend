@@ -144,7 +144,8 @@ export default function ClinicianPatientsPage() {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-        <div className="grid grid-cols-12 gap-4 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+        {/* Header row — only on md+; below md we render cards. */}
+        <div className="hidden md:grid grid-cols-12 gap-4 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
           <div className="col-span-5">Patient</div>
           <div className="col-span-2">MRN</div>
           <div className="col-span-2">Age / Sex</div>
@@ -156,22 +157,45 @@ export default function ClinicianPatientsPage() {
             <li key={p.id}>
               <Link
                 href={`/clinician/patients/${p.id}`}
-                className="group grid grid-cols-12 items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--color-muted)]/40"
+                className="group flex flex-col gap-3 px-4 py-4 transition-colors hover:bg-[var(--color-muted)]/40 sm:px-5 md:grid md:grid-cols-12 md:items-center md:gap-4"
               >
-                <div className="col-span-5 flex items-center gap-3 min-w-0">
-                  <Avatar className="size-10"><AvatarFallback>{p.initials}</AvatarFallback></Avatar>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                {/* Avatar + name — always visible */}
+                <div className="flex min-w-0 items-center gap-3 md:col-span-5">
+                  <Avatar className="size-10 shrink-0"><AvatarFallback>{p.initials}</AvatarFallback></Avatar>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
                       <p className="truncate text-sm font-semibold">{p.name}</p>
                       {p.status === "blocked" && <Badge variant="danger" size="sm" dot>Consent revoked</Badge>}
                     </div>
                     <p className="text-[11px] text-[var(--color-muted-foreground)]">{p.conditions?.[0] ?? "—"}</p>
                   </div>
+                  {/* Chevron sits at the right of the card on mobile; moves into the Access column at md+. */}
+                  <ChevronRight className="size-4 shrink-0 text-[var(--color-muted-foreground)] transition-transform group-hover:translate-x-0.5 md:hidden" />
                 </div>
-                <div className="col-span-2 font-mono text-xs text-[var(--color-muted-foreground)]">{p.mrn}</div>
-                <div className="col-span-2 text-xs">{p.age} · {p.sex}</div>
-                <div className="col-span-2 text-xs text-[var(--color-muted-foreground)]">{p.lastLabel}</div>
-                <div className="col-span-1 flex items-center justify-end gap-1">
+
+                {/* Stacked meta line on mobile (MRN · age · last contact). */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-muted-foreground)] md:hidden">
+                  <span className="font-mono">{p.mrn}</span>
+                  <span>·</span>
+                  <span>{p.age} · {p.sex}</span>
+                  <span>·</span>
+                  <span className="truncate">{p.lastLabel}</span>
+                </div>
+
+                {/* Access badge — full-width on mobile, right-aligned on md+. */}
+                <div className="flex items-center justify-between gap-1 md:hidden">
+                  {p.consentScopes.length > 0 ? (
+                    <Badge variant="success" size="sm" dot>{p.consentScopes.length} scopes</Badge>
+                  ) : (
+                    <Badge variant="danger" size="sm" dot>No access</Badge>
+                  )}
+                </div>
+
+                {/* md+ table columns */}
+                <div className="hidden md:block md:col-span-2 font-mono text-xs text-[var(--color-muted-foreground)]">{p.mrn}</div>
+                <div className="hidden md:block md:col-span-2 text-xs">{p.age} · {p.sex}</div>
+                <div className="hidden md:block md:col-span-2 text-xs text-[var(--color-muted-foreground)]">{p.lastLabel}</div>
+                <div className="hidden md:flex md:col-span-1 items-center justify-end gap-1">
                   {p.consentScopes.length > 0 ? (
                     <Badge variant="success" size="sm" dot>{p.consentScopes.length} scopes</Badge>
                   ) : (

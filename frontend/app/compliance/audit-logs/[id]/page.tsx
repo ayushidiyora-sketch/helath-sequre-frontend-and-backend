@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ReportDownloadButton } from "@/components/shared/report-download-button";
+import { VerifyChecksumButton } from "./verify-checksum";
 
 export default async function AuditEventDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -111,6 +112,9 @@ export default async function AuditEventDetail({ params }: { params: Promise<{ i
             <div className="mt-4 flex flex-wrap gap-2">
               <SecurityBadge variant="encrypted" />
               <SecurityBadge variant="verified" />
+            </div>
+            <div className="mt-3">
+              <VerifyChecksumButton eventChecksum="d4f1·9bb0" windowRoot="ff21·0c12" />
             </div>
           </div>
 

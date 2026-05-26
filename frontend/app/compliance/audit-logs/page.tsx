@@ -231,7 +231,8 @@ export default function AuditLogsPage() {
           </span>
           <SecurityBadge variant="audited" label="Append-only" />
         </div>
-        <table className="w-full text-sm font-mono">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] text-sm font-mono">
           <thead>
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
               <th className="px-4 py-2.5">Time</th>
@@ -281,6 +282,7 @@ export default function AuditLogsPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div className="flex items-center justify-between text-xs text-[var(--color-muted-foreground)]">

@@ -21,6 +21,7 @@ import {
   Laptop,
   Tablet,
   LogOut,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -314,29 +315,46 @@ type ChannelState = { inApp: boolean; email: boolean; sms: boolean };
 
 function NotificationsTab() {
   const categories = [
-    { name: "Appointments", desc: "Reminders, confirmations, reschedules" },
-    { name: "Records", desc: "New labs, prescriptions, notes" },
-    { name: "Consents", desc: "New requests, expirations" },
-    { name: "Messages", desc: "Replies from your care team" },
-    { name: "Security", desc: "Sign-ins, MFA changes, suspicious activity" },
-    { name: "Marketing", desc: "Product updates and policy changes" },
+    { name: "Appointments", desc: "Reminders, confirmations, reschedules", critical: false },
+    { name: "Records", desc: "New labs, prescriptions, notes", critical: false },
+    { name: "Consents", desc: "New requests, expirations", critical: false },
+    { name: "Messages", desc: "Replies from your care team", critical: false },
+    { name: "Security", desc: "Sign-ins, MFA changes, suspicious activity", critical: true },
+    { name: "Marketing", desc: "Product updates and policy changes", critical: false },
   ];
 
-  const [channels, setChannels] = useState<ChannelState[]>(() =>
-    categories.map((_, i) => ({
-      inApp: true,
-      email: i < 4,
-      sms: i === 4,
-    })),
-  );
+  const DEFAULTS: ChannelState[] = categories.map((_, i) => ({
+    inApp: true,
+    email: i < 4,
+    sms: i === 4,
+  }));
+
+  const [channels, setChannels] = useState<ChannelState[]>(DEFAULTS);
 
   const setChannel = (idx: number, key: keyof ChannelState, value: boolean) =>
     setChannels((prev) => prev.map((row, i) => (i === idx ? { ...row, [key]: value } : row)));
 
+  const dirty =
+    channels.length !== DEFAULTS.length ||
+    channels.some((row, i) =>
+      (Object.keys(row) as (keyof ChannelState)[]).some((k) => row[k] !== DEFAULTS[i][k]),
+    );
+
+  function save() {
+    toast.success("Notification preferences saved", {
+      description: "Changes take effect on your next sign-in · audit-logged",
+    });
+  }
+
+  function reset() {
+    setChannels(DEFAULTS);
+    toast.info("Reset to defaults");
+  }
+
   return (
     <Section title="Notification preferences" desc="Pick the channels for each category. Critical security alerts cannot be disabled.">
-      <div className="overflow-hidden rounded-xl border border-[var(--color-border)]">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-xl border border-[var(--color-border)]">
+        <table className="w-full min-w-[560px] text-sm">
           <thead>
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
               <th className="px-4 py-3">Category</th>
@@ -349,14 +367,29 @@ function NotificationsTab() {
             {categories.map((c, i) => (
               <tr key={c.name}>
                 <td className="px-4 py-3.5">
-                  <p className="text-sm font-medium">{c.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">{c.name}</p>
+                    {c.critical && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 px-1.5 py-0.5 text-[10px] font-medium text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]">
+                        <Lock className="size-2.5" /> Always on
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[11px] text-[var(--color-muted-foreground)]">{c.desc}</p>
                 </td>
                 <td className="px-4 py-3.5 text-center">
-                  <Switch checked={channels[i].inApp} onCheckedChange={(v) => setChannel(i, "inApp", v)} />
+                  <Switch
+                    checked={channels[i].inApp}
+                    disabled={c.critical}
+                    onCheckedChange={(v) => setChannel(i, "inApp", v)}
+                  />
                 </td>
                 <td className="px-4 py-3.5 text-center">
-                  <Switch checked={channels[i].email} onCheckedChange={(v) => setChannel(i, "email", v)} />
+                  <Switch
+                    checked={channels[i].email}
+                    disabled={c.critical}
+                    onCheckedChange={(v) => setChannel(i, "email", v)}
+                  />
                 </td>
                 <td className="px-4 py-3.5 text-center">
                   <Switch checked={channels[i].sms} onCheckedChange={(v) => setChannel(i, "sms", v)} />
@@ -368,7 +401,16 @@ function NotificationsTab() {
       </div>
       <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
         SMS is delivered via your clinic&apos;s Twilio integration. Standard carrier rates may apply.
+        Security alerts (sign-ins, MFA, suspicious activity) cannot be disabled per platform policy.
       </p>
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={reset} disabled={!dirty}>
+          Reset to defaults
+        </Button>
+        <Button size="sm" onClick={save} disabled={!dirty}>
+          Save preferences
+        </Button>
+      </div>
     </Section>
   );
 }
@@ -404,18 +446,41 @@ function SessionsTab() {
         <ul className="space-y-2">
           {sessions.map((s: Session) => {
             const Icon = pickDeviceIcon(s.device);
+            const untrusted = s.trusted === false;
             return (
-              <li key={s.id} className="flex items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-                <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--color-muted)] text-[var(--color-foreground)]">
+              <li
+                key={s.id}
+                className={`flex items-center gap-4 rounded-xl border p-4 ${
+                  untrusted
+                    ? "border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/20"
+                    : "border-[var(--color-border)] bg-[var(--color-card)]"
+                }`}
+              >
+                <span
+                  className={`flex size-10 items-center justify-center rounded-xl ${
+                    untrusted
+                      ? "bg-[var(--color-warning-soft)] text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]"
+                      : "bg-[var(--color-muted)] text-[var(--color-foreground)]"
+                  }`}
+                >
                   <Icon className="size-4.5" />
                 </span>
                 <div className="flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold">{s.device}</p>
                     {s.current && <Badge variant="success" size="sm" dot>This device</Badge>}
+                    {s.trusted === false && (
+                      <Badge variant="warning" size="sm" dot>Unrecognized location</Badge>
+                    )}
                   </div>
                   <p className="text-xs text-[var(--color-muted-foreground)]">
                     <span className="inline-flex items-center gap-1"><Globe className="size-3" /> {s.location}</span>
+                    {s.ip && (
+                      <>
+                        <span className="mx-1.5">·</span>
+                        <span className="font-mono text-[11px]">{s.ip}</span>
+                      </>
+                    )}
                     <span className="mx-1.5">·</span> {relativeLastSeen(s.lastSeen)}
                   </p>
                 </div>

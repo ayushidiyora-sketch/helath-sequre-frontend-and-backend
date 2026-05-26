@@ -119,8 +119,8 @@ export function DecisionMatrix({ request }: { request: DeletionRequest }) {
           Each category starts with the disposition allowed by the active retention policy. Override per row if needed; rejections must record a reason.
         </p>
 
-        <div className="mt-4 overflow-hidden rounded-xl border border-[var(--color-border)]">
-          <table className="w-full text-sm">
+        <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--color-border)]">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="bg-[var(--color-muted)]/40 text-[11px] uppercase tracking-wider text-[var(--color-muted-foreground)]">
               <tr>
                 <th className="px-3 py-2 text-left font-semibold">Data category</th>

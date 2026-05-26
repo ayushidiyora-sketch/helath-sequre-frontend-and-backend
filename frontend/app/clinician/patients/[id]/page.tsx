@@ -168,8 +168,8 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
                   duration: "",
                   route: "Oral",
                 });
-                toast.success("Draft prescription created", { description: "Edit details, then finalize" });
-                router.push(`/clinician/notes/new?patient=${patient.id}&rx=${rx.id}`);
+                toast.success("Draft prescription created", { description: "Fill in the details and finalize" });
+                router.push(`/clinician/prescriptions/${rx.id}`);
               }}
               onFinalize={(rxId) => {
                 finalizePrescription(rxId);
@@ -406,7 +406,6 @@ function RecordsList({ notes }: { notes: { id: string; template: string; status:
 function Prescriptions({
   rxs,
   onNew,
-  onFinalize,
 }: {
   rxs: { id: string; medication: string; dose: string; frequency: string; duration: string; status: string; createdAt: string }[];
   onNew: () => void;
@@ -423,7 +422,8 @@ function Prescriptions({
       {rxs.length === 0 ? (
         <p className="p-10 text-center text-sm text-[var(--color-muted-foreground)]">No prescriptions for this patient.</p>
       ) : (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b border-[var(--color-border)] text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
               <th className="px-5 py-2.5">Drug</th>
@@ -436,17 +436,31 @@ function Prescriptions({
           <tbody className="divide-y divide-[var(--color-border)]">
             {rxs.map((r) => (
               <tr key={r.id} className="hover:bg-[var(--color-muted)]/30">
-                <td className="px-5 py-3 font-medium">{r.medication || "—"}</td>
+                <td className="px-5 py-3">
+                  <Link
+                    href={`/clinician/prescriptions/${r.id}`}
+                    className="font-medium hover:text-[var(--color-primary-700)] hover:underline"
+                  >
+                    {r.medication || "Untitled draft"}
+                  </Link>
+                </td>
                 <td className="px-5 py-3 font-mono">{r.dose || "—"}</td>
                 <td className="px-5 py-3 text-[var(--color-muted-foreground)]">{r.frequency || "—"}</td>
                 <td className="px-5 py-3 text-[var(--color-muted-foreground)]">{r.duration || "—"}</td>
                 <td className="px-5 py-3 text-right">
                   {r.status === "finalized" ? (
-                    <Badge variant="success" size="sm" dot>Finalized</Badge>
+                    <div className="flex items-center justify-end gap-2">
+                      <Badge variant="success" size="sm" dot>Finalized</Badge>
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={`/clinician/prescriptions/${r.id}`}>View</Link>
+                      </Button>
+                    </div>
                   ) : (
                     <div className="flex justify-end gap-2">
                       <Badge variant="warning" size="sm" dot>Draft</Badge>
-                      <Button size="sm" variant="ghost" onClick={() => onFinalize(r.id)}>Finalize</Button>
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={`/clinician/prescriptions/${r.id}`}>Edit</Link>
+                      </Button>
                     </div>
                   )}
                 </td>
@@ -454,6 +468,7 @@ function Prescriptions({
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

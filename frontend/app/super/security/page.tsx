@@ -50,8 +50,8 @@ export default function SecurityStreamPage() {
           <TabsTrigger value="bg">Break-glass</TabsTrigger>
         </TabsList>
         <TabsContent value="all">
-          <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-            <table className="w-full text-sm font-mono">
+          <div className="overflow-x-auto rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
+            <table className="w-full min-w-[720px] text-sm font-mono">
               <thead>
                 <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
                   <th className="px-4 py-2.5">Time</th>

@@ -111,6 +111,129 @@ export default function RetentionPage() {
           </div>
         </div>
       </div>
+
+      <PurgeRunsPanel />
     </>
+  );
+}
+
+function PurgeRunsPanel() {
+  const runs = [
+    {
+      id: "purge-2026-05-26",
+      date: "May 26, 2026 · 02:00 UTC",
+      result: "success" as const,
+      records: 1248,
+      bytes: "412 MB",
+      categories: ["Documents", "Messages"],
+      duration: "4m 12s",
+    },
+    {
+      id: "purge-2026-05-25",
+      date: "May 25, 2026 · 02:00 UTC",
+      result: "success" as const,
+      records: 1109,
+      bytes: "388 MB",
+      categories: ["Documents", "Messages"],
+      duration: "3m 51s",
+    },
+    {
+      id: "purge-2026-05-24",
+      date: "May 24, 2026 · 02:00 UTC",
+      result: "partial" as const,
+      records: 802,
+      bytes: "266 MB",
+      categories: ["Documents"],
+      duration: "5m 02s",
+      note: "Messages category skipped — legal hold #LH-0042 blocks 41 threads",
+    },
+  ];
+
+  const next = "May 27, 2026 · 02:00 UTC";
+
+  return (
+    <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">Retention enforcement</h2>
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            Daily purge job · runs at 02:00 UTC · honors active legal holds
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-[var(--color-muted)]/40 px-3 py-1 text-[11px] font-medium">
+            <Clock className="size-3" /> Next run · {next}
+          </span>
+          <ActionButton
+            size="sm"
+            variant="outline"
+            confirm={{
+              title: "Run purge job now?",
+              description: "Off-cycle purges are heavily audited. Legal holds are honored. Continue?",
+              confirmLabel: "Run now",
+              variant: "destructive",
+            }}
+            toastMessage="Purge job queued"
+            toastDescription="Off-cycle run · audit-logged · est. completion in 5 min"
+          >
+            <Trash2 /> Run purge now
+          </ActionButton>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--color-border)]">
+        <table className="w-full min-w-[720px] text-sm">
+          <thead className="bg-[var(--color-muted)]/40 text-[11px] uppercase tracking-wider text-[var(--color-muted-foreground)]">
+            <tr>
+              <th className="px-4 py-2.5 text-left font-semibold">Run</th>
+              <th className="px-4 py-2.5 text-left font-semibold">Result</th>
+              <th className="px-4 py-2.5 text-left font-semibold">Records purged</th>
+              <th className="px-4 py-2.5 text-left font-semibold">Categories</th>
+              <th className="px-4 py-2.5 text-left font-semibold">Duration</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--color-border)]">
+            {runs.map((r) => (
+              <tr key={r.id} className="align-top">
+                <td className="px-4 py-3">
+                  <p className="font-mono text-xs">{r.id}</p>
+                  <p className="mt-0.5 text-[11px] text-[var(--color-muted-foreground)]">{r.date}</p>
+                </td>
+                <td className="px-4 py-3">
+                  {r.result === "success" ? (
+                    <Badge variant="success" size="sm" dot>Success</Badge>
+                  ) : (
+                    <Badge variant="warning" size="sm" dot>Partial</Badge>
+                  )}
+                  {r.note && (
+                    <p className="mt-1 max-w-xs text-[10px] italic text-[var(--color-muted-foreground)]">
+                      {r.note}
+                    </p>
+                  )}
+                </td>
+                <td className="px-4 py-3 font-mono text-xs">
+                  {r.records.toLocaleString()} · {r.bytes}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-1">
+                    {r.categories.map((c) => (
+                      <Badge key={c} variant="muted" size="sm">{c}</Badge>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-4 py-3 font-mono text-xs text-[var(--color-muted-foreground)]">
+                  {r.duration}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="mt-3 text-[11px] text-[var(--color-muted-foreground)]">
+        Soft-deleted items hit the purge job after their category retention window lapses. Legal-hold flagged items
+        skip the run and resurface on the next eligible day.
+      </p>
+    </div>
   );
 }

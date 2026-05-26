@@ -49,7 +49,7 @@ function Hero() {
   return (
     <section className="relative mesh-bg">
       <div className="mx-auto max-w-7xl px-5 pb-16 pt-10 sm:px-6 sm:pb-24 sm:pt-24 lg:pt-32">
-        <div className="grid items-center gap-10 sm:gap-12 lg:grid-cols-[1.1fr_1fr]">
+        <div className="grid min-w-0 items-center gap-10 sm:gap-12 lg:grid-cols-[1.1fr_1fr]">
           <div className="flex min-w-0 flex-col gap-5 sm:gap-7">
             <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-card)]/70 px-3 py-1.5 text-xs font-medium text-[var(--color-muted-foreground)] backdrop-blur">
               <span className="relative flex h-2 w-2">
@@ -59,7 +59,7 @@ function Hero() {
               HIPAA · GDPR · HL7/FHIR-ready
             </div>
 
-            <h1 className="text-[clamp(1.75rem,7vw,2.5rem)] font-semibold leading-[1.1] tracking-tight text-[var(--color-foreground)] [text-wrap:balance] sm:text-5xl sm:leading-[1.05] lg:text-[3.5rem]">
+            <h1 className="text-3xl font-semibold leading-[1.1] tracking-tight text-[var(--color-foreground)] [text-wrap:balance] [overflow-wrap:anywhere] sm:text-4xl sm:leading-[1.05] md:text-5xl lg:text-[3.5rem]">
               A patient portal where every PHI access is{" "}
               <span className="bg-gradient-to-r from-[var(--color-primary)] to-[oklch(0.52_0.14_240)] bg-clip-text text-transparent">
                 consented, encrypted, and audited
@@ -101,7 +101,7 @@ function Hero() {
 
 function HeroVisual() {
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <div className="absolute -inset-6 -z-10 rounded-[2rem] bg-gradient-to-br from-[oklch(0.92_0.05_205)] via-transparent to-[oklch(0.92_0.05_240)] blur-2xl" />
 
       <div className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-lift)]">

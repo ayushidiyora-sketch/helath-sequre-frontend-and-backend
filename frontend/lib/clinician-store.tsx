@@ -95,6 +95,7 @@ export interface Prescription {
   frequency: string;
   duration: string;
   route: string;
+  refills?: string;
   instructions?: string;
   status: "draft" | "finalized";
   createdAt: string;
@@ -213,6 +214,9 @@ function dateOnly(days: number): string {
 
 function makeSeed(): Omit<ClinicianState, "hydrated"> {
   const today = dateOnly(0);
+  const yesterday = dateOnly(-1);
+  const tomorrow = dateOnly(1);
+  const dayAfter = dateOnly(2);
   return {
     assignedPatients: [
       {
@@ -292,6 +296,79 @@ function makeSeed(): Omit<ClinicianState, "hydrated"> {
         status: "confirmed",
         reason: "Arrhythmia review",
       },
+      // Yesterday — completed encounters
+      {
+        id: "apt_y_suresh",
+        patientId: "pt_suresh",
+        date: yesterday,
+        time: "9:30 AM",
+        durationMinutes: 20,
+        mode: "in-person",
+        status: "completed",
+        reason: "Post-op review",
+      },
+      {
+        id: "apt_y_kavita",
+        patientId: "pt_kavita",
+        date: yesterday,
+        time: "11:00 AM",
+        durationMinutes: 30,
+        mode: "telehealth",
+        status: "no-show",
+        reason: "Medication titration",
+      },
+      // Tomorrow
+      {
+        id: "apt_tmrw_ramesh",
+        patientId: "pt_ramesh",
+        date: tomorrow,
+        time: "9:00 AM",
+        durationMinutes: 30,
+        mode: "in-person",
+        status: "confirmed",
+        reason: "ECG review · follow-up",
+      },
+      {
+        id: "apt_tmrw_suresh",
+        patientId: "pt_suresh",
+        date: tomorrow,
+        time: "10:30 AM",
+        durationMinutes: 20,
+        mode: "in-person",
+        status: "requested",
+        reason: "Stress test results",
+      },
+      {
+        id: "apt_tmrw_kavita",
+        patientId: "pt_kavita",
+        date: tomorrow,
+        time: "3:30 PM",
+        durationMinutes: 30,
+        mode: "telehealth",
+        status: "confirmed",
+        reason: "Holter monitor debrief",
+      },
+      // Day after tomorrow
+      {
+        id: "apt_d2_ramesh",
+        patientId: "pt_ramesh",
+        date: dayAfter,
+        time: "10:00 AM",
+        durationMinutes: 45,
+        mode: "in-person",
+        status: "confirmed",
+        reason: "New patient · referral from PCP",
+      },
+      {
+        id: "apt_d2_kavita",
+        patientId: "pt_kavita",
+        date: dayAfter,
+        time: "1:30 PM",
+        durationMinutes: 20,
+        mode: "telehealth",
+        status: "requested",
+        reason: "Quick check-in",
+      },
     ],
     notes: [
       {
@@ -330,7 +407,11 @@ function makeSeed(): Omit<ClinicianState, "hydrated"> {
       Saturday: { morning: { start: "10:00", end: "13:00" }, slotMinutes: 30, off: false },
       Sunday: { slotMinutes: 30, off: true },
     },
-    blockedSlots: [],
+    blockedSlots: [
+      { id: "blk_today_lunch", date: today, start: "13:00", end: "14:00", reason: "Lunch" },
+      { id: "blk_tmrw_admin", date: tomorrow, start: "12:00", end: "13:00", reason: "Admin time" },
+      { id: "blk_d2_focus", date: dayAfter, start: "15:00", end: "16:00", reason: "Focus block · charting" },
+    ],
     tasks: [
       {
         id: "task_seed_1",
@@ -381,7 +462,7 @@ function makeSeed(): Omit<ClinicianState, "hydrated"> {
 // Store
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = "hs_clinician_store_v1";
+const STORAGE_KEY = "hs_clinician_store_v2";
 
 function loadFromStorage(): Omit<ClinicianState, "hydrated"> | null {
   if (typeof window === "undefined") return null;
@@ -417,6 +498,7 @@ interface StoreActions {
   finalizeNote(id: string): void;
   // prescriptions
   addPrescription(rx: Omit<Prescription, "id" | "createdAt" | "status">): Prescription;
+  updatePrescription(id: string, patch: Partial<Omit<Prescription, "id" | "patientId" | "createdAt" | "status">>): void;
   finalizePrescription(id: string): void;
   // documents
   uploadDocument(d: Omit<ClinicianDocument, "id" | "uploadedAt">): ClinicianDocument;
@@ -535,6 +617,12 @@ export function ClinicianStoreProvider({ children }: { children: React.ReactNode
         };
         mutate((prev) => ({ ...prev, prescriptions: [prescription, ...prev.prescriptions] }));
         return prescription;
+      },
+      updatePrescription(id, patch) {
+        mutate((prev) => ({
+          ...prev,
+          prescriptions: prev.prescriptions.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        }));
       },
       finalizePrescription(id) {
         mutate((prev) => ({

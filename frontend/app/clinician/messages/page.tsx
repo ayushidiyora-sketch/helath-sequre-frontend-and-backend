@@ -1,3 +1,5 @@
-// Clinician messages reuses the same threaded chat UI as patient
-// with the assigned-patient filter applied server-side in production.
-export { default } from "../../patient/messages/page";
+import { ClinicianMessagesView } from "./clinician-messages-view";
+
+export default function ClinicianMessagesPage() {
+  return <ClinicianMessagesView />;
+}

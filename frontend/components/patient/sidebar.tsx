@@ -12,6 +12,7 @@ import {
   Settings,
   Bell,
   LifeBuoy,
+  Pill,
 } from "lucide-react";
 import { Logo } from "@/components/shared/logo";
 import { LogoutButton } from "@/components/shared/logout-button";
@@ -20,6 +21,7 @@ import { cn } from "@/lib/utils";
 const nav = [
   { href: "/patient/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/patient/records", label: "Medical Records", icon: FileText, count: 24 },
+  { href: "/patient/prescriptions", label: "Prescriptions", icon: Pill, badge: "1" },
   { href: "/patient/appointments", label: "Appointments", icon: Calendar, badge: "2" },
   { href: "/patient/documents", label: "Documents", icon: FolderLock },
   { href: "/patient/consents", label: "Consents", icon: Shield, badge: "1" },

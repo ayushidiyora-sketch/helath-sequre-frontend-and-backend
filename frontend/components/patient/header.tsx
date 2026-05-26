@@ -1,23 +1,63 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, ShieldCheck, ChevronDown, Settings, UserCircle2, Clock, Sun, Moon } from "lucide-react";
+import {
+  Bell,
+  ShieldCheck,
+  ChevronDown,
+  Settings,
+  UserCircle2,
+  Clock,
+  Sun,
+  Moon,
+  LayoutDashboard,
+  FileText,
+  Pill,
+  Calendar,
+  FolderLock,
+  Shield,
+  MessageSquare,
+} from "lucide-react";
 import { LogoutButton } from "@/components/shared/logout-button";
 import { useEffect, useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { NavSearch, type NavSearchItem } from "@/components/shared/nav-search";
+import { RoleMobileNav } from "@/components/shared/role-mobile-nav";
+import type { NavGroup, NavItem } from "@/components/shared/role-sidebar";
 
 /** Patient sidebar nav — kept in sync with components/patient/sidebar.tsx. */
 const PATIENT_NAV: NavSearchItem[] = [
   { href: "/patient/dashboard", label: "Dashboard", group: "Workspace" },
   { href: "/patient/records", label: "Medical Records", group: "Workspace" },
+  { href: "/patient/prescriptions", label: "Prescriptions", group: "Workspace" },
   { href: "/patient/appointments", label: "Appointments", group: "Workspace" },
   { href: "/patient/documents", label: "Documents", group: "Workspace" },
   { href: "/patient/consents", label: "Consents", group: "Workspace" },
   { href: "/patient/messages", label: "Messages", group: "Workspace" },
   { href: "/patient/notifications", label: "Notifications", group: "Account" },
   { href: "/patient/settings", label: "Settings", group: "Account" },
+];
+
+/** Drawer nav for mobile — mirrors components/patient/sidebar.tsx. */
+const MOBILE_NAV_GROUPS: NavGroup[] = [
+  {
+    label: "Workspace",
+    items: [
+      { href: "/patient/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/patient/records", label: "Medical Records", icon: FileText, count: 24 },
+      { href: "/patient/prescriptions", label: "Prescriptions", icon: Pill, badge: "1" },
+      { href: "/patient/appointments", label: "Appointments", icon: Calendar, badge: "2" },
+      { href: "/patient/documents", label: "Documents", icon: FolderLock },
+      { href: "/patient/consents", label: "Consents", icon: Shield, badge: "1" },
+      { href: "/patient/messages", label: "Messages", icon: MessageSquare, badge: "3" },
+    ],
+  },
+];
+
+const MOBILE_NAV_UTILITY: NavItem[] = [
+  { href: "/patient/notifications", label: "Notifications", icon: Bell },
+  { href: "/patient/settings", label: "Settings", icon: Settings },
 ];
 import {
   DropdownMenu,
@@ -38,7 +78,8 @@ export function PatientHeader() {
   }, [dark]);
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+      <RoleMobileNav groups={MOBILE_NAV_GROUPS} utility={MOBILE_NAV_UTILITY} />
       <NavSearch items={PATIENT_NAV} placeholder="Search records, appointments, messages…" />
 
       <div className="ml-auto flex items-center gap-2">

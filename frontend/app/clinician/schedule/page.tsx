@@ -26,7 +26,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useClinicianStore, type Weekday, type DayTemplate } from "@/lib/clinician-store";
+import {
+  useClinicianStore,
+  type Weekday,
+  type DayTemplate,
+  type ClinicianAppointment,
+  type BlockedSlot,
+} from "@/lib/clinician-store";
 
 const WEEKDAYS: Weekday[] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -83,6 +89,17 @@ export default function ClinicianSchedulePage() {
   );
   const totalSlots = dayAppointments.length + dayBlocks.length;
   const completedSlots = dayAppointments.filter((a) => a.status === "completed").length;
+const slots = [
+  { time: "9:00 AM", patient: "Rohan Jain · ECG review", status: "completed", mode: "office" as const },
+  { time: "9:15 AM", patient: "Saanvi Sen · Initial consult", status: "completed", mode: "telehealth" as const },
+  { time: "9:30 AM", patient: "Aarav Mehta · Cardiology follow-up", status: "next", mode: "office" as const },
+  { time: "9:45 AM", patient: "Neha Bansal · Hypertension", status: "upcoming", mode: "office" as const },
+  { time: "10:00 AM", patient: "— blocked —", status: "blocked" as const, mode: "office" as const },
+  { time: "10:15 AM", patient: "Vikram Rao · Lipid recheck", status: "upcoming", mode: "office" as const },
+  { time: "10:30 AM", patient: "— available —", status: "available" as const, mode: "office" as const },
+  { time: "10:45 AM", patient: "— available —", status: "available" as const, mode: "office" as const },
+  { time: "11:00 AM", patient: "Ananya Joshi · Telehealth", status: "upcoming", mode: "telehealth" as const },
+];
 
   return (
     <>
@@ -139,79 +156,64 @@ export default function ClinicianSchedulePage() {
 
         <TabsContent value="day">
           <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-            <div className="grid grid-cols-12 gap-4 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+            {/* Header row — md+ only. */}
+            <div className="hidden md:grid grid-cols-12 gap-4 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
               <div className="col-span-2">Time</div>
               <div className="col-span-7">Patient · Reason</div>
               <div className="col-span-1 text-center">Mode</div>
               <div className="col-span-2 text-right">Status</div>
             </div>
-            {dayAppointments.length === 0 && dayBlocks.length === 0 ? (
-              <p className="p-10 text-center text-sm text-[var(--color-muted-foreground)]">
-                No appointments or blocked time on this day.
-              </p>
-            ) : (
-              <ul className="divide-y divide-[var(--color-border)]">
-                {dayAppointments.map((a) => {
-                  const patient = state.assignedPatients.find((p) => p.id === a.patientId);
-                  return (
-                    <li key={a.id} className={`grid grid-cols-12 items-center gap-4 px-5 py-3.5 hover:bg-[var(--color-muted)]/30 ${a.status === "in-progress" ? "bg-[var(--color-primary-50)]/30" : ""}`}>
-                      <div className="col-span-2 font-mono text-sm">{a.time}</div>
-                      <div className="col-span-7 text-sm">
-                        {patient ? (
-                          <Link href={`/clinician/patients/${patient.id}`} className="hover:underline">
-                            <span className="font-medium">{patient.name}</span>
-                            <span className="text-[var(--color-muted-foreground)]"> · {a.reason}</span>
-                          </Link>
-                        ) : (
-                          a.reason
-                        )}
+            <ul className="divide-y divide-[var(--color-border)]">
+              {slots.map((s, i) => {
+                const ModeIcon = s.mode === "office" ? MapPin : Video;
+                return (
+                  <li
+                    key={i}
+                    className={`flex flex-col gap-2 px-4 py-3.5 transition-colors hover:bg-[var(--color-muted)]/30 sm:px-5 md:grid md:grid-cols-12 md:items-center md:gap-4 ${s.status === "next" ? "bg-[var(--color-primary-50)]/30" : ""}`}
+                  >
+                    <div className="flex items-center justify-between gap-3 md:contents">
+                      <div className="font-mono text-sm md:col-span-2">{s.time}</div>
+                      <div className="flex items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)] md:hidden">
+                        <ModeIcon className="size-3.5" />
+                        <span>{s.mode === "office" ? "In-person" : "Telehealth"}</span>
                       </div>
-                      <div className="col-span-1 flex justify-center text-[var(--color-muted-foreground)]">
-                        {a.mode === "in-person" ? <MapPin className="size-4" /> : <Video className="size-4" />}
-                      </div>
-                      <div className="col-span-2 flex justify-end">
-                        {a.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
-                        {a.status === "in-progress" && <Badge variant="info" size="sm" dot>In progress</Badge>}
-                        {a.status === "arrived" && <Badge variant="warning" size="sm" dot>Arrived</Badge>}
-                        {a.status === "confirmed" && <Badge variant="muted" size="sm">Confirmed</Badge>}
-                        {a.status === "requested" && <Badge variant="outline" size="sm">Requested</Badge>}
-                        {a.status === "cancelled" && <Badge variant="muted" size="sm">Cancelled</Badge>}
-                        {a.status === "no-show" && <Badge variant="danger" size="sm" dot>No-show</Badge>}
-                      </div>
-                    </li>
-                  );
-                })}
-                {dayBlocks.map((b) => (
-                  <li key={b.id} className="grid grid-cols-12 items-center gap-4 px-5 py-3.5 hover:bg-[var(--color-muted)]/30">
-                    <div className="col-span-2 font-mono text-sm">{fmtTime12(b.start)}</div>
-                    <div className="col-span-7 text-sm text-[var(--color-muted-foreground)] italic">
-                      Blocked · {b.reason || "personal time"} ({fmtTime12(b.start)}–{fmtTime12(b.end)})
                     </div>
-                    <div className="col-span-1" />
-                    <div className="col-span-2 flex justify-end gap-2">
-                      <Badge variant="warning" size="sm" dot>Blocked</Badge>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          removeBlockedSlot(b.id);
-                          toast.info("Block removed");
-                        }}
-                        className="text-[11px] text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
-                      >
-                        Unblock
-                      </button>
+                    <div className="text-sm md:col-span-7">
+                      {s.status === "blocked" ? (
+                        <span className="italic text-[var(--color-muted-foreground)]">Blocked · personal time</span>
+                      ) : s.status === "available" ? (
+                        <span className="text-[var(--color-muted-foreground)]">Open slot</span>
+                      ) : (
+                        s.patient
+                      )}
+                    </div>
+                    <div className="hidden md:col-span-1 md:flex justify-center text-[var(--color-muted-foreground)]">
+                      <ModeIcon className="size-4" />
+                    </div>
+                    <div className="flex justify-start md:col-span-2 md:justify-end">
+                      {s.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
+                      {s.status === "next" && <Badge variant="info" size="sm" dot>Next</Badge>}
+                      {s.status === "upcoming" && <Badge variant="muted" size="sm">Upcoming</Badge>}
+                      {s.status === "blocked" && <Badge variant="warning" size="sm" dot>Blocked</Badge>}
+                      {s.status === "available" && <Badge variant="outline" size="sm">Available</Badge>}
                     </div>
                   </li>
-                ))}
-              </ul>
-            )}
+                );
+              })}
+            </ul>
           </div>
         </TabsContent>
 
         <TabsContent value="week">
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-8 text-center text-sm text-[var(--color-muted-foreground)]">
-            Week view shows 7-day grid with stacked appointment cards.
-          </div>
+          <WeekView
+            anchor={selectedDate}
+            appointments={state.appointments}
+            blockedSlots={state.blockedSlots}
+            onPickDay={(d) => {
+              setSelectedDate(d);
+              setView("day");
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="availability">
@@ -219,20 +221,23 @@ export default function ClinicianSchedulePage() {
             {WEEKDAYS.map((d) => {
               const t = state.scheduleTemplate[d];
               return (
-                <div key={d} className="flex items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-                  <div className="w-24 text-sm font-semibold">{d}</div>
-                  <div className="flex-1 flex flex-wrap gap-2 text-xs">
+                <div
+                  key={d}
+                  className="flex flex-col gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 sm:flex-row sm:items-center sm:gap-4"
+                >
+                  <div className="text-sm font-semibold sm:w-28 sm:shrink-0">{d}</div>
+                  <div className="flex flex-1 flex-wrap items-center gap-2 text-xs">
                     {t.off ? (
                       <Badge variant="muted" size="sm">Off</Badge>
                     ) : (
                       <>
                         {t.morning && (
-                          <Badge variant="default" size="sm">
+                          <Badge variant="default" size="sm" className="whitespace-nowrap">
                             <Clock3 /> {fmtTime12(t.morning.start)} – {fmtTime12(t.morning.end)}
                           </Badge>
                         )}
                         {t.afternoon && (
-                          <Badge variant="default" size="sm">
+                          <Badge variant="default" size="sm" className="whitespace-nowrap">
                             <Clock3 /> {fmtTime12(t.afternoon.start)} – {fmtTime12(t.afternoon.end)}
                           </Badge>
                         )}
@@ -242,10 +247,12 @@ export default function ClinicianSchedulePage() {
                       </>
                     )}
                   </div>
-                  <Badge variant="muted" size="sm">{t.slotMinutes}-min slots</Badge>
-                  <Button variant="ghost" size="sm" onClick={() => setEditDay(d)}>
-                    Edit
-                  </Button>
+                  <div className="flex items-center justify-between gap-2 sm:justify-end">
+                    <Badge variant="muted" size="sm" className="whitespace-nowrap">{t.slotMinutes}-min slots</Badge>
+                    <Button variant="ghost" size="sm" onClick={() => setEditDay(d)}>
+                      Edit
+                    </Button>
+                  </div>
                 </div>
               );
             })}
@@ -289,6 +296,106 @@ export default function ClinicianSchedulePage() {
         }}
       />
     </>
+  );
+}
+
+// --------------------------------------------------------------------------
+// Week view
+// --------------------------------------------------------------------------
+
+function WeekView({
+  anchor,
+  appointments,
+  blockedSlots,
+  onPickDay,
+}: {
+  anchor: Date;
+  appointments: ClinicianAppointment[];
+  blockedSlots: BlockedSlot[];
+  onPickDay: (d: Date) => void;
+}) {
+  // Build the 7 days of the week containing `anchor`. Monday-first.
+  const days = useMemo(() => {
+    const a = new Date(anchor);
+    const dow = a.getDay(); // 0=Sun..6=Sat
+    const offsetToMonday = (dow + 6) % 7; // turn Sun=0 into 6, Mon=1 into 0, etc.
+    const start = new Date(a);
+    start.setDate(a.getDate() - offsetToMonday);
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      return d;
+    });
+  }, [anchor]);
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
+      {days.map((d) => {
+        const iso = d.toISOString().slice(0, 10);
+        const dayAppts = appointments
+          .filter((a) => a.date === iso)
+          .sort((a, b) => a.time.localeCompare(b.time));
+        const dayBlocks = blockedSlots.filter((b) => b.date === iso);
+        const isToday = iso === todayIso;
+        return (
+          <button
+            key={iso}
+            type="button"
+            onClick={() => onPickDay(d)}
+            className={`group relative flex h-full flex-col gap-2 rounded-xl border p-3 text-left transition-colors ${
+              isToday
+                ? "border-[var(--color-primary)]/40 bg-[var(--color-primary-50)]/40"
+                : "border-[var(--color-border)] bg-[var(--color-card)] hover:border-[var(--color-primary)]/40 hover:bg-[var(--color-muted)]/40"
+            }`}
+          >
+            <div className="flex items-baseline justify-between">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+                  {d.toLocaleDateString("en-US", { weekday: "short" })}
+                </p>
+                <p className={`text-lg font-semibold ${isToday ? "text-[var(--color-primary-700)]" : ""}`}>
+                  {d.getDate()}
+                </p>
+              </div>
+              {dayAppts.length > 0 && (
+                <Badge variant={isToday ? "info" : "muted"} size="sm">
+                  {dayAppts.length} appt{dayAppts.length === 1 ? "" : "s"}
+                </Badge>
+              )}
+            </div>
+
+            <ul className="flex-1 space-y-1.5 text-[11px]">
+              {dayAppts.length === 0 && dayBlocks.length === 0 && (
+                <li className="italic text-[var(--color-muted-foreground)]">No bookings</li>
+              )}
+              {dayAppts.slice(0, 3).map((a) => (
+                <li key={a.id} className="flex items-center gap-1.5 truncate">
+                  <span className="font-mono text-[var(--color-muted-foreground)]">{a.time}</span>
+                  <span className="truncate">{a.reason}</span>
+                </li>
+              ))}
+              {dayAppts.length > 3 && (
+                <li className="text-[10px] text-[var(--color-muted-foreground)]">
+                  +{dayAppts.length - 3} more
+                </li>
+              )}
+              {dayBlocks.map((b) => (
+                <li key={b.id} className="flex items-center gap-1.5 truncate italic text-[var(--color-muted-foreground)]">
+                  <Ban className="size-3" />
+                  <span className="truncate">{b.reason || "Blocked"}</span>
+                </li>
+              ))}
+            </ul>
+
+            <span className="text-[10px] text-[var(--color-muted-foreground)] group-hover:text-[var(--color-primary-700)]">
+              Open day →
+            </span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

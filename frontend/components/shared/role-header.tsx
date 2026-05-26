@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { NavSearch, type NavSearchItem } from "@/components/shared/nav-search";
 import type { NavGroup, NavItem } from "@/components/shared/role-sidebar";
+import { RoleMobileNav } from "@/components/shared/role-mobile-nav";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,7 +50,8 @@ export function RoleHeader({
   }, [dark]);
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+      <RoleMobileNav groups={navGroups} utility={navUtility} />
       <NavSearch items={navItems} placeholder={searchPlaceholder} />
 
       <div className="ml-auto flex items-center gap-2">

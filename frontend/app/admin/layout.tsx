@@ -11,6 +11,7 @@ import {
   Bell,
   BarChart3,
   Stethoscope,
+  Receipt,
 } from "lucide-react";
 import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/role-sidebar";
 import { RoleHeader } from "@/components/shared/role-header";
@@ -34,6 +35,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/admin/templates", label: "Templates", icon: Mail },
       { href: "/admin/reports", label: "Reports", icon: BarChart3 },
+      { href: "/admin/billing", label: "Billing", icon: Receipt },
       { href: "/admin/settings", label: "Organization", icon: Settings },
     ],
   },

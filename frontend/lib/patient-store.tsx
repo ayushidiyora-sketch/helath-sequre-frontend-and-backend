@@ -85,12 +85,19 @@ export interface Consent {
   expiresAt?: string | null;
 }
 
+export interface MessageAttachment {
+  name: string;
+  size: number;
+  kind: "file" | "image";
+}
+
 export interface Message {
   id: string;
   from: "patient" | "clinician";
   fromName: string;
   body: string;
   at: string;
+  attachments?: MessageAttachment[];
 }
 
 export interface MessageThread {
@@ -139,6 +146,8 @@ export interface Session {
   location: string;
   lastSeen: string;
   current: boolean;
+  ip?: string;
+  trusted?: boolean;
 }
 
 export interface Security {
@@ -309,15 +318,28 @@ function makeSeed(): Omit<PatientState, "hydrated"> {
           id: "ses-1",
           device: "Chrome · Windows 10",
           location: "Ahmedabad, IN",
+          ip: "203.0.113.42",
           lastSeen: new Date().toISOString(),
           current: true,
+          trusted: true,
         },
         {
           id: "ses-2",
           device: "Safari · iPhone 14",
           location: "Ahmedabad, IN",
+          ip: "203.0.113.99",
           lastSeen: isoDaysFromNow(-3, 21, 0),
           current: false,
+          trusted: true,
+        },
+        {
+          id: "ses-3",
+          device: "Firefox · Ubuntu 22.04",
+          location: "Mumbai, IN",
+          ip: "198.51.100.7",
+          lastSeen: isoDaysFromNow(-9, 14, 35),
+          current: false,
+          trusted: false,
         },
       ],
     },
@@ -370,7 +392,7 @@ interface StoreActions {
   revokeConsent(id: string): void;
   // threads
   createThread(opts: { with: string; withRole: string; subject: string; initialBody: string }): MessageThread;
-  sendMessage(threadId: string, body: string): void;
+  sendMessage(threadId: string, body: string, attachments?: MessageAttachment[]): void;
   markThreadRead(threadId: string): void;
   togglePinThread(threadId: string): void;
   // notifications
@@ -531,7 +553,7 @@ export function PatientStoreProvider({ children }: { children: React.ReactNode }
         mutate((prev) => ({ ...prev, threads: [thread, ...prev.threads] }));
         return thread;
       },
-      sendMessage(threadId, body) {
+      sendMessage(threadId, body, attachments) {
         const now = new Date().toISOString();
         mutate((prev) => ({
           ...prev,
@@ -547,6 +569,7 @@ export function PatientStoreProvider({ children }: { children: React.ReactNode }
                       fromName: "You",
                       body,
                       at: now,
+                      attachments: attachments && attachments.length > 0 ? attachments : undefined,
                     },
                   ],
                   lastActivity: now,

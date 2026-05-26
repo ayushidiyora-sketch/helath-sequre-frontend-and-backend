@@ -96,8 +96,8 @@ export default async function RecordDetailPage({
               {record.results && (
                 <>
                   <SectionTitle>Results</SectionTitle>
-                  <div className="overflow-hidden rounded-xl border border-[var(--color-border)]">
-                    <table className="w-full text-sm">
+                  <div className="overflow-x-auto rounded-xl border border-[var(--color-border)]">
+                    <table className="w-full min-w-[560px] text-sm">
                       <thead>
                         <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
                           <th className="px-4 py-2.5">Marker</th>
@@ -224,16 +224,19 @@ export default async function RecordDetailPage({
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
             <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
-              <h3 className="text-sm font-semibold">Audit trail</h3>
+              <div>
+                <h3 className="text-sm font-semibold">Access history</h3>
+                <p className="text-[11px] text-[var(--color-muted-foreground)]">Per-record audit trail · append-only</p>
+              </div>
               <Badge variant="info" size="sm">5 events</Badge>
             </div>
             <ol className="space-y-0.5 p-5">
               {[
-                { actor: record.clinician, action: finalized ? "record.finalize" : "record.create", icon: CheckCircle2, color: "text-[var(--color-success)] bg-[var(--color-success-soft)]" },
-                { actor: record.clinician, action: "record.update", icon: Eye, color: "text-[var(--color-info)] bg-[var(--color-info-soft)]" },
-                { actor: "Aarav Mehta", action: "record.view", icon: Eye, color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]" },
-                { actor: "Aarav Mehta", action: "record.download", icon: Download, color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]" },
-                { actor: "Auditor (regulator)", action: "record.view", icon: Eye, color: "text-[var(--color-muted-foreground)] bg-[var(--color-muted)]" },
+                { actor: record.clinician, action: finalized ? "record.finalize" : "record.create", icon: CheckCircle2, color: "text-[var(--color-success)] bg-[var(--color-success-soft)]", time: "12 days ago · 09:14", ip: "10.0.0.42" },
+                { actor: record.clinician, action: "record.update", icon: Eye, color: "text-[var(--color-info)] bg-[var(--color-info-soft)]", time: "10 days ago · 14:02", ip: "10.0.0.42" },
+                { actor: "Aarav Mehta (you)", action: "record.view", icon: Eye, color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]", time: "4 days ago · 21:33", ip: "203.0.113.42" },
+                { actor: "Aarav Mehta (you)", action: "record.download", icon: Download, color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]", time: "4 days ago · 21:34", ip: "203.0.113.42" },
+                { actor: "Auditor (regulator)", action: "record.view", icon: Eye, color: "text-[var(--color-muted-foreground)] bg-[var(--color-muted)]", time: "2 days ago · 11:08", ip: "203.0.113.99" },
               ].map((e, i) => {
                 const EIcon = e.icon;
                 return (
@@ -247,12 +250,20 @@ export default async function RecordDetailPage({
                         <span className="text-[var(--color-muted-foreground)]">·</span>{" "}
                         <code className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{e.action}</code>
                       </p>
-                      <p className="text-[10px] text-[var(--color-muted-foreground)]">{record.date}</p>
+                      <p className="text-[10px] text-[var(--color-muted-foreground)]">
+                        {e.time} <span className="mx-1">·</span>
+                        <span className="font-mono">{e.ip}</span>
+                      </p>
                     </div>
                   </li>
                 );
               })}
             </ol>
+            <div className="border-t border-[var(--color-border)] p-3">
+              <p className="text-center text-[11px] text-[var(--color-muted-foreground)]">
+                Showing 5 most-recent events. Every PHI access is logged in the append-only ledger.
+              </p>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/30 p-4">

@@ -162,8 +162,8 @@ export default function BulkPatientPage() {
                   {errorCount > 0 && <Badge variant="danger" size="sm" dot>{errorCount} errors</Badge>}
                 </div>
               </div>
-              <div className="max-h-96 overflow-y-auto">
-                <table className="w-full text-xs">
+              <div className="max-h-96 overflow-auto">
+                <table className="w-full min-w-[720px] text-xs">
                   <thead className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
                     <tr>
                       <th className="px-3 py-2">#</th>

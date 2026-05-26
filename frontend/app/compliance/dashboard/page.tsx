@@ -188,11 +188,11 @@ function AuditVolume() {
 }
 
 function ActivityHeatmap() {
-  // Same 7d × 24h dataset as before — now rendered as a line chart of
-  // hourly averages, weekday vs weekend, so trends pop instead of being
-  // smeared across a grid.
+  // Last 7 days × 24 hours. Higher numbers = more events. Quiet 0–5 IST,
+  // peak around 11–15 IST. Hand-tuned to look realistic for a clinic.
   const HOURS = Array.from({ length: 24 }, (_, h) => h);
   const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  // Deterministic "noise" so the chart is stable between renders.
   const noise = (d: number, h: number) => ((d * 31 + h * 17) % 13) / 12;
   const data: number[][] = DAYS.map((_, d) =>
     HOURS.map((h) => {
@@ -205,33 +205,10 @@ function ActivityHeatmap() {
       return Math.round((peak ? 90 : shoulder ? 55 : 22) + n * 25);
     }),
   );
+  const flat = data.flat();
+  const max = Math.max(...flat);
 
-  // Two averaged series.
-  const avg = (rows: number[][], h: number) =>
-    Math.round(rows.reduce((s, r) => s + r[h], 0) / rows.length);
-  const weekday = HOURS.map((h) => avg(data.slice(0, 5), h));
-  const weekend = HOURS.map((h) => avg(data.slice(5, 7), h));
-  const max = Math.max(...weekday, ...weekend);
-  // Round up to a tidy axis tick.
-  const yMax = Math.ceil(max / 20) * 20;
-
-  // SVG viewBox geometry.
-  const W = 520;
-  const H = 200;
-  const PAD = { l: 30, r: 10, t: 10, b: 28 };
-  const innerW = W - PAD.l - PAD.r;
-  const innerH = H - PAD.t - PAD.b;
-  const x = (h: number) => PAD.l + (h / 23) * innerW;
-  const y = (v: number) => PAD.t + innerH * (1 - v / yMax);
-  const toPath = (s: number[]) =>
-    s.map((v, h) => `${h === 0 ? "M" : "L"}${x(h).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
-  const toArea = (s: number[]) =>
-    `${toPath(s)} L${x(23)},${y(0)} L${x(0)},${y(0)} Z`;
-
-  // Peak marker on weekday curve.
-  const peakHour = weekday.indexOf(Math.max(...weekday));
-  const peakVal = weekday[peakHour];
-
+  // Top active users — static for the demo.
   const TOP = [
     { name: "Mr. Patel · Org Admin", events: 1842 },
     { name: "Dr. K. Patel · Cardiology", events: 1140 },
@@ -243,131 +220,37 @@ function ActivityHeatmap() {
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold">User activity · last 7 days</h2>
-          <p className="text-xs text-[var(--color-muted-foreground)]">Hourly average · all event categories</p>
+          <h2 className="text-sm font-semibold">User activity heatmap · last 7 days</h2>
+          <p className="text-xs text-[var(--color-muted-foreground)]">By hour of day · all event categories</p>
         </div>
         <Badge variant="info" size="sm" dot>Quiet 00–05 IST</Badge>
       </div>
 
-      {/* Legend */}
-      <div className="mt-4 flex flex-wrap items-center gap-4 text-[11px] text-[var(--color-muted-foreground)]">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded-full bg-[var(--color-primary)]" />
-          Weekday avg (Mon–Fri)
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded-full bg-[oklch(0.72_0.14_75)]" />
-          Weekend avg (Sat–Sun)
-        </span>
+      <div className="mt-5 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+        {DAYS.map((d, dIdx) => (
+          <Row key={d} label={d} cells={data[dIdx]} max={max} />
+        ))}
+        <span />
+        <div className="mt-1 grid grid-cols-[repeat(24,minmax(0,1fr))] gap-0.5 text-[8px] tabular-nums text-[var(--color-muted-foreground)]">
+          {HOURS.map((h) => (
+            <span key={h} className="text-center">{h % 3 === 0 ? h : ""}</span>
+          ))}
+        </div>
       </div>
 
-      {/* Chart */}
-      <div className="mt-3 w-full overflow-hidden">
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          className="block h-auto w-full"
-          preserveAspectRatio="none"
-        >
-          {/* Gridlines + y-axis labels */}
-          {[0, 0.25, 0.5, 0.75, 1].map((t) => {
-            const v = Math.round(yMax * t);
-            const yy = y(v);
-            return (
-              <g key={t}>
-                <line
-                  x1={PAD.l}
-                  x2={W - PAD.r}
-                  y1={yy}
-                  y2={yy}
-                  stroke="var(--color-border)"
-                  strokeDasharray={t === 0 ? "0" : "2 3"}
-                  strokeWidth={t === 0 ? 1 : 1}
-                />
-                <text
-                  x={PAD.l - 6}
-                  y={yy + 3}
-                  textAnchor="end"
-                  fontSize="9"
-                  fontFamily="ui-monospace, monospace"
-                  fill="var(--color-muted-foreground)"
-                >
-                  {v}
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Areas under curves */}
-          <defs>
-            <linearGradient id="weekday-fill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-primary)" stopOpacity="0.22" />
-              <stop offset="100%" stopColor="var(--color-primary)" stopOpacity="0" />
-            </linearGradient>
-            <linearGradient id="weekend-fill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="oklch(0.72 0.14 75)" stopOpacity="0.18" />
-              <stop offset="100%" stopColor="oklch(0.72 0.14 75)" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          <path d={toArea(weekday)} fill="url(#weekday-fill)" />
-          <path d={toArea(weekend)} fill="url(#weekend-fill)" />
-
-          {/* Lines */}
-          <path d={toPath(weekend)} fill="none" stroke="oklch(0.72 0.14 75)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-          <path d={toPath(weekday)} fill="none" stroke="var(--color-primary)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-
-          {/* Hour data points (weekday only, for clarity) */}
-          {weekday.map((v, h) => (
-            <circle key={h} cx={x(h)} cy={y(v)} r="2" fill="var(--color-primary)">
-              <title>Weekday {String(h).padStart(2, "0")}:00 · {v} events (avg) · Weekend {weekend[h]}</title>
-            </circle>
+      <div className="mt-4 flex items-center justify-between text-[11px] text-[var(--color-muted-foreground)]">
+        <div className="flex items-center gap-2">
+          <span>Less</span>
+          {[0.1, 0.25, 0.5, 0.75, 1].map((p, i) => (
+            <span key={i} className="size-3 rounded-sm" style={{ background: `color-mix(in oklab, var(--color-primary) ${Math.round(p * 100)}%, var(--color-muted))` }} />
           ))}
-
-          {/* Peak marker */}
-          <g>
-            <circle cx={x(peakHour)} cy={y(peakVal)} r="4" fill="var(--color-card)" stroke="var(--color-primary)" strokeWidth="2" />
-            <line x1={x(peakHour)} x2={x(peakHour)} y1={y(peakVal)} y2={y(peakVal) - 14} stroke="var(--color-primary)" strokeDasharray="2 2" />
-            <rect
-              x={x(peakHour) - 32}
-              y={y(peakVal) - 30}
-              width="64"
-              height="16"
-              rx="3"
-              fill="var(--color-primary)"
-            />
-            <text
-              x={x(peakHour)}
-              y={y(peakVal) - 19}
-              textAnchor="middle"
-              fontSize="9"
-              fontWeight="600"
-              fontFamily="ui-monospace, monospace"
-              fill="white"
-            >
-              Peak · {peakVal}
-            </text>
-          </g>
-
-          {/* X-axis labels */}
-          {HOURS.filter((h) => h % 3 === 0).map((h) => (
-            <text
-              key={h}
-              x={x(h)}
-              y={H - 8}
-              textAnchor="middle"
-              fontSize="9"
-              fontFamily="ui-monospace, monospace"
-              fill="var(--color-muted-foreground)"
-            >
-              {String(h).padStart(2, "0")}h
-            </text>
-          ))}
-        </svg>
-      </div>
-
-      <div className="mt-2 flex items-center justify-end gap-3 text-[11px] text-[var(--color-muted-foreground)]">
-        <span>Peak <span className="font-mono">{String(peakHour).padStart(2, "0")}:00</span></span>
-        <span>·</span>
-        <span>Quietest <span className="font-mono">03:00</span></span>
+          <span>More</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span>Peak <span className="font-mono">11–15h</span></span>
+          <span>·</span>
+          <span>Quietest <span className="font-mono">03h</span></span>
+        </div>
       </div>
 
       <div className="mt-5 border-t border-[var(--color-border)] pt-4">
@@ -390,6 +273,27 @@ function ActivityHeatmap() {
         </ul>
       </div>
     </div>
+  );
+}
+
+function Row({ label, cells, max }: { label: string; cells: number[]; max: number }) {
+  return (
+    <>
+      <span className="pr-1 text-right text-[10px] font-mono uppercase tracking-wider text-[var(--color-muted-foreground)] self-center">{label}</span>
+      <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-0.5">
+        {cells.map((v, i) => {
+          const intensity = v / max;
+          return (
+            <span
+              key={i}
+              title={`${label} ${i}:00 · ${v} events`}
+              className="aspect-square rounded-sm"
+              style={{ background: intensity < 0.05 ? "var(--color-muted)" : `color-mix(in oklab, var(--color-primary) ${Math.round(intensity * 100)}%, var(--color-muted))` }}
+            />
+          );
+        })}
+      </div>
+    </>
   );
 }
 
