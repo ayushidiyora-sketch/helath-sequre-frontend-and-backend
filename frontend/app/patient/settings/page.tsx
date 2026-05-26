@@ -1,0 +1,630 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import {
+  UserCircle2,
+  KeyRound,
+  Bell,
+  Monitor,
+  Database,
+  Shield,
+  Mail,
+  Phone,
+  MapPin,
+  CalendarDays,
+  Smartphone,
+  Globe,
+  Trash2,
+  Download,
+  AlertTriangle,
+  Laptop,
+  Tablet,
+  LogOut,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input, Label } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Switch } from "@/components/ui/switch";
+import { PageHeader } from "@/components/shared/page-header";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SecurityBadge } from "@/components/shared/security-badge";
+import { ActionButton } from "@/components/shared/action-button";
+import { ChangePhotoButton, RecoveryCodesButton, AddPasskeyButton } from "./account-widgets";
+import { usePatientStore, type Profile, type Session } from "@/lib/patient-store";
+
+export default function SettingsPage() {
+  return (
+    <>
+      <PageHeader
+        eyebrow="Settings"
+        title="Account & preferences"
+        description="Manage your profile, security factors, notifications, and data rights."
+      />
+
+      <Tabs defaultValue="profile">
+        <TabsList className="flex-wrap">
+          <TabsTrigger value="profile"><UserCircle2 /> Profile</TabsTrigger>
+          <TabsTrigger value="security"><KeyRound /> Security</TabsTrigger>
+          <TabsTrigger value="notifications"><Bell /> Notifications</TabsTrigger>
+          <TabsTrigger value="sessions"><Monitor /> Sessions</TabsTrigger>
+          <TabsTrigger value="data"><Database /> Data rights</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="profile">
+          <ProfileTab />
+        </TabsContent>
+        <TabsContent value="security">
+          <SecurityTab />
+        </TabsContent>
+        <TabsContent value="notifications">
+          <NotificationsTab />
+        </TabsContent>
+        <TabsContent value="sessions">
+          <SessionsTab />
+        </TabsContent>
+        <TabsContent value="data">
+          <DataTab />
+        </TabsContent>
+      </Tabs>
+    </>
+  );
+}
+
+function ProfileTab() {
+  const { state, updateProfile } = usePatientStore();
+  const [draft, setDraft] = useState<Profile>(state.profile);
+
+  // Pull in any localStorage-hydrated profile that arrived after first render.
+  useEffect(() => {
+    if (state.hydrated) setDraft(state.profile);
+  }, [state.hydrated, state.profile]);
+
+  const update = <K extends keyof Profile>(key: K, value: Profile[K]) =>
+    setDraft((prev) => ({ ...prev, [key]: value }));
+
+  function handleSave() {
+    updateProfile(draft);
+    toast.success("Profile saved", { description: "audit-logged · user.update" });
+  }
+  function handleDiscard() {
+    setDraft(state.profile);
+    toast.info("Changes discarded");
+  }
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-[1.7fr_1fr]">
+      <div className="space-y-5">
+        <Section title="Personal information" desc="Your name and identity are used across the portal and on records.">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} />
+            <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} />
+            <Field id="email" label="Email" value={draft.email} onChange={(v) => update("email", v)} leadingIcon={<Mail />} />
+            <Field id="phone" label="Phone" value={draft.phone} onChange={(v) => update("phone", v)} leadingIcon={<Phone />} />
+            <Field id="dob" label="Date of birth" value={draft.dob} onChange={(v) => update("dob", v)} leadingIcon={<CalendarDays />} />
+            <Field id="mrn" label="MRN" value="CG-2026-0481" mono readOnly />
+          </div>
+        </Section>
+
+        <Section title="Address" desc="Used for telehealth eligibility and clinic communications.">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field id="line1" label="Street" value={draft.address} onChange={(v) => update("address", v)} leadingIcon={<MapPin />} />
+            <Field id="city" label="City" value={draft.city} onChange={(v) => update("city", v)} />
+            <Field id="state" label="State / Region" value={draft.state} onChange={(v) => update("state", v)} />
+            <Field id="zip" label="Postal code" value={draft.postalCode} onChange={(v) => update("postalCode", v)} />
+          </div>
+        </Section>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={handleDiscard}>Discard</Button>
+          <Button onClick={handleSave}>Save changes</Button>
+        </div>
+      </div>
+
+      <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
+        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
+          <div className="flex items-center gap-3">
+            <Avatar className="size-14">
+              <AvatarFallback>
+                {(state.profile.firstName[0] ?? "") + (state.profile.lastName[0] ?? "")}
+              </AvatarFallback>
+            </Avatar>
+            <div>
+              <p className="text-sm font-semibold">
+                {state.profile.firstName} {state.profile.lastName}
+              </p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">Patient since Feb 2026</p>
+            </div>
+          </div>
+          <ChangePhotoButton />
+        </div>
+        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Care team</p>
+          <ul className="mt-3 space-y-2.5">
+            {[
+              { initials: "PS", name: "Dr. Priya Shah", role: "Cardiology" },
+              { initials: "RI", name: "Dr. Rohan Iyer", role: "General Medicine" },
+            ].map((t) => (
+              <li key={t.name} className="flex items-center gap-2.5">
+                <Avatar className="size-7"><AvatarFallback>{t.initials}</AvatarFallback></Avatar>
+                <div>
+                  <p className="text-xs font-medium">{t.name}</p>
+                  <p className="text-[10px] text-[var(--color-muted-foreground)]">{t.role}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SecurityTab() {
+  const { state, setMfaEnabled } = usePatientStore();
+  const [loginAlerts, setLoginAlerts] = useState({
+    newDevice: true,
+    failed: true,
+    offHours: false,
+  });
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const mfaOn = state.security.mfaEnabled;
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-[1.7fr_1fr]">
+      <div className="space-y-5">
+        <Section title="Password" desc="Min 12 chars · history of last 5 enforced.">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field id="curpw" label="Current password" type="password" value={currentPw} onChange={setCurrentPw} />
+            <Field id="newpw" label="New password" type="password" value={newPw} onChange={setNewPw} />
+          </div>
+          <ActionButton
+            className="mt-1"
+            confirm={{
+              title: "Update password?",
+              description: "All active sessions and devices will be revoked. You'll need to sign in again.",
+              confirmLabel: "Update & sign out everywhere",
+            }}
+            toastMessage="Password updated"
+            toastDescription="All other sessions revoked · audit-logged"
+          >
+            Update password
+          </ActionButton>
+        </Section>
+
+        <Section title="Two-factor authentication" desc="Optional for patients · strongly recommended.">
+          {mfaOn ? (
+            <div className="rounded-xl border border-[var(--color-success)]/30 bg-[var(--color-success-soft)]/30 p-4">
+              <div className="flex items-start gap-3">
+                <span className="flex size-9 items-center justify-center rounded-lg bg-[var(--color-card)] text-[var(--color-success)] ring-1 ring-[var(--color-success)]/30">
+                  <Shield className="size-4" />
+                </span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold">TOTP enabled</p>
+                  <p className="text-xs text-[var(--color-muted-foreground)]">
+                    Authenticator · pair via /mfa-setup
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <RecoveryCodesButton />
+                    <ActionButton
+                      variant="ghost"
+                      size="sm"
+                      className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
+                      confirm={{
+                        title: "Disable two-factor authentication?",
+                        description: "Your account will be less secure. Patients are still recommended to keep TOTP enabled.",
+                        confirmLabel: "Disable TOTP",
+                        variant: "destructive",
+                      }}
+                      toastMessage="TOTP disabled"
+                      toastVariant="warning"
+                      onClick={() => setMfaEnabled(false)}
+                    >
+                      Disable TOTP
+                    </ActionButton>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-4">
+              <div className="flex items-start gap-3">
+                <span className="flex size-9 items-center justify-center rounded-lg bg-[var(--color-muted)] text-[var(--color-muted-foreground)]">
+                  <Shield className="size-4" />
+                </span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold">TOTP not enabled</p>
+                  <p className="text-xs text-[var(--color-muted-foreground)]">
+                    Pair an authenticator app for a second sign-in factor.
+                  </p>
+                  <ActionButton
+                    size="sm"
+                    className="mt-3"
+                    href={"/mfa-setup?next=" + encodeURIComponent("/patient/settings")}
+                    onClick={() => setMfaEnabled(true)}
+                  >
+                    Enable TOTP
+                  </ActionButton>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center justify-between rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-4">
+            <div>
+              <p className="text-sm font-semibold">Passkey (WebAuthn)</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">Phishing-resistant · device-bound</p>
+            </div>
+            <AddPasskeyButton />
+          </div>
+        </Section>
+
+        <Section title="Login alerts" desc="Get notified on suspicious or new-device activity.">
+          <SettingRow
+            label="New device sign-ins"
+            desc="Push + email when a new device authenticates"
+            checked={loginAlerts.newDevice}
+            onCheckedChange={(v) => setLoginAlerts((s) => ({ ...s, newDevice: v }))}
+          />
+          <SettingRow
+            label="Failed sign-ins"
+            desc="Email after 3 consecutive failures"
+            checked={loginAlerts.failed}
+            onCheckedChange={(v) => setLoginAlerts((s) => ({ ...s, failed: v }))}
+          />
+          <SettingRow
+            label="Off-hours access"
+            desc="Alert if your account is used between midnight and 5 AM"
+            checked={loginAlerts.offHours}
+            onCheckedChange={(v) => setLoginAlerts((s) => ({ ...s, offHours: v }))}
+          />
+        </Section>
+      </div>
+
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Security posture</p>
+          <div className="mt-3 flex items-center gap-3">
+            <div className="relative size-16">
+              <svg viewBox="0 0 36 36" className="size-16 -rotate-90">
+                <circle cx="18" cy="18" r="16" fill="none" stroke="var(--color-muted)" strokeWidth="3" />
+                <circle cx="18" cy="18" r="16" fill="none" stroke="var(--color-primary)" strokeWidth="3" strokeDasharray="100 100" strokeDashoffset="20" strokeLinecap="round" />
+              </svg>
+              <span className="absolute inset-0 flex items-center justify-center text-sm font-semibold">80</span>
+            </div>
+            <div>
+              <p className="text-sm font-semibold">Strong</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">Add a passkey to reach 100.</p>
+            </div>
+          </div>
+          <ul className="mt-4 space-y-2 text-xs">
+            <li className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-[var(--color-success)]" /> Strong password</li>
+            <li className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-[var(--color-success)]" /> TOTP enabled</li>
+            <li className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-[var(--color-muted-foreground)]" /> Passkey not yet added</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ChannelState = { inApp: boolean; email: boolean; sms: boolean };
+
+function NotificationsTab() {
+  const categories = [
+    { name: "Appointments", desc: "Reminders, confirmations, reschedules" },
+    { name: "Records", desc: "New labs, prescriptions, notes" },
+    { name: "Consents", desc: "New requests, expirations" },
+    { name: "Messages", desc: "Replies from your care team" },
+    { name: "Security", desc: "Sign-ins, MFA changes, suspicious activity" },
+    { name: "Marketing", desc: "Product updates and policy changes" },
+  ];
+
+  const [channels, setChannels] = useState<ChannelState[]>(() =>
+    categories.map((_, i) => ({
+      inApp: true,
+      email: i < 4,
+      sms: i === 4,
+    })),
+  );
+
+  const setChannel = (idx: number, key: keyof ChannelState, value: boolean) =>
+    setChannels((prev) => prev.map((row, i) => (i === idx ? { ...row, [key]: value } : row)));
+
+  return (
+    <Section title="Notification preferences" desc="Pick the channels for each category. Critical security alerts cannot be disabled.">
+      <div className="overflow-hidden rounded-xl border border-[var(--color-border)]">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+              <th className="px-4 py-3">Category</th>
+              <th className="px-4 py-3 text-center">In-app</th>
+              <th className="px-4 py-3 text-center">Email</th>
+              <th className="px-4 py-3 text-center">SMS</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--color-border)]">
+            {categories.map((c, i) => (
+              <tr key={c.name}>
+                <td className="px-4 py-3.5">
+                  <p className="text-sm font-medium">{c.name}</p>
+                  <p className="text-[11px] text-[var(--color-muted-foreground)]">{c.desc}</p>
+                </td>
+                <td className="px-4 py-3.5 text-center">
+                  <Switch checked={channels[i].inApp} onCheckedChange={(v) => setChannel(i, "inApp", v)} />
+                </td>
+                <td className="px-4 py-3.5 text-center">
+                  <Switch checked={channels[i].email} onCheckedChange={(v) => setChannel(i, "email", v)} />
+                </td>
+                <td className="px-4 py-3.5 text-center">
+                  <Switch checked={channels[i].sms} onCheckedChange={(v) => setChannel(i, "sms", v)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
+        SMS is delivered via your clinic&apos;s Twilio integration. Standard carrier rates may apply.
+      </p>
+    </Section>
+  );
+}
+
+function pickDeviceIcon(label: string) {
+  const lower = label.toLowerCase();
+  if (lower.includes("iphone") || lower.includes("android") || lower.includes("safari · iphone")) return Smartphone;
+  if (lower.includes("ipad") || lower.includes("tablet")) return Tablet;
+  return Laptop;
+}
+
+function relativeLastSeen(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.round(diffMs / 60_000);
+  if (min < 2) return "Active now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.round(hr / 24);
+  return `${day}d ago`;
+}
+
+function SessionsTab() {
+  const { state, revokeSession } = usePatientStore();
+  const sessions = state.security.sessions;
+  return (
+    <Section title="Active sessions & devices" desc="Revoke any session that doesn't look like you. Revocation takes effect on the next API call.">
+      {sessions.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-6 text-center text-sm text-[var(--color-muted-foreground)]">
+          No active sessions.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {sessions.map((s: Session) => {
+            const Icon = pickDeviceIcon(s.device);
+            return (
+              <li key={s.id} className="flex items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+                <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--color-muted)] text-[var(--color-foreground)]">
+                  <Icon className="size-4.5" />
+                </span>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold">{s.device}</p>
+                    {s.current && <Badge variant="success" size="sm" dot>This device</Badge>}
+                  </div>
+                  <p className="text-xs text-[var(--color-muted-foreground)]">
+                    <span className="inline-flex items-center gap-1"><Globe className="size-3" /> {s.location}</span>
+                    <span className="mx-1.5">·</span> {relativeLastSeen(s.lastSeen)}
+                  </p>
+                </div>
+                {!s.current && (
+                  <ActionButton
+                    variant="ghost"
+                    size="sm"
+                    className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
+                    confirm={{
+                      title: `Revoke session on ${s.device}?`,
+                      description: "This device will be signed out immediately on its next request.",
+                      confirmLabel: "Revoke session",
+                      variant: "destructive",
+                    }}
+                    toastMessage="Session revoked"
+                    toastDescription={`${s.device} signed out · audit-logged`}
+                    toastVariant="warning"
+                    onClick={() => revokeSession(s.id)}
+                  >
+                    <LogOut /> Revoke
+                  </ActionButton>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <ActionButton
+        variant="outline"
+        className="mt-4"
+        confirm={{
+          title: "Sign out of all other sessions?",
+          description: "Every device except this one will be signed out immediately.",
+          confirmLabel: "Sign out everywhere else",
+          variant: "destructive",
+        }}
+        toastMessage="Other sessions revoked"
+        toastVariant="warning"
+        onClick={() => {
+          for (const s of sessions) if (!s.current) revokeSession(s.id);
+        }}
+      >
+        Sign out of all other sessions
+      </ActionButton>
+    </Section>
+  );
+}
+
+function DataTab() {
+  const { state } = usePatientStore();
+
+  function exportPhi() {
+    // Bundle every entity from the store as a single JSON payload — this
+    // mirrors what a real HIPAA right-of-access export would include, just
+    // as a one-file download instead of a signed S3 link.
+    const bundle = {
+      generatedAt: new Date().toISOString(),
+      profile: state.profile,
+      appointments: state.appointments,
+      documents: state.documents,
+      consents: state.consents,
+      messageThreads: state.threads,
+      notifications: state.notifications,
+      security: { mfaEnabled: state.security.mfaEnabled, sessionCount: state.security.sessions.length },
+    };
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `healthsecure-phi-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success("PHI export downloaded", {
+      description: `${state.appointments.length} appointments · ${state.documents.length} docs · ${state.consents.length} consents`,
+    });
+  }
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-2">
+      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6">
+        <div className="flex size-11 items-center justify-center rounded-xl bg-[var(--color-info-soft)] text-[var(--color-info)]">
+          <Download className="size-5" />
+        </div>
+        <h3 className="mt-4 text-base font-semibold">Export your PHI</h3>
+        <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
+          Get a complete bundle of your records, prescriptions, imaging metadata, and
+          documents in PDF and CSV. HIPAA right-of-access · delivered within 7 days.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <SecurityBadge variant="encrypted" />
+          <SecurityBadge variant="audited" />
+        </div>
+        <Button className="mt-5" onClick={exportPhi}>
+          <Download /> Download export now
+        </Button>
+      </div>
+
+      <div className="rounded-2xl border border-[var(--color-danger)]/30 bg-[var(--color-danger-soft)]/30 p-6">
+        <div className="flex size-11 items-center justify-center rounded-xl bg-[var(--color-card)] text-[var(--color-danger)] ring-1 ring-[var(--color-danger)]/30">
+          <Trash2 className="size-5" />
+        </div>
+        <h3 className="mt-4 text-base font-semibold">Delete your account</h3>
+        <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
+          HIPAA / GDPR right-to-be-forgotten. Some clinical records may be retained
+          for legal compliance — your Compliance Manager will review.
+        </p>
+        <div className="mt-4 flex items-start gap-2 text-xs text-[var(--color-muted-foreground)]">
+          <AlertTriangle className="mt-0.5 size-3.5 text-[var(--color-warning)]" />
+          Irreversible. All active sessions will be terminated.
+        </div>
+        <ActionButton
+          variant="destructive"
+          className="mt-5"
+          confirm={{
+            title: "Request account deletion?",
+            description: "Compliance Manager will review. Some clinical records may be retained for legal compliance.",
+            confirmLabel: "Submit deletion request",
+            variant: "destructive",
+          }}
+          toastMessage="Deletion request submitted"
+          toastDescription="Compliance Manager has been notified · you'll get an email when it's reviewed"
+          toastVariant="warning"
+        >
+          Request deletion
+        </ActionButton>
+      </div>
+
+      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6 lg:col-span-2">
+        <h3 className="text-base font-semibold">Your activity log</h3>
+        <p className="text-sm text-[var(--color-muted-foreground)]">
+          A view of every action you and your care team have taken on your data. Drawn from the same audit ledger compliance auditors use.
+        </p>
+        <ActionButton variant="outline" className="mt-4" toastMessage="Activity log opened" toastVariant="info">
+          Open activity log
+        </ActionButton>
+      </div>
+    </div>
+  );
+}
+
+// helpers
+
+function Section({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6">
+      <div className="mb-4">
+        <h2 className="text-base font-semibold">{title}</h2>
+        <p className="text-xs text-[var(--color-muted-foreground)]">{desc}</p>
+      </div>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+function Field({
+  id,
+  label,
+  value,
+  onChange,
+  leadingIcon,
+  type = "text",
+  readOnly,
+  mono,
+}: {
+  id: string;
+  label: string;
+  value?: string;
+  onChange?: (value: string) => void;
+  leadingIcon?: React.ReactNode;
+  type?: string;
+  readOnly?: boolean;
+  mono?: boolean;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type={type}
+        value={value ?? ""}
+        onChange={onChange ? (e) => onChange(e.target.value) : undefined}
+        leadingIcon={leadingIcon}
+        readOnly={readOnly}
+        className={`${mono ? "font-mono" : ""} ${readOnly ? "bg-[var(--color-muted)]" : ""}`}
+      />
+    </div>
+  );
+}
+
+function SettingRow({
+  label,
+  desc,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  desc: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-xs text-[var(--color-muted-foreground)]">{desc}</p>
+      </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
