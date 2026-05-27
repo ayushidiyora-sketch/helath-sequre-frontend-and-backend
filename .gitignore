@@ -1,0 +1,6 @@
+# Claude Code local state
+.claude/
+
+# Local build / scan output
+report.txt
+frontend/report.txt

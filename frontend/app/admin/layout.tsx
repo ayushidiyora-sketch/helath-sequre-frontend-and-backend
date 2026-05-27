@@ -57,6 +57,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             sessionMins={14}
             searchPlaceholder="Search users, patients, departments…"
             settingsHref="/admin/settings"
+            notificationsHref="/admin/notifications"
             navGroups={GROUPS}
             navUtility={UTILITY}
           />

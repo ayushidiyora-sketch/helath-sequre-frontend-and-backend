@@ -23,6 +23,7 @@ export function RoleHeader({
   sessionMins = 14,
   searchPlaceholder = "Search…",
   settingsHref,
+  notificationsHref,
   navGroups = [],
   navUtility = [],
 }: {
@@ -30,6 +31,7 @@ export function RoleHeader({
   sessionMins?: number;
   searchPlaceholder?: string;
   settingsHref: string;
+  notificationsHref: string;
   navGroups?: NavGroup[];
   navUtility?: NavItem[];
 }) {
@@ -64,10 +66,14 @@ export function RoleHeader({
           {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
         </Button>
 
-        <button className="relative inline-flex h-9 w-9 items-center justify-center rounded-md text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]" aria-label="Notifications">
+        <Link
+          href={notificationsHref}
+          className="relative inline-flex h-9 w-9 items-center justify-center rounded-md text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+          aria-label="Notifications"
+        >
           <Bell className="size-4" />
           <span className="absolute right-2 top-1.5 size-2 rounded-full bg-[var(--color-danger)]" />
-        </button>
+        </Link>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

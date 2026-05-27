@@ -20,14 +20,11 @@ export default function TasksPage() {
   const { state, completeTask } = useClinicianStore();
   const [showCompleted, setShowCompleted] = useState(false);
 
-  if (!state.hydrated) {
-    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
-  }
-
   const open = state.tasks.filter((t) => !t.completedAt);
   const done = state.tasks.filter((t) => !!t.completedAt);
   const visible = showCompleted ? done : open;
 
+  // Compute before any early return so hook order stays stable.
   const groups = useMemo(() => {
     const out: { type: TaskType; items: ClinicianTask[] }[] = [];
     for (const type of Object.keys(TYPE_META) as TaskType[]) {
@@ -36,6 +33,10 @@ export default function TasksPage() {
     }
     return out;
   }, [visible]);
+
+  if (!state.hydrated) {
+    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
+  }
 
   const urgentCount = open.filter((t) => t.urgent).length;
   const medianAgeMs = (() => {

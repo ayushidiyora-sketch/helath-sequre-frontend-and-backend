@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -95,6 +95,14 @@ interface NoteFields {
 }
 
 export default function NewNotePage() {
+  return (
+    <Suspense fallback={null}>
+      <NewNotePageInner />
+    </Suspense>
+  );
+}
+
+function NewNotePageInner() {
   const router = useRouter();
   const params = useSearchParams();
   const { state, addNote, updateNote, finalizeNote } = useClinicianStore();

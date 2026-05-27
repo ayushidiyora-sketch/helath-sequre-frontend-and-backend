@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { jsPDF } from "jspdf";
@@ -73,6 +73,14 @@ const TODAY = new Date("2026-05-21");
 const CATEGORY_KEYS: Category[] = ["Lab Report", "Prescription", "Imaging", "Clinical Note", "Discharge"];
 
 export default function RecordsPage() {
+  return (
+    <Suspense fallback={null}>
+      <RecordsPageInner />
+    </Suspense>
+  );
+}
+
+function RecordsPageInner() {
   const searchParams = useSearchParams();
   const initialCategory: "all" | Category = (() => {
     const c = searchParams.get("category");

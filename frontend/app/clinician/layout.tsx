@@ -46,6 +46,7 @@ export default function ClinicianLayout({ children }: { children: React.ReactNod
             sessionMins={14}
             searchPlaceholder="Search patients, records, messages…"
             settingsHref="/clinician/settings"
+            notificationsHref="/clinician/notifications"
             navGroups={GROUPS}
             navUtility={UTILITY}
           />

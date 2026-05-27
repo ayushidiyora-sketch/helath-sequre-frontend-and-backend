@@ -62,10 +62,7 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusKey>("all");
 
-  if (!state.hydrated) {
-    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
-  }
-
+  // Compute before any early return so hook order stays stable.
   const visible = useMemo(() => {
     return state.staff.filter((u) => {
       if (tab === "clinicians" && u.role !== "Clinician") return false;
@@ -77,6 +74,10 @@ export default function AdminUsersPage() {
       return true;
     });
   }, [state.staff, tab, statusFilter, search]);
+
+  if (!state.hydrated) {
+    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
+  }
 
   const counts = {
     total: state.staff.length,

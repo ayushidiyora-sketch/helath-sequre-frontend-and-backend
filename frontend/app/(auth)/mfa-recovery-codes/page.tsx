@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -34,6 +34,14 @@ function generateCodes(seed: number): string[] {
 }
 
 export default function MfaRecoveryCodesPage() {
+  return (
+    <Suspense fallback={null}>
+      <MfaRecoveryCodesInner />
+    </Suspense>
+  );
+}
+
+function MfaRecoveryCodesInner() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") ?? "/clinician/dashboard";

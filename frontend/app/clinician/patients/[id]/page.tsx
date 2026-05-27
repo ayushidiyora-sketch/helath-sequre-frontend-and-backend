@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -25,6 +25,8 @@ import {
   CheckCheck,
   Upload,
   Loader2,
+  Hourglass,
+  ShieldHalf,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -35,13 +37,17 @@ import { SecurityBadge } from "@/components/shared/security-badge";
 import { ConsentDeniedCard } from "@/components/shared/consent-denied-card";
 import {
   useClinicianStore,
-  patientHasConsent,
+  hasEffectiveConsent,
+  activeApprovedRequest,
+  pendingRequest,
   CONSENT_SCOPE_LABEL,
+  type AccessRequest,
   type AssignedPatient,
   type AppointmentStatus,
   type ClinicianAppointment,
   type ConsentScope,
 } from "@/lib/clinician-store";
+import { RequestAccessDialog } from "./request-access-dialog";
 
 function dateLabel(iso: string): string {
   return new Date(iso + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
@@ -54,7 +60,18 @@ function dateTimeLabel(iso: string): string {
 export default function PatientChartPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { state, setAppointmentStatus, addPrescription, finalizePrescription, toggleConsent, uploadDocument } = useClinicianStore();
+  const {
+    state,
+    setAppointmentStatus,
+    addPrescription,
+    finalizePrescription,
+    toggleConsent,
+    uploadDocument,
+    simulateApprovalDecision,
+  } = useClinicianStore();
+
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [requestInitialScope, setRequestInitialScope] = useState<ConsentScope | undefined>(undefined);
 
   if (!state.hydrated) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
@@ -70,6 +87,14 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
   const myDocs = state.documents.filter((d) => d.patientId === patient.id);
 
   const showRevokedBanner = patient.consentStatus === "revoked";
+
+  const activeGrant = activeApprovedRequest(state, patient.id);
+  const pending = pendingRequest(state, patient.id);
+
+  function openRequestDialog(scope?: ConsentScope) {
+    setRequestInitialScope(scope);
+    setRequestOpen(true);
+  }
 
   return (
     <>
@@ -136,6 +161,22 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
         />
       )}
 
+      {pending && (
+        <PendingRequestBanner
+          request={pending}
+          onSimulateApprove={() => {
+            simulateApprovalDecision(pending.id, "approve", "Approved by Sai (demo simulation).");
+            toast.success("Compliance approved (demo)", {
+              description: `Temporary access granted for ${pending.durationHours}h · audit-logged`,
+            });
+          }}
+        />
+      )}
+
+      {activeGrant && (
+        <ApprovedAccessBanner request={activeGrant} />
+      )}
+
       <Tabs defaultValue="timeline">
         <TabsList className="flex-wrap">
           <TabsTrigger value="timeline"><Activity /> Timeline</TabsTrigger>
@@ -146,17 +187,38 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
         </TabsList>
 
         <TabsContent value="timeline">
-          <Timeline patient={patient} appointments={myAppointments} notes={myNotes} prescriptions={myRxs} />
+          <div className="space-y-3">
+            <div className="flex items-center justify-end">
+              <Button asChild variant="ghost" size="sm">
+                <Link href={`/clinician/patients/${patient.id}/timeline`}>
+                  Open full timeline view <ArrowLeft className="rotate-180" />
+                </Link>
+              </Button>
+            </div>
+            <Timeline patient={patient} appointments={myAppointments} notes={myNotes} prescriptions={myRxs} />
+          </div>
         </TabsContent>
         <TabsContent value="records">
-          {patientHasConsent(patient, "notes") || patientHasConsent(patient, "lab") ? (
-            <RecordsList notes={myNotes} />
+          {hasEffectiveConsent(state, patient.id, "notes") || hasEffectiveConsent(state, patient.id, "lab") ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-end">
+                <Button asChild variant="ghost" size="sm">
+                  <Link href={`/clinician/patients/${patient.id}/records`}>
+                    Open full records view <ArrowLeft className="rotate-180" />
+                  </Link>
+                </Button>
+              </div>
+              <RecordsList notes={myNotes} />
+            </div>
           ) : (
-            <ConsentDeniedCard category="Records" />
+            <ConsentDeniedCard
+              category="Records"
+              onRequestAccess={pending ? undefined : () => openRequestDialog("notes")}
+            />
           )}
         </TabsContent>
         <TabsContent value="prescriptions">
-          {patientHasConsent(patient, "prescriptions") ? (
+          {hasEffectiveConsent(state, patient.id, "prescriptions") ? (
             <Prescriptions
               rxs={myRxs}
               onNew={() => {
@@ -177,26 +239,41 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
               }}
             />
           ) : (
-            <ConsentDeniedCard category="Prescriptions" />
+            <ConsentDeniedCard
+              category="Prescriptions"
+              onRequestAccess={pending ? undefined : () => openRequestDialog("prescriptions")}
+            />
           )}
         </TabsContent>
         <TabsContent value="documents">
-          {patientHasConsent(patient, "imaging") || patientHasConsent(patient, "lab") ? (
-            <DocumentsList
-              docs={myDocs}
-              onUpload={(file, category) => {
-                uploadDocument({
-                  patientId: patient.id,
-                  name: file.name,
-                  category,
-                  sizeBytes: file.size,
-                  uploaderName: "Dr. Mehta",
-                });
-                toast.success("Document uploaded", { description: `${file.name} · scanned · clean` });
-              }}
-            />
+          {hasEffectiveConsent(state, patient.id, "imaging") || hasEffectiveConsent(state, patient.id, "lab") ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-end">
+                <Button asChild variant="ghost" size="sm">
+                  <Link href={`/clinician/patients/${patient.id}/documents`}>
+                    Open full documents view <ArrowLeft className="rotate-180" />
+                  </Link>
+                </Button>
+              </div>
+              <DocumentsList
+                docs={myDocs}
+                onUpload={(file, category) => {
+                  uploadDocument({
+                    patientId: patient.id,
+                    name: file.name,
+                    category,
+                    sizeBytes: file.size,
+                    uploaderName: "Dr. Mehta",
+                  });
+                  toast.success("Document uploaded", { description: `${file.name} · scanned · clean` });
+                }}
+              />
+            </div>
           ) : (
-            <ConsentDeniedCard category="Documents" />
+            <ConsentDeniedCard
+              category="Documents"
+              onRequestAccess={pending ? undefined : () => openRequestDialog("imaging")}
+            />
           )}
         </TabsContent>
         <TabsContent value="consents">
@@ -206,7 +283,87 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
           }} />
         </TabsContent>
       </Tabs>
+
+      <RequestAccessDialog
+        open={requestOpen}
+        onOpenChange={setRequestOpen}
+        patient={patient}
+        initialScope={requestInitialScope}
+      />
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sensitive-access banners
+// ---------------------------------------------------------------------------
+
+function relativeMinutesAgo(iso: string): string {
+  const diffMs = Date.now() - Date.parse(iso);
+  const mins = Math.max(0, Math.round(diffMs / 60000));
+  if (mins < 1) return "just now";
+  if (mins === 1) return "1m ago";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  return hours === 1 ? "1h ago" : `${hours}h ago`;
+}
+
+function PendingRequestBanner({
+  request,
+  onSimulateApprove,
+}: {
+  request: AccessRequest;
+  onSimulateApprove: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 px-4 py-3 text-sm">
+      <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--color-card)] text-[var(--color-warning-foreground)] ring-1 ring-[var(--color-warning)]/30">
+        <Hourglass className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-[var(--color-warning-foreground)]">
+          Request pending Sai&apos;s review
+        </p>
+        <p className="mt-0.5 text-[12px] text-[var(--color-muted-foreground)]">
+          Submitted {relativeMinutesAgo(request.requestedAt)} · {request.scopes.length} scope
+          {request.scopes.length === 1 ? "" : "s"} · {request.durationHours}h window requested
+        </p>
+      </div>
+      <Button size="sm" variant="outline" onClick={onSimulateApprove}>
+        <ShieldCheck /> (demo) Simulate approval
+      </Button>
+    </div>
+  );
+}
+
+function ApprovedAccessBanner({ request }: { request: AccessRequest }) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const handle = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(handle);
+  }, []);
+
+  if (!request.expiresAt) return null;
+  const remainingMs = Math.max(0, Date.parse(request.expiresAt) - now);
+  const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+  const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+  const label = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+  return (
+    <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-[var(--color-success)]/30 bg-[var(--color-success-soft)]/40 px-4 py-3 text-sm">
+      <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--color-card)] text-[var(--color-success)] ring-1 ring-[var(--color-success)]/30">
+        <ShieldHalf className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-[var(--color-success)]">
+          Temporary access · expires in {label}
+        </p>
+        <p className="mt-0.5 text-[12px] text-[var(--color-muted-foreground)]">
+          {request.scopes.map((s) => CONSENT_SCOPE_LABEL[s]).join(", ")} · every view audit-logged
+        </p>
+      </div>
+      <Badge variant="success" size="sm" dot>Approved</Badge>
+    </div>
   );
 }
 
@@ -228,6 +385,9 @@ function EncounterCard({ appt, onStatus }: { appt: ClinicianAppointment; onStatu
         <Badge variant={appt.status === "confirmed" ? "info" : appt.status === "arrived" ? "warning" : appt.status === "in-progress" ? "success" : "muted"} size="sm" dot>
           {appt.status.replace("-", " ")}
         </Badge>
+        <Button asChild size="sm" variant="ghost">
+          <Link href={`/clinician/appointments/${appt.id}`}>Open detail</Link>
+        </Button>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">

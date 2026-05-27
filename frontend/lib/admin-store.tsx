@@ -323,7 +323,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
     ],
     patients: [
       {
-        id: "pt_aarav",
+        id: "aarav-mehta",
         mrn: "CG-2026-0481",
         firstName: "Aarav",
         lastName: "Mehta",
@@ -336,7 +336,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
         registeredAt: isoAgo(40),
       },
       {
-        id: "pt_neha",
+        id: "neha-bansal",
         mrn: "CG-2026-0492",
         firstName: "Neha",
         lastName: "Bansal",
@@ -349,7 +349,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
         registeredAt: isoAgo(30),
       },
       {
-        id: "pt_vikram",
+        id: "vikram-rao",
         mrn: "CG-2026-0501",
         firstName: "Vikram",
         lastName: "Rao",
@@ -365,7 +365,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
     assignments: [
       {
         id: "asg_seed_1",
-        patientId: "pt_aarav",
+        patientId: "aarav-mehta",
         clinicianId: "stf_priya",
         status: "active",
         createdAt: isoAgo(30),
@@ -373,7 +373,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
       },
       {
         id: "asg_seed_2",
-        patientId: "pt_neha",
+        patientId: "neha-bansal",
         clinicianId: "stf_priya",
         status: "active",
         createdAt: isoAgo(20),
@@ -381,7 +381,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
       },
       {
         id: "asg_seed_3",
-        patientId: "pt_vikram",
+        patientId: "vikram-rao",
         clinicianId: "stf_rohan",
         status: "active",
         createdAt: isoAgo(15),
@@ -477,7 +477,7 @@ function makeSeed(): Omit<AdminState, "hydrated"> {
 // Store
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = "hs_admin_store_v1";
+const STORAGE_KEY = "hs_admin_store_v2";
 
 function loadFromStorage(): Omit<AdminState, "hydrated"> | null {
   if (typeof window === "undefined") return null;

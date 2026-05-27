@@ -169,6 +169,21 @@ export interface MessageDraft {
   savedAt: string;
 }
 
+export type AccessRequestStatus = "pending" | "approved" | "rejected" | "expired";
+
+export interface AccessRequest {
+  id: string;
+  patientId: string;
+  scopes: ConsentScope[];
+  durationHours: number;
+  reason: string;
+  status: AccessRequestStatus;
+  requestedAt: string;
+  decidedAt?: string;
+  expiresAt?: string;
+  decisionNote?: string;
+}
+
 export interface ClinicianProfile {
   firstName: string;
   lastName: string;
@@ -192,6 +207,7 @@ export interface ClinicianState {
   tasks: ClinicianTask[];
   notifications: ClinicianNotification[];
   messageDrafts: MessageDraft[];
+  accessRequests: AccessRequest[];
   profile: ClinicianProfile;
 }
 
@@ -217,6 +233,7 @@ function makeSeed(): Omit<ClinicianState, "hydrated"> {
   const yesterday = dateOnly(-1);
   const tomorrow = dateOnly(1);
   const dayAfter = dateOnly(2);
+  const seededExpiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
   return {
     assignedPatients: [
       {
@@ -445,6 +462,20 @@ function makeSeed(): Omit<ClinicianState, "hydrated"> {
       },
     ],
     messageDrafts: [],
+    accessRequests: [
+      {
+        id: "ar_seed_kavita",
+        patientId: "pt_kavita",
+        scopes: ["notes", "lab", "prescriptions", "imaging"],
+        durationHours: 24,
+        reason: "Approved on-call review of Kavita's arrhythmia history.",
+        status: "approved",
+        requestedAt: iso(-1, 8, 0),
+        decidedAt: iso(-1, 9, 30),
+        expiresAt: seededExpiresAt,
+        decisionNote: "Approved by Sai — narrow to review only, no edits.",
+      },
+    ],
     profile: {
       firstName: "Vikram",
       lastName: "Mehta",
@@ -462,7 +493,7 @@ function makeSeed(): Omit<ClinicianState, "hydrated"> {
 // Store
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = "hs_clinician_store_v2";
+const STORAGE_KEY = "hs_clinician_store_v3";
 
 function loadFromStorage(): Omit<ClinicianState, "hydrated"> | null {
   if (typeof window === "undefined") return null;
@@ -518,6 +549,10 @@ interface StoreActions {
   deleteDraft(id: string): void;
   // consent simulation (for the access-denied flow)
   toggleConsent(patientId: string, scope: ConsentScope): void;
+  // sensitive-access approval workflow (UI walkthrough)
+  requestAccess(p: { patientId: string; scopes: ConsentScope[]; durationHours: number; reason: string }): AccessRequest;
+  simulateApprovalDecision(id: string, decision: "approve" | "reject", note?: string): void;
+  revokeExpiredAccess(): void;
   // profile
   updateProfile(patch: Partial<ClinicianProfile>): void;
   // demo
@@ -534,8 +569,42 @@ export function ClinicianStoreProvider({ children }: { children: React.ReactNode
 
   React.useEffect(() => {
     const stored = loadFromStorage();
-    setState({ hydrated: true, ...(stored ?? makeSeed()) });
+    const seeded = stored ?? makeSeed();
+    // Backfill accessRequests for stores persisted before this slice existed.
+    const hydrated: ClinicianState = {
+      hydrated: true,
+      ...seeded,
+      accessRequests: seeded.accessRequests ?? [],
+    };
+    // Expire-on-load sweep so the green banner disappears on its own.
+    const now = Date.now();
+    hydrated.accessRequests = hydrated.accessRequests.map((r) =>
+      r.status === "approved" && r.expiresAt && Date.parse(r.expiresAt) <= now
+        ? { ...r, status: "expired" as const }
+        : r,
+    );
+    setState(hydrated);
   }, []);
+
+  React.useEffect(() => {
+    if (!state.hydrated) return;
+    const tick = () => {
+      setState((prev) => {
+        const now = Date.now();
+        let changed = false;
+        const next = prev.accessRequests.map((r) => {
+          if (r.status === "approved" && r.expiresAt && Date.parse(r.expiresAt) <= now) {
+            changed = true;
+            return { ...r, status: "expired" as const };
+          }
+          return r;
+        });
+        return changed ? { ...prev, accessRequests: next } : prev;
+      });
+    };
+    const handle = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(handle);
+  }, [state.hydrated]);
 
   React.useEffect(() => {
     if (!state.hydrated) return;
@@ -725,6 +794,59 @@ export function ClinicianStoreProvider({ children }: { children: React.ReactNode
         }));
       },
 
+      requestAccess({ patientId, scopes, durationHours, reason }) {
+        const req: AccessRequest = {
+          id: newId("ar"),
+          patientId,
+          scopes,
+          durationHours,
+          reason,
+          status: "pending",
+          requestedAt: new Date().toISOString(),
+        };
+        mutate((prev) => ({ ...prev, accessRequests: [req, ...prev.accessRequests] }));
+        return req;
+      },
+      simulateApprovalDecision(id, decision, note) {
+        mutate((prev) => ({
+          ...prev,
+          accessRequests: prev.accessRequests.map((r) => {
+            if (r.id !== id) return r;
+            const now = new Date();
+            if (decision === "approve") {
+              const expiresAt = new Date(now.getTime() + r.durationHours * 60 * 60 * 1000).toISOString();
+              return {
+                ...r,
+                status: "approved",
+                decidedAt: now.toISOString(),
+                expiresAt,
+                decisionNote: note,
+              };
+            }
+            return {
+              ...r,
+              status: "rejected",
+              decidedAt: now.toISOString(),
+              decisionNote: note,
+            };
+          }),
+        }));
+      },
+      revokeExpiredAccess() {
+        const now = Date.now();
+        mutate((prev) => {
+          let changed = false;
+          const next = prev.accessRequests.map((r) => {
+            if (r.status === "approved" && r.expiresAt && Date.parse(r.expiresAt) <= now) {
+              changed = true;
+              return { ...r, status: "expired" as const };
+            }
+            return r;
+          });
+          return changed ? { ...prev, accessRequests: next } : prev;
+        });
+      },
+
       updateProfile(patch) {
         mutate((prev) => ({ ...prev, profile: { ...prev.profile, ...patch } }));
       },
@@ -751,4 +873,43 @@ export function useClinicianStore() {
 
 export function patientHasConsent(p: AssignedPatient, scope: ConsentScope): boolean {
   return p.consentStatus === "active" && p.consentScopes.includes(scope);
+}
+
+export function hasEffectiveConsent(
+  state: Pick<ClinicianState, "assignedPatients" | "accessRequests">,
+  patientId: string,
+  scope: ConsentScope,
+): boolean {
+  const patient = state.assignedPatients.find((p) => p.id === patientId);
+  if (patient && patientHasConsent(patient, scope)) return true;
+  const now = Date.now();
+  return state.accessRequests.some(
+    (r) =>
+      r.patientId === patientId &&
+      r.status === "approved" &&
+      r.scopes.includes(scope) &&
+      r.expiresAt !== undefined &&
+      Date.parse(r.expiresAt) > now,
+  );
+}
+
+export function activeApprovedRequest(
+  state: Pick<ClinicianState, "accessRequests">,
+  patientId: string,
+): AccessRequest | undefined {
+  const now = Date.now();
+  return state.accessRequests.find(
+    (r) =>
+      r.patientId === patientId &&
+      r.status === "approved" &&
+      r.expiresAt !== undefined &&
+      Date.parse(r.expiresAt) > now,
+  );
+}
+
+export function pendingRequest(
+  state: Pick<ClinicianState, "accessRequests">,
+  patientId: string,
+): AccessRequest | undefined {
+  return state.accessRequests.find((r) => r.patientId === patientId && r.status === "pending");
 }

@@ -37,6 +37,7 @@ const PATIENT_NAV: NavSearchItem[] = [
   { href: "/patient/messages", label: "Messages", group: "Workspace" },
   { href: "/patient/notifications", label: "Notifications", group: "Account" },
   { href: "/patient/settings", label: "Settings", group: "Account" },
+  // Personal information modules (family, emergency, insurance, vaccinations) live inside Settings now.
 ];
 
 /** Drawer nav for mobile — mirrors components/patient/sidebar.tsx. */

@@ -441,7 +441,7 @@ function BlockSlotDialog({
         <DialogHeader>
           <DialogTitle>Block a slot</DialogTitle>
           <DialogDescription>
-            Patients won't see blocked slots. Used for personal time, breaks,
+            Patients won&apos;t see blocked slots. Used for personal time, breaks,
             or focus blocks.
           </DialogDescription>
         </DialogHeader>

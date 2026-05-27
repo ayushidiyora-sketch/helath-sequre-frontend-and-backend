@@ -1,5 +1,10 @@
+import { Suspense } from "react";
 import { ClinicianMessagesView } from "./clinician-messages-view";
 
 export default function ClinicianMessagesPage() {
-  return <ClinicianMessagesView />;
+  return (
+    <Suspense fallback={null}>
+      <ClinicianMessagesView />
+    </Suspense>
+  );
 }

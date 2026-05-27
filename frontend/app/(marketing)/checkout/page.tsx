@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -102,6 +102,14 @@ const TIERS: Record<TierId, Tier> = {
 const TAX_RATE = 0.09; // demo: 9%
 
 export default function CheckoutPage() {
+  return (
+    <Suspense fallback={null}>
+      <CheckoutPageInner />
+    </Suspense>
+  );
+}
+
+function CheckoutPageInner() {
   const params = useSearchParams();
   const router = useRouter();
   const tierParam = (params.get("tier") || "solo") as TierId;
@@ -123,6 +131,12 @@ export default function CheckoutPage() {
 
   const [submitting, setSubmitting] = useState(false);
 
+  // Memoize before any early return so hook order stays stable.
+  const formatINR = useMemo(
+    () => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }),
+    [],
+  );
+
   if (tier.id === "enterprise") {
     return <EnterpriseContact />;
   }
@@ -132,10 +146,6 @@ export default function CheckoutPage() {
   const subtotal = unitPrice * qty * months;
   const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
   const total = subtotal + tax;
-  const formatINR = useMemo(
-    () => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }),
-    [],
-  );
 
   const canSubmit =
     fullName.trim().length > 1 &&

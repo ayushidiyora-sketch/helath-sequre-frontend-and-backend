@@ -33,6 +33,7 @@ export default function AuditorLayout({ children }: { children: React.ReactNode 
           sessionMins={14}
           searchPlaceholder="Search audit events…"
           settingsHref="/auditor/settings"
+          notificationsHref="/auditor/notifications"
           navGroups={GROUPS}
           navUtility={UTILITY}
         />

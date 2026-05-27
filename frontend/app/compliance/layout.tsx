@@ -56,6 +56,7 @@ export default function ComplianceLayout({ children }: { children: React.ReactNo
           sessionMins={14}
           searchPlaceholder="Search audit events, policies, consents…"
           settingsHref="/compliance/settings"
+          notificationsHref="/compliance/notifications"
           navGroups={GROUPS}
           navUtility={UTILITY}
         />

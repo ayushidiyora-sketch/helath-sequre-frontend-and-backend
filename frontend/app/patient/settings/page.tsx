@@ -22,6 +22,10 @@ import {
   Tablet,
   LogOut,
   Lock,
+  IdCard,
+  Users,
+  ShieldCheck,
+  Syringe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -33,6 +37,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ActionButton } from "@/components/shared/action-button";
 import { ChangePhotoButton, RecoveryCodesButton, AddPasskeyButton } from "./account-widgets";
+import { FamilyManager } from "../family/family-manager";
+import { EmergencyManager } from "../emergency/emergency-manager";
+import { InsuranceManager } from "../insurance/insurance-manager";
+import { VaccinationsManager } from "../vaccinations/vaccinations-manager";
 import { usePatientStore, type Profile, type Session } from "@/lib/patient-store";
 
 export default function SettingsPage() {
@@ -47,6 +55,7 @@ export default function SettingsPage() {
       <Tabs defaultValue="profile">
         <TabsList className="flex-wrap">
           <TabsTrigger value="profile"><UserCircle2 /> Profile</TabsTrigger>
+          <TabsTrigger value="personal"><IdCard /> Personal information</TabsTrigger>
           <TabsTrigger value="security"><KeyRound /> Security</TabsTrigger>
           <TabsTrigger value="notifications"><Bell /> Notifications</TabsTrigger>
           <TabsTrigger value="sessions"><Monitor /> Sessions</TabsTrigger>
@@ -55,6 +64,9 @@ export default function SettingsPage() {
 
         <TabsContent value="profile">
           <ProfileTab />
+        </TabsContent>
+        <TabsContent value="personal">
+          <PersonalTab />
         </TabsContent>
         <TabsContent value="security">
           <SecurityTab />
@@ -158,6 +170,46 @@ function ProfileTab() {
           </ul>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PersonalTab() {
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
+          <IdCard className="size-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">Personal information</p>
+          <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
+            Family members, emergency information, insurance plans, and vaccinations — all in one place.
+          </p>
+        </div>
+      </div>
+
+      <Tabs defaultValue="family">
+        <TabsList className="flex-wrap">
+          <TabsTrigger value="family"><Users /> Family</TabsTrigger>
+          <TabsTrigger value="emergency"><AlertTriangle /> Emergency</TabsTrigger>
+          <TabsTrigger value="insurance"><ShieldCheck /> Insurance</TabsTrigger>
+          <TabsTrigger value="vaccinations"><Syringe /> Vaccinations</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="family">
+          <FamilyManager />
+        </TabsContent>
+        <TabsContent value="emergency">
+          <EmergencyManager />
+        </TabsContent>
+        <TabsContent value="insurance">
+          <InsuranceManager />
+        </TabsContent>
+        <TabsContent value="vaccinations">
+          <VaccinationsManager />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

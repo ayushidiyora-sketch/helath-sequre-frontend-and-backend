@@ -1,4 +1,4 @@
-import { use } from "react";
+import { Suspense, use } from "react";
 import { ClinicianMessagesView } from "../clinician-messages-view";
 import { THREADS } from "../clinician-messages-data";
 
@@ -13,5 +13,9 @@ export default function ClinicianThreadPage({
   params: Promise<{ threadId: string }>;
 }) {
   const { threadId } = use(params);
-  return <ClinicianMessagesView initialThreadId={threadId} />;
+  return (
+    <Suspense fallback={null}>
+      <ClinicianMessagesView initialThreadId={threadId} />
+    </Suspense>
+  );
 }

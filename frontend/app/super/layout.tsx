@@ -51,6 +51,7 @@ export default function SuperLayout({ children }: { children: React.ReactNode })
           sessionMins={9}
           searchPlaceholder="Search tenants, incidents, security events…"
           settingsHref="/super/settings"
+          notificationsHref="/super/notifications"
           navGroups={GROUPS}
           navUtility={UTILITY}
         />

@@ -1,4 +1,5 @@
-import { ShieldOff } from "lucide-react";
+import { Hourglass, ShieldOff } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 /**
  * Generic empty state shown when the patient has not granted (or has
@@ -10,9 +11,11 @@ import { ShieldOff } from "lucide-react";
 export function ConsentDeniedCard({
   category,
   className,
+  onRequestAccess,
 }: {
   category: string;
   className?: string;
+  onRequestAccess?: () => void;
 }) {
   return (
     <div
@@ -26,6 +29,11 @@ export function ConsentDeniedCard({
         You don&apos;t currently have access to this category for this patient.
         Access attempts are audit-logged.
       </p>
+      {onRequestAccess && (
+        <Button size="sm" variant="outline" className="mt-2" onClick={onRequestAccess}>
+          <Hourglass /> Request access
+        </Button>
+      )}
     </div>
   );
 }

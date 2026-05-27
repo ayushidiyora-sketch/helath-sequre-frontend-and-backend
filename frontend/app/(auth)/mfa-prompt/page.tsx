@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ShieldCheck, Smartphone, Clock, ArrowRight, Loader2 } from "lucide-react";
@@ -16,6 +16,14 @@ const DISMISS_KEY = "hs_mfa_prompt_dismissed";
  * this browser so the prompt doesn't fire every sign-in.
  */
 export default function MfaPromptPage() {
+  return (
+    <Suspense fallback={null}>
+      <MfaPromptInner />
+    </Suspense>
+  );
+}
+
+function MfaPromptInner() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") ?? "/patient/dashboard";

@@ -198,7 +198,7 @@ export default async function CampaignDetailPage({
         {/* Remaining bucket breakdown */}
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
           <h2 className="text-sm font-semibold">Remaining patients</h2>
-          <p className="text-xs text-[var(--color-muted-foreground)]">Bucketed by why they haven't re-consented yet.</p>
+          <p className="text-xs text-[var(--color-muted-foreground)]">Bucketed by why they haven&apos;t re-consented yet.</p>
           {c.remainingBuckets.length === 0 ? (
             <p className="mt-4 rounded-lg bg-[var(--color-success-soft)]/40 p-3 text-sm text-[var(--color-success)]">
               <CheckCircle2 className="mr-1 inline size-4" /> Everyone has re-consented or aged out.

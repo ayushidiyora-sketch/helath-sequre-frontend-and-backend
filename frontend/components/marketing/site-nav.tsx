@@ -70,10 +70,11 @@ export function SiteNav({
             >
               {item.label}
               {active && (
-                <span
-                  aria-hidden
-                  className="pointer-events-none absolute left-1/2 -bottom-1 size-1 -translate-x-1/2 rounded-full bg-[var(--color-primary)]"
-                />
+                <></>
+                // <span
+                //   aria-hidden
+                //   className="pointer-events-none absolute left-1/2 -bottom-1 size-1 -translate-x-1/2 rounded-full bg-[var(--color-primary)]"
+                // />
               )}
             </Link>
           );

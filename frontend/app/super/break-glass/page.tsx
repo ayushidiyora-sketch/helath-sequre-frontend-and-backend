@@ -19,6 +19,15 @@ const recent = [
   { id: "BG-0012", who: "Arjun Sharma", tenant: "org_riverside", reason: "Cross-tenant data investigation — joint with regulator", started: "May 8 · 9:42 UTC", duration: "27 min", status: "closed" as const },
 ];
 
+const TENANTS: { id: string; name: string }[] = [
+  { id: "org_citygen", name: "City General Hospital" },
+  { id: "org_riverside", name: "Riverside Family Clinic" },
+  { id: "org_northpoint", name: "Northpoint Telecare" },
+  { id: "org_greenleaf", name: "GreenLeaf Diagnostics" },
+  { id: "org_bluepine", name: "Bluepine Pediatrics" },
+  { id: "org_sunset", name: "Sunset Health" },
+];
+
 export default function BreakGlassPage() {
   return (
     <>
@@ -58,7 +67,31 @@ export default function BreakGlassPage() {
             <ShieldAlert className="size-4 text-[var(--color-danger)]" /> Initiate break-glass session
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5"><Label>Target tenant</Label><Input defaultValue="org_greenleaf" leadingIcon={<Building2 />} /></div>
+            <div className="space-y-1.5">
+              <Label htmlFor="bg-target-tenant">Target tenant</Label>
+              <div className="relative w-full">
+                <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[var(--color-muted-foreground)] [&_svg]:size-4">
+                  <Building2 />
+                </span>
+                <select
+                  id="bg-target-tenant"
+                  name="targetTenant"
+                  defaultValue="org_greenleaf"
+                  className="flex h-10 w-full appearance-none rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] pl-10 pr-9 py-2 text-sm transition-colors focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
+                >
+                  {TENANTS.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} · {t.id}
+                    </option>
+                  ))}
+                </select>
+                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-[var(--color-muted-foreground)]">
+                  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" className="size-4">
+                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.06l3.71-3.83a.75.75 0 1 1 1.08 1.04l-4.25 4.39a.75.75 0 0 1-1.08 0L5.21 8.27a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                  </svg>
+                </span>
+              </div>
+            </div>
             <div className="space-y-1.5"><Label>Linked incident</Label><Input defaultValue="INC-0021" className="font-mono" /></div>
             <div className="space-y-1.5"><Label>Session duration</Label><Input defaultValue="30 min (max)" readOnly className="bg-[var(--color-muted)]" /></div>
             <div className="space-y-1.5"><Label>Re-MFA challenge</Label><Input defaultValue="Required at start + 15m" readOnly className="bg-[var(--color-muted)]" /></div>

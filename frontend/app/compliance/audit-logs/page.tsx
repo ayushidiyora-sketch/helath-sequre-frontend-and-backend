@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
@@ -75,6 +75,14 @@ const EVENTS: AuditEvent[] = Array.from({ length: TOTAL }, (_, i) => {
 type AuditStatus = "success" | "denied" | "failure";
 
 export default function AuditLogsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AuditLogsPageInner />
+    </Suspense>
+  );
+}
+
+function AuditLogsPageInner() {
   const params = useSearchParams();
   const router = useRouter();
   const sessionFilter = params.get("session");
