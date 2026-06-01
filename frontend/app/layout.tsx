@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Toaster } from "sonner";
+import { BrandingThemeProvider } from "@/components/shared/branding-theme";
 import "./globals.css";
 
 // Self-host the fonts via next/font so we don't make third-party requests
@@ -43,7 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body className="min-h-screen bg-[var(--color-background)] antialiased">
-        {children}
+        <BrandingThemeProvider>{children}</BrandingThemeProvider>
         <Toaster
           position="bottom-right"
           richColors

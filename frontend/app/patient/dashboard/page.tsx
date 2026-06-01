@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { jsPDF } from "jspdf";
 import { toast } from "sonner";
@@ -55,10 +56,53 @@ function isPast(a: Appointment): boolean {
   return a.status === "completed" || a.status === "cancelled" || a.status === "no-show";
 }
 
+interface ApiNext {
+  id: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  status: string;
+  notes: string | null;
+  clinician: string;
+  clinicianDepartment: string | null;
+}
+
+interface ApiDashboard {
+  ok: true;
+  profile: { firstName: string; lastName: string; mrn: string };
+  stats: {
+    upcomingCount: number;
+    careTeamSize: number;
+    documents: number;
+    activeConsents: number;
+    unreadMessages: number;
+  };
+  next: ApiNext | null;
+}
+
 export default function PatientDashboard() {
   const { state } = usePatientStore();
+  const [api, setApi] = useState<ApiDashboard | null>(null);
+  const [apiLoading, setApiLoading] = useState(true);
 
-  if (!state.hydrated) {
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/dashboard", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setApi(data as ApiDashboard);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setApiLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!state.hydrated || apiLoading) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
   }
 
@@ -69,14 +113,39 @@ export default function PatientDashboard() {
   const pendingConsents = 0; // pending consent requests are demo-only, not in the store
   const unreadThreads = state.threads.filter((t) => t.unread).length;
 
+  // Real-data overlays: prefer API values where available.
+  const greetingFirstName = api?.profile.firstName ?? state.profile.firstName;
+  const apiNext: Appointment | undefined = api?.next
+    ? {
+        id: api.next.id,
+        clinician: api.next.clinician,
+        department: api.next.clinicianDepartment ?? "Care team",
+        date: api.next.date,
+        time: api.next.time,
+        mode: "in-person",
+        status: "confirmed",
+        reason: api.next.notes ?? "Visit",
+        documentIds: [],
+        createdAt: api.next.date,
+      }
+    : undefined;
+  const heroNext = apiNext ?? next;
+  const stats = api?.stats ?? {
+    upcomingCount: upcoming.length,
+    careTeamSize: 0,
+    documents: state.documents.length,
+    activeConsents: state.consents.filter((c) => c.status === "active").length,
+    unreadMessages: unreadThreads,
+  };
+
   return (
     <>
-      <GreetingHero firstName={state.profile.firstName} next={next} unread={unreadThreads} pending={pendingConsents} />
+      <GreetingHero firstName={greetingFirstName} next={heroNext} unread={stats.unreadMessages} pending={pendingConsents} />
       <QuickStats
-        appointments={upcoming.length}
-        consents={state.consents.filter((c) => c.status === "active").length}
-        documents={state.documents.length}
-        unread={unreadThreads}
+        appointments={stats.upcomingCount}
+        consents={stats.activeConsents}
+        documents={stats.documents}
+        unread={stats.unreadMessages}
       />
       <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-5">

@@ -3,10 +3,11 @@ import type { NextConfig } from "next";
 /**
  * HealthSecure frontend — Next.js UI app (default port 3000).
  *
- * The app has no API routes of its own; every `/api/*` request is rewritten
- * to the backend service. The rewrite is a server-side proxy, so to the
- * browser it stays same-origin — session cookies set by the backend are
- * applied to this origin and sent back on later requests.
+ * Most `/api/*` requests are now handled by frontend route handlers (Prisma
+ * + Resend demo flow). The rewrite below is a `fallback` proxy to the NestJS
+ * backend for any `/api/*` path the frontend doesn't implement. `fallback`
+ * runs AFTER both filesystem and dynamic routes, so handlers like
+ * `/api/super/tenants/[id]` win over the proxy.
  */
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3001";
 
@@ -44,9 +45,13 @@ const nextConfig: NextConfig = {
     optimizePackageImports: ["lucide-react"],
   },
   async rewrites() {
-    return [
-      { source: "/api/:path*", destination: `${BACKEND_URL}/api/:path*` },
-    ];
+    return {
+      beforeFiles: [],
+      afterFiles: [],
+      fallback: [
+        { source: "/api/:path*", destination: `${BACKEND_URL}/api/:path*` },
+      ],
+    };
   },
   async headers() {
     return [

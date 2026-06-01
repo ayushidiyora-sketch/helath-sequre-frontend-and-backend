@@ -1,0 +1,377 @@
+// HealthSecure Portal — initial schema.
+// Aligned with Section 7 of the Requirement Analysis: UUID PKs, organization_id
+// discriminator on tenant-scoped tables, soft-delete on PHI surfaces,
+// append-only audit_logs (handled later — not in this first migration).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Multi-tenancy root
+// ---------------------------------------------------------------------------
+
+enum TenantType {
+  hospital
+  clinic
+  diagnostic
+  telemedicine
+}
+
+enum TenantTier {
+  basic
+  pro
+  enterprise
+}
+
+enum TenantStatus {
+  active
+  trial
+  suspended
+  archived
+}
+
+model Organization {
+  id               String        @id @default(uuid()) @db.Uuid
+  /// Short slug used in cross-tenant URLs and break-glass forms (org_lakeside).
+  slug             String        @unique
+  name             String
+  type             TenantType
+  tier             TenantTier    @default(basic)
+  status           TenantStatus  @default(active)
+  region           String        @default("ap-south-1")
+  /// Free-form JSON for per-tenant settings (branding, retention defaults, etc.)
+  settings         Json          @default("{}")
+  multiAzEnabled   Boolean       @default(false)
+  crossRegionS3    Boolean       @default(false)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  archivedAt       DateTime?
+
+  users            User[]
+  roles            Role[]
+  departments      Department[]
+  appointments     Appointment[]
+
+  @@index([status])
+  @@map("organizations")
+}
+
+model Department {
+  id                 String       @id @default(uuid()) @db.Uuid
+  organizationId     String       @db.Uuid
+  organization       Organization @relation(fields: [organizationId], references: [id])
+  name               String
+  description        String?
+  parentId           String?      @db.Uuid
+  parent             Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children           Department[] @relation("DepartmentHierarchy")
+  defaultSlotMinutes Int          @default(30)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  deletedAt          DateTime?
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([parentId])
+  @@map("departments")
+}
+
+enum AppointmentStatus {
+  confirmed
+  no_show
+  blocked
+  cancelled
+  completed
+}
+
+model Appointment {
+  id              String            @id @default(uuid()) @db.Uuid
+  organizationId  String            @db.Uuid
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+  clinicianId     String            @db.Uuid
+  clinician       User              @relation(fields: [clinicianId], references: [id])
+  patientName     String?
+  patientEmail    String?
+  startsAt        DateTime
+  durationMinutes Int               @default(30)
+  room            String?
+  status          AppointmentStatus @default(confirmed)
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  deletedAt       DateTime?
+
+  @@index([organizationId, startsAt])
+  @@index([clinicianId, startsAt])
+  @@index([status])
+  @@map("appointments")
+}
+
+// ---------------------------------------------------------------------------
+// Users & auth
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  active
+  invited
+  suspended
+  deactivated
+}
+
+/// System role kinds. Per-tenant Role rows can extend these, but the kind
+/// drives the route prefix and most policy checks.
+enum RoleKind {
+  patient
+  clinician
+  org_admin
+  compliance_manager
+  auditor
+  super_admin
+}
+
+model User {
+  id              String       @id @default(uuid()) @db.Uuid
+  /// Null for super admins (cross-tenant Sensussoft staff).
+  organizationId  String?      @db.Uuid
+  organization    Organization? @relation(fields: [organizationId], references: [id])
+
+  email           String       @unique
+  /// bcrypt hash of the password
+  passwordHash    String
+  /// Encrypted TOTP secret. Null until MFA is enrolled.
+  mfaSecret       String?
+  mfaEnrolledAt   DateTime?
+
+  firstName       String
+  lastName        String
+  phone           String?
+
+  // --- Extended profile (HR / employment) ----------------------------------
+  employeeId      String?
+  dateOfBirth     DateTime?    @db.Date
+  gender          String?
+  profilePhotoUrl String?
+  department      String?
+  designation     String?
+  accessLevel     String?
+  reportingTo     String?
+  joiningDate     DateTime?    @db.Date
+  employmentType  String?
+  shift           String?
+  workLocation    String?
+  permissions     Json         @default("{}")
+  scheduleTemplate Json        @default("{}")
+  mfaRequired     Boolean      @default(true)
+
+  roleKind        RoleKind
+  /// Per-tenant Role override. Null means use the default kind.
+  roleId          String?      @db.Uuid
+  role            Role?        @relation(fields: [roleId], references: [id])
+
+  status          UserStatus   @default(active)
+  lastLoginAt     DateTime?
+  failedLoginCount Int         @default(0)
+  lockedUntil     DateTime?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  sessions        Session[]
+  appointments    Appointment[]
+  asPatientPanel  PatientAssignment[] @relation("PatientAssignments_patient")
+  asClinicianPanel PatientAssignment[] @relation("PatientAssignments_clinician")
+
+  @@index([organizationId])
+  @@index([roleKind])
+  @@index([status])
+  @@index([department])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// PatientAssignment
+// Links a patient to a clinician for ongoing care (panel relationship).
+// Active rows have endedAt = null; "unassigning" sets endedAt to NOW().
+// ---------------------------------------------------------------------------
+
+model PatientAssignment {
+  id           String   @id @default(uuid()) @db.Uuid
+  patientId    String   @db.Uuid
+  patient      User     @relation("PatientAssignments_patient", fields: [patientId], references: [id])
+  clinicianId  String   @db.Uuid
+  clinician    User     @relation("PatientAssignments_clinician", fields: [clinicianId], references: [id])
+  role         String?
+  notes        String?
+  startedAt    DateTime @default(now())
+  endedAt      DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([patientId, endedAt])
+  @@index([clinicianId, endedAt])
+  @@map("patient_assignments")
+}
+
+model Prescription {
+  id                  String   @id @default(uuid()) @db.Uuid
+  patientId           String   @db.Uuid
+  clinicianId         String   @db.Uuid
+  organizationId      String   @db.Uuid
+  drugName            String
+  strength            String?
+  route               String?
+  frequency           String?
+  duration            String?
+  refills             Int      @default(0)
+  patientInstructions String?
+  status              String   @default("draft")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  finalizedAt         DateTime?
+  deletedAt           DateTime?
+
+  @@index([patientId, status])
+  @@index([clinicianId, status])
+  @@map("prescriptions")
+}
+
+model MedicalRecord {
+  id              String   @id @default(uuid()) @db.Uuid
+  patientId       String   @db.Uuid
+  clinicianId     String   @db.Uuid
+  organizationId  String   @db.Uuid
+  template        String   @default("SOAP")
+  subjective      String?
+  objective       String?
+  assessment      String?
+  plan            String?
+  body            String?
+  status          String   @default("draft")
+  version         Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  finalizedAt     DateTime?
+  deletedAt       DateTime?
+
+  @@index([patientId, status])
+  @@index([clinicianId, status])
+  @@map("medical_records")
+}
+
+model PatientDocument {
+  id                String   @id @default(uuid()) @db.Uuid
+  patientId         String   @db.Uuid
+  uploadedById      String   @db.Uuid
+  organizationId    String   @db.Uuid
+  name              String
+  category          String   @default("Other")
+  mimeType          String?
+  sizeBytes         Int      @default(0)
+  dataUrl           String?
+  scanStatus        String   @default("pending_scan")
+  sharedWithPatient Boolean  @default(true)
+  uploadedAt        DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  @@index([patientId, deletedAt])
+  @@map("patient_documents")
+}
+
+// ---------------------------------------------------------------------------
+// RBAC
+// ---------------------------------------------------------------------------
+
+model Role {
+  id              String       @id @default(uuid()) @db.Uuid
+  /// Null for system roles (shared across all tenants).
+  organizationId  String?      @db.Uuid
+  organization    Organization? @relation(fields: [organizationId], references: [id])
+  kind            RoleKind
+  name            String
+  description     String?
+  createdAt       DateTime     @default(now())
+
+  permissions     RolePermission[]
+  users           User[]
+
+  @@unique([organizationId, name])
+  @@index([kind])
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid()) @db.Uuid
+  /// e.g. "records:read", "documents:upload"
+  code        String  @unique
+  module      String
+  description String
+
+  roles       RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  grantedAt    DateTime   @default(now())
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+model Session {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the refresh token. The raw token is only sent to the client.
+  refreshTokenHash String @unique
+  device       String?
+  ipAddress    String?
+  userAgent    String?
+  issuedAt     DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------------
+// MFA challenges (email OTP after password — staff roles)
+// ---------------------------------------------------------------------------
+
+model MfaChallenge {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  /// SHA-256 of the 6-digit code. Raw code only ever lives in the email.
+  codeHash    String
+  attemptsLeft Int      @default(5)
+  issuedAt    DateTime  @default(now())
+  expiresAt   DateTime
+  usedAt      DateTime?
+  ipAddress   String?
+  userAgent   String?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("mfa_challenges")
+}

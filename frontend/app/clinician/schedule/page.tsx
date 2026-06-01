@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Plus,
   ChevronLeft,
@@ -30,7 +30,6 @@ import {
   useClinicianStore,
   type Weekday,
   type DayTemplate,
-  type ClinicianAppointment,
   type BlockedSlot,
 } from "@/lib/clinician-store";
 
@@ -66,6 +65,18 @@ function fmtTime12(hhmm: string): string {
   return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+/** Parse "9:00 AM" / "13:30" / "09:00 PM" to minutes-since-midnight for sorting. */
+function parseTime(label: string): number {
+  const m = /^(\d{1,2}):(\d{2})\s*([AP]M)?$/i.exec(label.trim());
+  if (!m) return 0;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = m[3]?.toUpperCase();
+  if (ap === "PM" && h < 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  return h * 60 + min;
+}
+
 export default function ClinicianSchedulePage() {
   const { state, addBlockedSlot, removeBlockedSlot, updateDayTemplate } = useClinicianStore();
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
@@ -74,14 +85,105 @@ export default function ClinicianSchedulePage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editDay, setEditDay] = useState<Weekday | null>(null);
 
+  // Hydrate the scheduleTemplate from the DB once on mount. The local store
+  // continues to drive the on-screen UI (so we don't have to refactor the
+  // Day/Week/Availability tabs), but POST/PATCH below persist every change to
+  // Postgres so they survive refresh and other devices.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/clinician/availability", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const tpl = data.template as Record<
+          Weekday,
+          {
+            start: string;
+            end: string;
+            afternoon?: { start: string; end: string };
+            slotMinutes: number;
+            off: boolean;
+          }
+        >;
+        for (const d of Object.keys(tpl) as Weekday[]) {
+          updateDayTemplate(d, {
+            morning: tpl[d].off ? undefined : { start: tpl[d].start, end: tpl[d].end },
+            afternoon: tpl[d].off || !tpl[d].afternoon
+              ? undefined
+              : { start: tpl[d].afternoon!.start, end: tpl[d].afternoon!.end },
+            slotMinutes: tpl[d].slotMinutes,
+            off: tpl[d].off,
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const today = useMemo(() => new Date(), []);
   const isToday = isSameDay(selectedDate, today);
   const stride = view === "week" ? 7 : 1;
 
-  const selectedDateIso = selectedDate.toISOString().slice(0, 10);
+  function toLocalIso(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  const selectedDateIso = toLocalIso(selectedDate);
+
+  // Pull this clinician's real appointments from the DB whenever the selected
+  // week changes. Pull a 7-day window around the selected date so the Day +
+  // Week tabs share the same dataset (no refetch on tab switch). When the
+  // patient hits Confirm on /patient/appointments/new, the new row appears
+  // here on next render — guarantees parity between the patient booking flow
+  // and the clinician's calendar.
+  type ApiAppt = {
+    id: string;
+    patientName: string | null;
+    patientEmail: string | null;
+    startsAt: string;
+    date: string;
+    time: string;
+    durationMinutes: number;
+    status: "confirmed" | "no_show" | "blocked" | "cancelled" | "completed";
+    mode: "in-person" | "telehealth";
+    notes: string | null;
+  };
+  const [apiAppointments, setApiAppointments] = useState<ApiAppt[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    // Fetch the week containing selectedDate (Sun..Sat). Cheap query and
+    // covers both Day + Week tabs without a refetch on view toggle.
+    const dow = selectedDate.getDay();
+    const weekStart = new Date(
+      selectedDate.getFullYear(),
+      selectedDate.getMonth(),
+      selectedDate.getDate() - dow,
+    );
+    const weekEnd = new Date(
+      weekStart.getFullYear(),
+      weekStart.getMonth(),
+      weekStart.getDate() + 6,
+    );
+    fetch(
+      `/api/clinician/appointments?from=${toLocalIso(weekStart)}&to=${toLocalIso(weekEnd)}`,
+      { cache: "no-store" },
+    )
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setApiAppointments(data.appointments as ApiAppt[]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDate]);
+
   const dayAppointments = useMemo(
-    () => state.appointments.filter((a) => a.date === selectedDateIso).sort((a, b) => a.time.localeCompare(b.time)),
-    [state.appointments, selectedDateIso],
+    () => apiAppointments.filter((a) => a.date === selectedDateIso),
+    [apiAppointments, selectedDateIso],
   );
   const dayBlocks = useMemo(
     () => state.blockedSlots.filter((b) => b.date === selectedDateIso),
@@ -89,17 +191,47 @@ export default function ClinicianSchedulePage() {
   );
   const totalSlots = dayAppointments.length + dayBlocks.length;
   const completedSlots = dayAppointments.filter((a) => a.status === "completed").length;
-const slots = [
-  { time: "9:00 AM", patient: "Rohan Jain · ECG review", status: "completed", mode: "office" as const },
-  { time: "9:15 AM", patient: "Saanvi Sen · Initial consult", status: "completed", mode: "telehealth" as const },
-  { time: "9:30 AM", patient: "Aarav Mehta · Cardiology follow-up", status: "next", mode: "office" as const },
-  { time: "9:45 AM", patient: "Neha Bansal · Hypertension", status: "upcoming", mode: "office" as const },
-  { time: "10:00 AM", patient: "— blocked —", status: "blocked" as const, mode: "office" as const },
-  { time: "10:15 AM", patient: "Vikram Rao · Lipid recheck", status: "upcoming", mode: "office" as const },
-  { time: "10:30 AM", patient: "— available —", status: "available" as const, mode: "office" as const },
-  { time: "10:45 AM", patient: "— available —", status: "available" as const, mode: "office" as const },
-  { time: "11:00 AM", patient: "Ananya Joshi · Telehealth", status: "upcoming", mode: "telehealth" as const },
-];
+
+  // Build the visible slot list from the clinician's real appointments + blocks
+  // for the selected day. No more hardcoded "Rohan Jain · ECG review" rows —
+  // when this clinician has no data the table renders an empty-state row.
+  type SlotRow = {
+    time: string;
+    patient: string;
+    status: "completed" | "next" | "upcoming" | "blocked" | "available";
+    mode: "office" | "telehealth";
+    sortKey: string;
+  };
+  const slots: SlotRow[] = useMemo(() => {
+    const out: SlotRow[] = [];
+    for (const a of dayAppointments) {
+      const label = a.notes
+        ? `${a.patientName ?? "Patient"} · ${a.notes}`
+        : a.patientName ?? "Patient";
+      let status: SlotRow["status"];
+      if (a.status === "completed") status = "completed";
+      else if (a.status === "no_show" || a.status === "cancelled") status = "upcoming";
+      else status = "upcoming";
+      out.push({
+        time: a.time,
+        patient: label,
+        status,
+        mode: a.mode === "telehealth" ? "telehealth" : "office",
+        sortKey: a.time,
+      });
+    }
+    for (const b of dayBlocks) {
+      out.push({
+        time: b.start,
+        patient: b.reason ?? "Blocked",
+        status: "blocked",
+        mode: "office",
+        sortKey: b.start,
+      });
+    }
+    // Sort chronologically — store times are "9:00 AM" style; convert to HH:MM.
+    return out.sort((x, y) => parseTime(x.sortKey) - parseTime(y.sortKey));
+  }, [dayAppointments, dayBlocks]);
 
   return (
     <>
@@ -200,6 +332,11 @@ const slots = [
                   </li>
                 );
               })}
+              {slots.length === 0 && (
+                <li className="px-5 py-10 text-center text-sm text-[var(--color-muted-foreground)]">
+                  No appointments or blocks scheduled for {formatHeader(selectedDate)}. Use <span className="font-medium">Add availability</span> to publish open slots, or <span className="font-medium">Block slot</span> to reserve personal time.
+                </li>
+              )}
             </ul>
           </div>
         </TabsContent>
@@ -207,7 +344,12 @@ const slots = [
         <TabsContent value="week">
           <WeekView
             anchor={selectedDate}
-            appointments={state.appointments}
+            appointments={apiAppointments.map((a) => ({
+              id: a.id,
+              date: a.date,
+              time: a.time,
+              reason: a.notes ?? a.patientName ?? "Booked",
+            }))}
             blockedSlots={state.blockedSlots}
             onPickDay={(d) => {
               setSelectedDate(d);
@@ -273,25 +415,72 @@ const slots = [
       <AddAvailabilityDialog
         open={addOpen}
         onOpenChange={setAddOpen}
-        onSave={(days, start, end, slot) => {
+        onSave={async (days, start, end, slot) => {
+          const slotMinutes = parseInt(slot, 10);
+          // Optimistic local update so the Availability templates tab repaints
+          // immediately; the API call persists to Postgres.
           for (const d of days) {
             updateDayTemplate(d, {
               morning: { start, end },
               afternoon: undefined,
-              slotMinutes: parseInt(slot, 10),
+              slotMinutes,
               off: false,
             });
           }
-          toast.success("Availability saved", { description: `${days.join(", ")} · ${fmtTime12(start)}–${fmtTime12(end)} · ${slot}-min slots` });
+          try {
+            const r = await fetch("/api/clinician/availability", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ days, start, end, slotMinutes }),
+            });
+            const data = await r.json();
+            if (!r.ok || !data.ok) {
+              toast.error(data.error ?? "Could not save availability.");
+              return;
+            }
+            toast.success("Availability saved · audit-logged", {
+              description: `${days.join(", ")} · ${fmtTime12(start)}–${fmtTime12(end)} · ${slot}-min slots`,
+            });
+          } catch {
+            toast.error("Network error — saved locally only.");
+          }
         }}
       />
       <EditTemplateDialog
         day={editDay}
         template={editDay ? state.scheduleTemplate[editDay] : null}
         onClose={() => setEditDay(null)}
-        onSave={(day, next) => {
+        onSave={async (day, next) => {
           updateDayTemplate(day, next);
-          toast.success(`${day} availability updated`);
+          try {
+            // Send the morning window as `start/end` and (if present) the
+            // afternoon window as `afternoon.start/end` so split shifts (e.g.
+            // 9–12 + 2–5) round-trip through the DB. Previously the afternoon
+            // was silently dropped on save, which made the booking page show
+            // a different time range than the clinician's own availability tab.
+            const template = {
+              start: next.morning?.start ?? "09:00",
+              end: next.morning?.end ?? "17:00",
+              slotMinutes: next.slotMinutes,
+              off: next.off,
+              ...(next.afternoon
+                ? { afternoon: { start: next.afternoon.start, end: next.afternoon.end } }
+                : {}),
+            };
+            const r = await fetch("/api/clinician/availability", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ day, template }),
+            });
+            const data = await r.json();
+            if (!r.ok || !data.ok) {
+              toast.error(data.error ?? "Could not save day template.");
+              return;
+            }
+            toast.success(`${day} availability updated · audit-logged`);
+          } catch {
+            toast.error("Network error — saved locally only.");
+          }
           setEditDay(null);
         }}
       />
@@ -310,7 +499,8 @@ function WeekView({
   onPickDay,
 }: {
   anchor: Date;
-  appointments: ClinicianAppointment[];
+  /** Minimal shape — just enough for the week grid. Other fields ignored. */
+  appointments: { id: string; date: string; time: string; reason: string }[];
   blockedSlots: BlockedSlot[];
   onPickDay: (d: Date) => void;
 }) {

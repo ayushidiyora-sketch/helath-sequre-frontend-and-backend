@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -49,66 +49,28 @@ function categoryFromName(name: string): DocumentCategory {
 type Clinician = {
   id: string;
   name: string;
-  specialty: string;
   initials: string;
-  experience: string;
+  designation: string | null;
+  department: string | null;
+  workLocation: string | null;
+  profilePhotoUrl: string | null;
+  experienceYears: number;
+  tenantName: string | null;
+  isAssigned: boolean;
+  /** Derived for display: "office" | "telehealth" based on workLocation hints. */
   mode: "office" | "telehealth";
+  /** Friendly location label for the row. */
   location: string;
-  color: string;
+  /** Specialty label = designation || department || "Care team". */
+  specialty: string;
 };
 
-const CLINICIANS: Clinician[] = [
-  {
-    id: "c-ps",
-    name: "Dr. Priya Shah",
-    specialty: "Cardiology",
-    initials: "PS",
-    experience: "14 yrs",
-    mode: "office",
-    location: "Room 304",
-    color: "from-[oklch(0.65_0.13_195)] to-[oklch(0.5_0.12_205)]",
-  },
-  {
-    id: "c-ri",
-    name: "Dr. Rohan Iyer",
-    specialty: "General Medicine",
-    initials: "RI",
-    experience: "9 yrs",
-    mode: "telehealth",
-    location: "Video link",
-    color: "from-[oklch(0.62_0.14_235)] to-[oklch(0.48_0.13_245)]",
-  },
-  {
-    id: "c-nk",
-    name: "Dr. Neha Kapoor",
-    specialty: "Dermatology",
-    initials: "NK",
-    experience: "6 yrs",
-    mode: "office",
-    location: "Room 212",
-    color: "from-[oklch(0.7_0.13_320)] to-[oklch(0.55_0.13_330)]",
-  },
-];
+function deriveMode(workLocation: string | null): "office" | "telehealth" {
+  if (!workLocation) return "office";
+  return /tele|video|virtual|remote/i.test(workLocation) ? "telehealth" : "office";
+}
 
-const SLOTS_BY_CLINICIAN: Record<string, { day: string; times: string[] }[]> = {
-  "c-ps": [
-    { day: "Mon, May 25", times: ["9:30 AM", "10:00 AM", "11:15 AM", "2:30 PM"] },
-    { day: "Tue, May 26", times: ["8:45 AM", "1:00 PM", "3:15 PM"] },
-    { day: "Wed, May 27", times: ["9:00 AM", "10:30 AM", "11:45 AM", "2:00 PM", "4:15 PM"] },
-    { day: "Thu, May 28", times: ["9:15 AM", "11:00 AM", "3:30 PM"] },
-  ],
-  "c-ri": [
-    { day: "Mon, May 25", times: ["8:00 AM", "8:30 AM", "12:00 PM"] },
-    { day: "Tue, May 26", times: ["9:00 AM", "11:30 AM", "2:00 PM", "4:00 PM"] },
-    { day: "Wed, May 27", times: ["10:00 AM", "1:15 PM"] },
-    { day: "Fri, May 29", times: ["8:45 AM", "10:15 AM", "2:45 PM", "4:30 PM"] },
-  ],
-  "c-nk": [
-    { day: "Tue, May 26", times: ["10:00 AM", "11:00 AM"] },
-    { day: "Wed, May 27", times: ["9:30 AM", "1:30 PM", "3:00 PM"] },
-    { day: "Thu, May 28", times: ["10:30 AM", "2:00 PM", "4:00 PM"] },
-  ],
-};
+type SlotDay = { day: string; times: string[]; slotMinutes: number };
 
 type BookingDocument = { name: string; size: string; sizeBytes: number };
 type BookingState = {
@@ -145,9 +107,107 @@ export default function NewAppointmentPage() {
     reason: "",
     notes: "",
   });
+  const [clinicians, setClinicians] = useState<Clinician[]>([]);
+  const [cliniciansLoading, setCliniciansLoading] = useState(true);
+  const [cliniciansError, setCliniciansError] = useState<string | null>(null);
 
-  const clinician = CLINICIANS.find((c) => c.id === data.clinicianId) ?? null;
-  const slots = data.clinicianId ? SLOTS_BY_CLINICIAN[data.clinicianId] : [];
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/clinicians", { cache: "no-store" })
+      .then(async (r) => {
+        const json = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !json.ok) {
+          setCliniciansError(json.error ?? `HTTP ${r.status}`);
+          return;
+        }
+        type ApiRow = {
+          id: string;
+          name: string;
+          initials: string;
+          designation: string | null;
+          department: string | null;
+          workLocation: string | null;
+          profilePhotoUrl: string | null;
+          experienceYears: number;
+          tenantName: string | null;
+          isAssigned: boolean;
+        };
+        const rows: Clinician[] = (json.clinicians as ApiRow[]).map((c) => {
+          const mode = deriveMode(c.workLocation);
+          return {
+            id: c.id,
+            name: c.name,
+            initials: c.initials,
+            designation: c.designation,
+            department: c.department,
+            workLocation: c.workLocation,
+            profilePhotoUrl: c.profilePhotoUrl,
+            experienceYears: c.experienceYears,
+            tenantName: c.tenantName,
+            isAssigned: c.isAssigned,
+            mode,
+            location: c.workLocation ?? (mode === "telehealth" ? "Video link" : "Clinic"),
+            specialty: c.designation ?? c.department ?? "Care team",
+          };
+        });
+        setClinicians(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setCliniciansError("Network error — could not load clinicians.");
+      })
+      .finally(() => {
+        if (!cancelled) setCliniciansLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const clinician = clinicians.find((c) => c.id === data.clinicianId) ?? null;
+
+  // Slots come ONLY from the chosen clinician's saved scheduleTemplate (set
+  // via Clinician → Schedule → Add availability). No synthetic fallback —
+  // when the clinician hasn't published availability the page shows a clear
+  // empty state instead of fabricating times that don't match the clinician's
+  // calendar (which is exactly what made the booking grid look uniformly
+  // 30-min for clinicians who hadn't saved anything).
+  const [slots, setSlots] = useState<SlotDay[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [hasTemplate, setHasTemplate] = useState<boolean>(false);
+  useEffect(() => {
+    if (!data.clinicianId) {
+      setSlots([]);
+      setHasTemplate(false);
+      return;
+    }
+    let cancelled = false;
+    setSlotsLoading(true);
+    fetch(`/api/patient/clinicians/${data.clinicianId}/slots`, { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((res) => {
+        if (cancelled) return;
+        if (res?.ok && Array.isArray(res.slots)) {
+          setSlots(res.slots);
+          setHasTemplate(Boolean(res.hasTemplate));
+        } else {
+          setSlots([]);
+          setHasTemplate(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSlots([]);
+          setHasTemplate(false);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSlotsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [data.clinicianId]);
 
   const canContinue =
     step === 1
@@ -170,8 +230,10 @@ export default function NewAppointmentPage() {
     else router.push("/patient/appointments");
   };
 
-  const confirm = () => {
-    if (!clinician || !data.slotDay || !data.slotTime) return;
+  const [confirming, setConfirming] = useState(false);
+  const confirm = async () => {
+    if (!clinician || !data.slotDay || !data.slotTime || confirming) return;
+    setConfirming(true);
     // Upload any attachments first so the appointment can reference their ids.
     const documentIds = data.documents.map((d) => {
       const doc = addDocument({
@@ -181,25 +243,57 @@ export default function NewAppointmentPage() {
       });
       return doc.id;
     });
-    const apt = addAppointment({
-      clinician: clinician.name,
-      department: clinician.specialty,
-      date: slotDayToIso(data.slotDay),
-      time: data.slotTime,
-      mode: clinician.mode === "office" ? "in-person" : "telehealth",
-      reason: data.reason,
-      documentIds,
-    });
-    addNotification({
-      title: "Appointment booked",
-      body: `${clinician.name} · ${data.slotDay} at ${data.slotTime}`,
-      type: "appointment",
-      href: `/patient/appointments/${apt.id}`,
-    });
-    toast.success("Appointment booked", {
-      description: `${clinician.name} · ${data.slotDay} · ${data.slotTime} · reminders scheduled at T-24h and T-1h`,
-    });
-    setTimeout(() => router.push("/patient/appointments"), 600);
+    const date = slotDayToIso(data.slotDay);
+    const durationMinutes =
+      slots.find((s) => s.day === data.slotDay)?.slotMinutes ?? 15;
+    try {
+      // Persist to Postgres via POST /api/patient/appointments. The DB row is
+      // what the clinician's Schedule Day/Week tabs read — the local store
+      // mirror keeps the patient-side /patient/appointments listing populated
+      // without a refetch.
+      const r = await fetch("/api/patient/appointments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clinicianId: clinician.id,
+          date,
+          time: data.slotTime,
+          durationMinutes,
+          mode: clinician.mode === "office" ? "in-person" : "telehealth",
+          reason: data.reason,
+        }),
+      });
+      const body = await r.json();
+      if (!r.ok || !body.ok) {
+        toast.error(body.error ?? "Could not book appointment.");
+        return;
+      }
+      // Mirror to the local store so /patient/appointments shows the booking
+      // immediately without an extra round-trip.
+      const apt = addAppointment({
+        clinician: clinician.name,
+        department: clinician.specialty,
+        date,
+        time: data.slotTime,
+        mode: clinician.mode === "office" ? "in-person" : "telehealth",
+        reason: data.reason,
+        documentIds,
+      });
+      addNotification({
+        title: "Appointment booked",
+        body: `${clinician.name} · ${data.slotDay} at ${data.slotTime}`,
+        type: "appointment",
+        href: `/patient/appointments/${apt.id}`,
+      });
+      toast.success("Appointment booked · audit-logged", {
+        description: `${clinician.name} · ${data.slotDay} · ${data.slotTime} · reminders scheduled at T-24h and T-1h`,
+      });
+      setTimeout(() => router.push("/patient/appointments"), 600);
+    } catch {
+      toast.error("Network error — please try again.");
+    } finally {
+      setConfirming(false);
+    }
   };
 
   return (
@@ -277,8 +371,16 @@ export default function NewAppointmentPage() {
 
       <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-5">
-          {step === 1 && <ClinicianStep data={data} setData={setData} />}
-          {step === 2 && <SlotStep data={data} setData={setData} slots={slots} clinician={clinician} />}
+          {step === 1 && (
+            <ClinicianStep
+              data={data}
+              setData={setData}
+              clinicians={clinicians}
+              loading={cliniciansLoading}
+              error={cliniciansError}
+            />
+          )}
+          {step === 2 && <SlotStep data={data} setData={setData} slots={slots} clinician={clinician} loading={slotsLoading} hasTemplate={hasTemplate} />}
           {step === 3 && <ReasonStep data={data} setData={setData} />}
           {step === 4 && <ReviewStep data={data} clinician={clinician} onEditStep={setStep} />}
         </div>
@@ -292,6 +394,7 @@ export default function NewAppointmentPage() {
           onBack={back}
           onNext={next}
           onConfirm={confirm}
+          confirming={confirming}
         />
       </div>
     </>
@@ -305,20 +408,26 @@ export default function NewAppointmentPage() {
 function ClinicianStep({
   data,
   setData,
+  clinicians,
+  loading,
+  error,
 }: {
   data: BookingState;
   setData: (d: BookingState) => void;
+  clinicians: Clinician[];
+  loading: boolean;
+  error: string | null;
 }) {
   const [query, setQuery] = useState("");
 
   const q = query.trim().toLowerCase();
   const filteredClinicians = q
-    ? CLINICIANS.filter((c) =>
-        [c.name, c.specialty, c.location].some((field) =>
+    ? clinicians.filter((c) =>
+        [c.name, c.specialty, c.location, c.department ?? "", c.tenantName ?? ""].some((field) =>
           field.toLowerCase().includes(q)
         )
       )
-    : CLINICIANS;
+    : clinicians;
 
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 animate-[fade-in_0.25s_ease-out]">
@@ -326,7 +435,7 @@ function ClinicianStep({
         <div>
           <h2 className="text-base font-semibold">Choose your clinician</h2>
           <p className="text-xs text-[var(--color-muted-foreground)]">
-            Showing clinicians within your organization
+            Your care team appears first; other clinicians in your tenant follow.
           </p>
         </div>
         <Input
@@ -338,63 +447,78 @@ function ClinicianStep({
         />
       </div>
 
-      <ul className="mt-5 space-y-2">
-        {filteredClinicians.map((c) => {
-          const selected = data.clinicianId === c.id;
-          return (
-            <li key={c.id}>
-              <button
-                type="button"
-                onClick={() => setData({ ...data, clinicianId: c.id, slotDay: null, slotTime: null })}
-                className={cn(
-                  "group flex w-full items-center gap-4 rounded-xl border p-4 text-left transition-all",
-                  selected
-                    ? "border-[var(--color-primary)] bg-[var(--color-primary-50)]/60 shadow-[var(--shadow-soft)]"
-                    : "border-[var(--color-border)] hover:-translate-y-0.5 hover:border-[var(--color-primary)]/40 hover:bg-[var(--color-muted)]/30 hover:shadow-[var(--shadow-soft)]"
-                )}
-              >
-                <Avatar className="size-12">
-                  <AvatarFallback className={cn("bg-gradient-to-br", c.color, "text-white")}>
-                    {c.initials}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className={cn("text-sm font-semibold", selected && "text-[var(--color-primary-700)]")}>
-                      {c.name}
-                    </p>
-                    {selected && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                        <CheckCircle2 className="size-3" /> Selected
+      {loading ? (
+        <div className="mt-6 flex items-center justify-center gap-2 py-10 text-sm text-[var(--color-muted-foreground)]">
+          Loading clinicians…
+        </div>
+      ) : error ? (
+        <div className="mt-6 rounded-xl border border-[var(--color-danger)]/30 bg-[var(--color-danger-soft)] p-4 text-sm text-[var(--color-danger)]">
+          {error}
+        </div>
+      ) : (
+        <ul className="mt-5 space-y-2">
+          {filteredClinicians.map((c) => {
+            const selected = data.clinicianId === c.id;
+            return (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => setData({ ...data, clinicianId: c.id, slotDay: null, slotTime: null })}
+                  className={cn(
+                    "group flex w-full items-center gap-4 rounded-xl border p-4 text-left transition-all",
+                    selected
+                      ? "border-[var(--color-primary)] bg-[var(--color-primary-50)]/60 shadow-[var(--shadow-soft)]"
+                      : "border-[var(--color-border)] hover:-translate-y-0.5 hover:border-[var(--color-primary)]/40 hover:bg-[var(--color-muted)]/30 hover:shadow-[var(--shadow-soft)]"
+                  )}
+                >
+                  <Avatar className="size-12">
+                    <AvatarFallback className="bg-gradient-to-br from-[var(--color-primary-600)] to-[var(--color-primary)] text-white">
+                      {c.initials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className={cn("text-sm font-semibold", selected && "text-[var(--color-primary-700)]")}>
+                        {c.name}
+                      </p>
+                      {c.isAssigned && (
+                        <Badge variant="success" size="sm">Your care team</Badge>
+                      )}
+                      {selected && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                          <CheckCircle2 className="size-3" /> Selected
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-[var(--color-muted-foreground)]">{c.specialty}</p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-[var(--color-muted-foreground)]">
+                      {c.experienceYears > 0 && (
+                        <span className="inline-flex items-center gap-1">
+                          <Award className="size-3" /> {c.experienceYears} yrs experience
+                        </span>
+                      )}
+                      <span className="inline-flex items-center gap-1">
+                        {c.mode === "office" ? <MapPin className="size-3" /> : <Video className="size-3" />}
+                        {c.location}
                       </span>
-                    )}
+                    </div>
                   </div>
-                  <p className="text-xs text-[var(--color-muted-foreground)]">
-                    {c.specialty}
-                  </p>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-[var(--color-muted-foreground)]">
-                    <span className="inline-flex items-center gap-1">
-                      <Award className="size-3" /> {c.experience} experience
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      {c.mode === "office" ? <MapPin className="size-3" /> : <Video className="size-3" />}
-                      {c.location}
-                    </span>
-                  </div>
-                </div>
-                <span className="hidden text-[11px] font-medium text-[var(--color-muted-foreground)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline">
-                  {selected ? "" : "Choose →"}
-                </span>
-              </button>
+                  <span className="hidden text-[11px] font-medium text-[var(--color-muted-foreground)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline">
+                    {selected ? "" : "Choose →"}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+          {filteredClinicians.length === 0 && (
+            <li className="py-10 text-center text-sm text-[var(--color-muted-foreground)]">
+              {clinicians.length === 0
+                ? "No clinicians available in your tenant yet — please ask the front desk."
+                : `No clinicians match “${query}”.`}
             </li>
-          );
-        })}
-        {filteredClinicians.length === 0 && (
-          <li className="py-10 text-center text-sm text-[var(--color-muted-foreground)]">
-            No clinicians match “{query}”.
-          </li>
-        )}
-      </ul>
+          )}
+        </ul>
+      )}
     </div>
   );
 }
@@ -408,20 +532,31 @@ function SlotStep({
   setData,
   slots,
   clinician,
+  loading,
+  hasTemplate,
 }: {
   data: BookingState;
   setData: (d: BookingState) => void;
-  slots: { day: string; times: string[] }[];
+  slots: SlotDay[];
   clinician: Clinician | null;
+  loading?: boolean;
+  hasTemplate?: boolean;
 }) {
+  // Show "15-min slots" in the header only when every day has the same cadence;
+  // otherwise show "mixed slot lengths" (since each day badge is rendered below).
+  const uniqueMinutes = Array.from(new Set(slots.map((s) => s.slotMinutes)));
+  const headerHint =
+    slots.length === 0
+      ? "Open slots are pulled from the clinician's published availability"
+      : uniqueMinutes.length === 1
+        ? `${uniqueMinutes[0]}-min slots`
+        : "Slot lengths vary by day — see each day's badge";
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 animate-[fade-in_0.25s_ease-out]">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-semibold">Choose a slot</h2>
-          <p className="text-xs text-[var(--color-muted-foreground)]">
-            15-minute slots · refreshed 12 s ago
-          </p>
+          <p className="text-xs text-[var(--color-muted-foreground)]">{headerHint}</p>
         </div>
         {clinician && (
           <Badge variant="outline" size="sm" className="font-mono">
@@ -431,16 +566,26 @@ function SlotStep({
       </div>
 
       <div className="mt-5 space-y-5">
-        {slots.length === 0 && (
+        {loading && (
           <p className="rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/30 p-6 text-center text-sm text-[var(--color-muted-foreground)]">
-            No open slots for this clinician in the next 7 days.
+            Loading {clinician?.name ?? "clinician"}&apos;s availability…
+          </p>
+        )}
+        {!loading && slots.length === 0 && (
+          <p className="rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/30 p-6 text-center text-sm text-[var(--color-muted-foreground)]">
+            {hasTemplate
+              ? `No open slots for ${clinician?.name ?? "this clinician"} in the next 7 days. Please try another clinician or check back later.`
+              : `${clinician?.name ?? "This clinician"} hasn't published availability yet. Please pick another clinician.`}
           </p>
         )}
         {slots.map((s) => (
           <div key={s.day}>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
-              {s.day}
-            </p>
+            <div className="mb-2 flex items-center gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+                {s.day}
+              </p>
+              <Badge variant="muted" size="sm">{s.slotMinutes}-min slots</Badge>
+            </div>
             <div className="flex flex-wrap gap-2">
               {s.times.map((t) => {
                 const selected = data.slotDay === s.day && data.slotTime === t;
@@ -697,6 +842,7 @@ function Summary({
   onBack,
   onNext,
   onConfirm,
+  confirming,
 }: {
   step: number;
   data: BookingState;
@@ -705,6 +851,7 @@ function Summary({
   onBack: () => void;
   onNext: () => void;
   onConfirm: () => void;
+  confirming?: boolean;
 }) {
   return (
     <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
@@ -715,14 +862,15 @@ function Summary({
         {clinician ? (
           <div className="mt-3 flex items-center gap-3">
             <Avatar className="size-11">
-              <AvatarFallback className={cn("bg-gradient-to-br", clinician.color, "text-white")}>
+              <AvatarFallback className="bg-gradient-to-br from-[var(--color-primary-600)] to-[var(--color-primary)] text-white">
                 {clinician.initials}
               </AvatarFallback>
             </Avatar>
             <div>
               <p className="text-sm font-semibold">{clinician.name}</p>
               <p className="text-xs text-[var(--color-muted-foreground)]">
-                {clinician.specialty} · {clinician.experience}
+                {clinician.specialty}
+                {clinician.experienceYears > 0 ? ` · ${clinician.experienceYears} yrs` : ""}
               </p>
             </div>
           </div>
@@ -752,8 +900,8 @@ function Summary({
               Continue <ArrowRight />
             </Button>
           ) : (
-            <Button className="flex-1" onClick={onConfirm}>
-              <CheckCircle2 /> Confirm
+            <Button className="flex-1" onClick={onConfirm} disabled={confirming}>
+              {confirming ? "Booking…" : <><CheckCircle2 /> Confirm</>}
             </Button>
           )}
         </div>

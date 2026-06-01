@@ -18,14 +18,19 @@ import { Logo } from "@/components/shared/logo";
 import { LogoutButton } from "@/components/shared/logout-button";
 import { cn } from "@/lib/utils";
 
+// Sidebar counts/badges are intentionally omitted — the patient slices
+// (records, prescriptions, appointments, consents, messages) are not yet
+// DB-backed, so showing fake "24" / "3" badges misleads a freshly-signed-in
+// user into thinking they have content. Wire counts back in via the relevant
+// API once the underlying tables land.
 const nav = [
   { href: "/patient/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/patient/records", label: "Medical Records", icon: FileText, count: 24 },
-  { href: "/patient/prescriptions", label: "Prescriptions", icon: Pill, badge: "1" },
-  { href: "/patient/appointments", label: "Appointments", icon: Calendar, badge: "2" },
+  { href: "/patient/records", label: "Medical Records", icon: FileText },
+  { href: "/patient/prescriptions", label: "Prescriptions", icon: Pill },
+  { href: "/patient/appointments", label: "Appointments", icon: Calendar },
   { href: "/patient/documents", label: "Documents", icon: FolderLock },
-  { href: "/patient/consents", label: "Consents", icon: Shield, badge: "1" },
-  { href: "/patient/messages", label: "Messages", icon: MessageSquare, badge: "3" },
+  { href: "/patient/consents", label: "Consents", icon: Shield },
+  { href: "/patient/messages", label: "Messages", icon: MessageSquare },
 ];
 
 const utility = [
@@ -67,19 +72,9 @@ export function PatientSidebar() {
               )}
               <Icon className={cn("size-4 shrink-0", active && "text-[var(--color-primary)]")} />
               <span className="flex-1">{item.label}</span>
-              {item.badge && (
-                <span className={cn(
-                  "flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold",
-                  active
-                    ? "bg-[var(--color-primary)] text-white"
-                    : "bg-[var(--color-muted)] text-[var(--color-muted-foreground)] group-hover:bg-[var(--color-card)]",
-                )}>
-                  {item.badge}
-                </span>
-              )}
-              {item.count && !item.badge && (
-                <span className="text-[10px] tabular-nums text-[var(--color-muted-foreground)]">{item.count}</span>
-              )}
+              {/* Badge/count slots removed — populate from real data once the
+                  patient slices (records, prescriptions, messages, ...) are
+                  DB-backed. */}
             </Link>
           );
         })}

@@ -34,6 +34,16 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogClose,
+} from "@/components/ui/dialog";
+import { Loader2 } from "lucide-react";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ActionButton } from "@/components/shared/action-button";
 import { ChangePhotoButton, RecoveryCodesButton, AddPasskeyButton } from "./account-widgets";
@@ -85,26 +95,143 @@ export default function SettingsPage() {
   );
 }
 
+interface ApiCareTeamMember {
+  assignmentId: string;
+  role: string | null;
+  startedAt: string;
+  clinician: {
+    id: string;
+    name: string;
+    initials: string;
+    designation: string | null;
+    department: string | null;
+    profilePhotoUrl: string | null;
+  };
+}
+
+interface ApiProfile {
+  id: string;
+  firstName: string;
+  lastName: string;
+  name: string;
+  email: string;
+  phone: string | null;
+  gender: string | null;
+  dateOfBirth: string | null;
+  profilePhotoUrl: string | null;
+  tenantName: string | null;
+  mfaEnrolled: boolean;
+  mfaRequired: boolean;
+  enrolledAt: string;
+  mrn: string;
+  initials: string;
+}
+
 function ProfileTab() {
   const { state, updateProfile } = usePatientStore();
   const [draft, setDraft] = useState<Profile>(state.profile);
+  const [api, setApi] = useState<ApiProfile | null>(null);
+  const [careTeam, setCareTeam] = useState<ApiCareTeamMember[]>([]);
+  const [saving, setSaving] = useState(false);
 
-  // Pull in any localStorage-hydrated profile that arrived after first render.
+  // First load: pull profile + care team from the API. Address fields stay in
+  // the local store since there are no DB columns for them yet.
   useEffect(() => {
-    if (state.hydrated) setDraft(state.profile);
-  }, [state.hydrated, state.profile]);
+    let cancelled = false;
+    fetch("/api/patient/profile", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const p = data.profile as ApiProfile;
+        setApi(p);
+        setCareTeam((data.careTeam ?? []) as ApiCareTeamMember[]);
+        setDraft((prev) => ({
+          ...prev,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          email: p.email,
+          phone: p.phone ?? "",
+          dob: p.dateOfBirth ?? "",
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Pull in localStorage-hydrated address fields when they arrive.
+  useEffect(() => {
+    if (!state.hydrated) return;
+    setDraft((prev) => ({
+      ...prev,
+      address: state.profile.address,
+      city: state.profile.city,
+      state: state.profile.state,
+      postalCode: state.profile.postalCode,
+    }));
+  }, [state.hydrated, state.profile.address, state.profile.city, state.profile.state, state.profile.postalCode]);
 
   const update = <K extends keyof Profile>(key: K, value: Profile[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
 
-  function handleSave() {
-    updateProfile(draft);
-    toast.success("Profile saved", { description: "audit-logged · user.update" });
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const r = await fetch("/api/patient/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          firstName: draft.firstName,
+          lastName: draft.lastName,
+          phone: draft.phone,
+          dateOfBirth: draft.dob || null,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "Could not save profile.");
+        return;
+      }
+      setApi(data.profile as ApiProfile);
+      // Persist the address slice to the local store; DB fields are now canonical.
+      updateProfile({
+        ...draft,
+        firstName: data.profile.firstName,
+        lastName: data.profile.lastName,
+        email: data.profile.email,
+        phone: data.profile.phone ?? "",
+        dob: data.profile.dateOfBirth ?? "",
+      });
+      toast.success("Profile saved", { description: "audit-logged · user.update" });
+    } finally {
+      setSaving(false);
+    }
   }
   function handleDiscard() {
-    setDraft(state.profile);
+    if (api) {
+      setDraft((prev) => ({
+        ...prev,
+        firstName: api.firstName,
+        lastName: api.lastName,
+        email: api.email,
+        phone: api.phone ?? "",
+        dob: api.dateOfBirth ?? "",
+      }));
+    } else {
+      setDraft(state.profile);
+    }
     toast.info("Changes discarded");
   }
+
+  const displayName =
+    api?.name ?? `${state.profile.firstName} ${state.profile.lastName}`.trim();
+  const displayInitials =
+    api?.initials ??
+    ((state.profile.firstName[0] ?? "") + (state.profile.lastName[0] ?? "")).toUpperCase();
+  const enrolledLabel = api?.enrolledAt
+    ? `Patient since ${new Date(api.enrolledAt).toLocaleDateString("en-US", { month: "short", year: "numeric" })}`
+    : "Patient since —";
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1.7fr_1fr]">
@@ -113,10 +240,10 @@ function ProfileTab() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} />
             <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} />
-            <Field id="email" label="Email" value={draft.email} onChange={(v) => update("email", v)} leadingIcon={<Mail />} />
+            <Field id="email" label="Email" value={draft.email} leadingIcon={<Mail />} readOnly />
             <Field id="phone" label="Phone" value={draft.phone} onChange={(v) => update("phone", v)} leadingIcon={<Phone />} />
             <Field id="dob" label="Date of birth" value={draft.dob} onChange={(v) => update("dob", v)} leadingIcon={<CalendarDays />} />
-            <Field id="mrn" label="MRN" value="CG-2026-0481" mono readOnly />
+            <Field id="mrn" label="MRN" value={api?.mrn ?? "—"} mono readOnly />
           </div>
         </Section>
 
@@ -130,8 +257,16 @@ function ProfileTab() {
         </Section>
 
         <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={handleDiscard}>Discard</Button>
-          <Button onClick={handleSave}>Save changes</Button>
+          <Button variant="outline" onClick={handleDiscard} disabled={saving}>Discard</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" /> Saving…
+              </>
+            ) : (
+              "Save changes"
+            )}
+          </Button>
         </div>
       </div>
 
@@ -139,35 +274,36 @@ function ProfileTab() {
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
           <div className="flex items-center gap-3">
             <Avatar className="size-14">
-              <AvatarFallback>
-                {(state.profile.firstName[0] ?? "") + (state.profile.lastName[0] ?? "")}
-              </AvatarFallback>
+              <AvatarFallback>{displayInitials}</AvatarFallback>
             </Avatar>
             <div>
-              <p className="text-sm font-semibold">
-                {state.profile.firstName} {state.profile.lastName}
-              </p>
-              <p className="text-xs text-[var(--color-muted-foreground)]">Patient since Feb 2026</p>
+              <p className="text-sm font-semibold">{displayName}</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">{enrolledLabel}</p>
             </div>
           </div>
           <ChangePhotoButton />
         </div>
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
           <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Care team</p>
-          <ul className="mt-3 space-y-2.5">
-            {[
-              { initials: "PS", name: "Dr. Priya Shah", role: "Cardiology" },
-              { initials: "RI", name: "Dr. Rohan Iyer", role: "General Medicine" },
-            ].map((t) => (
-              <li key={t.name} className="flex items-center gap-2.5">
-                <Avatar className="size-7"><AvatarFallback>{t.initials}</AvatarFallback></Avatar>
-                <div>
-                  <p className="text-xs font-medium">{t.name}</p>
-                  <p className="text-[10px] text-[var(--color-muted-foreground)]">{t.role}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
+          {careTeam.length === 0 ? (
+            <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
+              No clinicians assigned yet.
+            </p>
+          ) : (
+            <ul className="mt-3 space-y-2.5">
+              {careTeam.map((t) => (
+                <li key={t.assignmentId} className="flex items-center gap-2.5">
+                  <Avatar className="size-7"><AvatarFallback>{t.clinician.initials}</AvatarFallback></Avatar>
+                  <div>
+                    <p className="text-xs font-medium">{t.clinician.name}</p>
+                    <p className="text-[10px] text-[var(--color-muted-foreground)]">
+                      {t.clinician.designation ?? t.clinician.department ?? "Care team"}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>
@@ -223,7 +359,74 @@ function SecurityTab() {
   });
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
-  const mfaOn = state.security.mfaEnabled;
+
+  // Real DB-backed TOTP state, populated on mount. We keep the local store in
+  // sync so any other view that reads `state.security.mfaEnabled` stays right.
+  const [serverEnrolled, setServerEnrolled] = useState<boolean | null>(null);
+  const refreshMfaStatus = async () => {
+    try {
+      const r = await fetch("/api/auth/mfa/status", { cache: "no-store" });
+      const data = await r.json();
+      if (r.ok && data.ok) {
+        setServerEnrolled(!!data.enrolled);
+        setMfaEnabled(!!data.enrolled);
+      }
+    } catch {
+      /* fall back to the local store value */
+    }
+  };
+  useEffect(() => {
+    refreshMfaStatus();
+    // refreshMfaStatus only updates state, no external deps to track.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Open-state + form-state for the "confirm with TOTP code" dialog.
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [disableCode, setDisableCode] = useState("");
+  const [disableErr, setDisableErr] = useState<string | null>(null);
+  const [disabling, setDisabling] = useState(false);
+  function openDisableDialog() {
+    setDisableCode("");
+    setDisableErr(null);
+    setDisableOpen(true);
+  }
+  async function submitDisable(e: React.FormEvent) {
+    e.preventDefault();
+    setDisableErr(null);
+    const cleaned = disableCode.replace(/\s+/g, "");
+    if (!/^\d{6}$/.test(cleaned)) {
+      setDisableErr("Enter the 6-digit code from your authenticator app.");
+      return;
+    }
+    setDisabling(true);
+    try {
+      const r = await fetch("/api/auth/mfa/disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: cleaned }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        setDisableErr(data.error ?? `Could not disable TOTP (HTTP ${r.status}).`);
+        setDisabling(false);
+        return;
+      }
+      setServerEnrolled(false);
+      setMfaEnabled(false);
+      setDisableOpen(false);
+      toast.warning("TOTP disabled", {
+        description: "Future sign-ins will fall back to email OTP.",
+      });
+    } catch {
+      setDisableErr("Network error — could not disable TOTP.");
+      setDisabling(false);
+    }
+  }
+
+  // Prefer the server result once it's loaded; before that fall back to the
+  // local store so the UI still renders something useful.
+  const mfaOn = serverEnrolled ?? state.security.mfaEnabled;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1.7fr_1fr]">
@@ -261,22 +464,15 @@ function SecurityTab() {
                   </p>
                   <div className="mt-3 flex gap-2">
                     <RecoveryCodesButton />
-                    <ActionButton
+                    <Button
+                      type="button"
                       variant="ghost"
                       size="sm"
+                      onClick={openDisableDialog}
                       className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
-                      confirm={{
-                        title: "Disable two-factor authentication?",
-                        description: "Your account will be less secure. Patients are still recommended to keep TOTP enabled.",
-                        confirmLabel: "Disable TOTP",
-                        variant: "destructive",
-                      }}
-                      toastMessage="TOTP disabled"
-                      toastVariant="warning"
-                      onClick={() => setMfaEnabled(false)}
                     >
                       Disable TOTP
-                    </ActionButton>
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -359,6 +555,63 @@ function SecurityTab() {
           </ul>
         </div>
       </div>
+
+      <Dialog open={disableOpen} onOpenChange={setDisableOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Disable two-factor authentication?</DialogTitle>
+            <DialogDescription>
+              Enter the current 6-digit code from your authenticator app to confirm. Future
+              sign-ins will fall back to email OTP.
+            </DialogDescription>
+          </DialogHeader>
+          <form className="space-y-4 pt-2" onSubmit={submitDisable}>
+            {disableErr && (
+              <div
+                role="alert"
+                className="rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger-soft)] px-3.5 py-2.5 text-sm text-[var(--color-danger)]"
+              >
+                {disableErr}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="disable-code">Authenticator code</Label>
+              <Input
+                id="disable-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="123 456"
+                maxLength={7}
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value)}
+                autoFocus
+                required
+                disabled={disabling}
+              />
+            </div>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline" disabled={disabling}>
+                  Cancel
+                </Button>
+              </DialogClose>
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={disabling || disableCode.replace(/\s+/g, "").length !== 6}
+              >
+                {disabling ? (
+                  <>
+                    <Loader2 className="animate-spin" /> Disabling…
+                  </>
+                ) : (
+                  "Disable TOTP"
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

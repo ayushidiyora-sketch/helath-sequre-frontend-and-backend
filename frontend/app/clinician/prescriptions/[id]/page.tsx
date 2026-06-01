@@ -16,7 +16,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
-import { useClinicianStore, type Prescription } from "@/lib/clinician-store";
+import { type Prescription } from "@/lib/clinician-store";
 
 const ROUTES = ["Oral", "Topical", "Subcutaneous", "Intramuscular", "Intravenous", "Inhaled", "Sublingual", "Ophthalmic", "Otic", "Rectal"];
 
@@ -34,6 +34,19 @@ const FREQUENCIES = [
   "Weekly",
 ];
 
+interface ApiPrescription {
+  id: string;
+  patientId: string;
+  drugName: string;
+  strength: string | null;
+  route: string | null;
+  frequency: string | null;
+  duration: string | null;
+  refills: number;
+  patientInstructions: string | null;
+  status: "draft" | "finalized";
+}
+
 export default function PrescriptionFormPage({
   params,
 }: {
@@ -41,47 +54,117 @@ export default function PrescriptionFormPage({
 }) {
   const { id: rxId } = use(params);
   const router = useRouter();
-  const { state, updatePrescription, finalizePrescription } = useClinicianStore();
+  const [rx, setRx] = useState<ApiPrescription | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [patientName, setPatientName] = useState<string>("Patient");
 
-  if (!state.hydrated) {
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/clinician/prescriptions/${rxId}`, { cache: "no-store" })
+      .then(async (r) => {
+        const data = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !data.ok) {
+          setError(data.error ?? `HTTP ${r.status}`);
+          return;
+        }
+        setRx(data.prescription as ApiPrescription);
+        // Pull the patient's display name for the toast / breadcrumbs.
+        fetch(`/api/clinician/patients/${(data.prescription as ApiPrescription).patientId}`)
+          .then(async (pr) => (pr.ok ? pr.json() : null))
+          .then((p) => {
+            if (!cancelled && p?.ok) setPatientName(p.patient.name ?? "Patient");
+          })
+          .catch(() => {});
+      })
+      .catch(() => {
+        if (!cancelled) setError("Network error — could not load prescription.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rxId]);
+
+  if (loading) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…
       </div>
     );
   }
-
-  const rx = state.prescriptions.find((p) => p.id === rxId);
-  if (!rx) {
+  if (error || !rx) {
     return (
       <div className="rounded-2xl border border-[var(--color-danger)]/30 bg-[var(--color-danger-soft)]/20 p-6">
-        <p className="text-sm font-medium">Prescription not found.</p>
+        <p className="text-sm font-medium">{error ?? "Prescription not found."}</p>
         <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
-          It may have been deleted. <Link href="/clinician/patients" className="underline">Back to patients</Link>.
+          <Link href="/clinician/patients" className="underline">Back to patients</Link>.
         </p>
       </div>
     );
   }
 
-  const patient = state.assignedPatients.find((p) => p.id === rx.patientId);
+  // Adapt API shape → form shape so the existing form props don't need to change.
+  const adapted = {
+    id: rx.id,
+    patientId: rx.patientId,
+    medication: rx.drugName,
+    dose: rx.strength ?? "",
+    frequency: rx.frequency ?? "",
+    duration: rx.duration ?? "",
+    route: rx.route ?? "Oral",
+    refills: rx.refills > 0 ? String(rx.refills) : "",
+    instructions: rx.patientInstructions ?? "",
+    status: rx.status,
+    createdAt: new Date().toISOString(),
+  } as Prescription;
   const locked = rx.status === "finalized";
+
+  async function patchRx(patch: FormPatch, finalize: boolean) {
+    const body: Record<string, unknown> = {
+      drugName: patch.medication,
+      strength: patch.dose || null,
+      route: patch.route || null,
+      frequency: patch.frequency || null,
+      duration: patch.duration || null,
+      refills: patch.refills ? Number(patch.refills) || 0 : 0,
+      patientInstructions: patch.instructions || null,
+    };
+    if (finalize) body.status = "finalized";
+    const r = await fetch(`/api/clinician/prescriptions/${rxId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      toast.error(data.error ?? "Could not save prescription.");
+      return false;
+    }
+    setRx(data.prescription as ApiPrescription);
+    return true;
+  }
 
   return (
     <PrescriptionForm
-      rx={rx}
-      patient={patient}
+      rx={adapted}
+      patient={undefined}
       locked={locked}
-      onSaveDraft={(patch) => {
-        updatePrescription(rx.id, patch);
-        toast.success("Draft saved", { description: "Audit-logged · not yet active until finalized" });
+      onSaveDraft={async (patch) => {
+        const ok = await patchRx(patch, false);
+        if (ok) toast.success("Draft saved · audit-logged", { description: "Not active until finalized" });
       }}
-      onFinalize={(patch) => {
-        updatePrescription(rx.id, patch);
-        finalizePrescription(rx.id);
-        toast.success("Prescription finalized", {
-          description: `${patient?.name ?? "Patient"} · sent to pharmacy · audit-logged`,
-        });
-        if (patient) router.push(`/clinician/patients/${patient.id}?tab=prescriptions`);
+      onFinalize={async (patch) => {
+        const ok = await patchRx(patch, true);
+        if (ok) {
+          toast.success("Prescription finalized", {
+            description: `${patientName} · sent to pharmacy · audit-logged`,
+          });
+          router.push(`/clinician/patients/${rx.patientId}?tab=prescriptions`);
+        }
       }}
     />
   );

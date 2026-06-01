@@ -72,8 +72,10 @@ export const MAX_OTP_ATTEMPTS = 5;
 /** Claims carried in the `hs_pending` cookie while awaiting OTP entry. */
 export interface PendingClaims {
   uid: string; // user id that passed the password step
-  otpHash: string; // sha256 of the 6-digit code
+  otpHash: string; // sha256 of the 6-digit code; "" when mode = "totp"
   attempts: number; // wrong-code attempts so far
+  /** "email" = code emailed by server; "totp" = code from the user's app. */
+  mode?: "email" | "totp";
 }
 
 /** Sign a short-lived pending-auth JWT (10 min). */
@@ -90,10 +92,85 @@ export async function verifyPending(token: string | undefined): Promise<PendingC
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret());
+    const mode = payload.mode === "totp" ? "totp" : "email";
     return {
       uid: String(payload.uid),
-      otpHash: String(payload.otpHash),
+      otpHash: String(payload.otpHash ?? ""),
       attempts: Number(payload.attempts ?? 0),
+      mode,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding token — emailed to a newly-provisioned org admin so they can
+// land on the staff-login page with their credentials pre-filled. Single-use
+// (the jti is consumed when the password is retrieved).
+// ---------------------------------------------------------------------------
+
+export const ONBOARD_TTL_SECONDS = 7 * 24 * 60 * 60; // valid for 7 days
+
+export interface OnboardClaims {
+  uid: string;
+  email: string;
+  jti: string;
+}
+
+export async function signOnboardToken(claims: OnboardClaims): Promise<string> {
+  return new SignJWT({ ...claims })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(`${ONBOARD_TTL_SECONDS}s`)
+    .sign(secret());
+}
+
+export async function verifyOnboardToken(token: string | undefined): Promise<OnboardClaims | null> {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, secret());
+    return {
+      uid: String(payload.uid),
+      email: String(payload.email),
+      jti: String(payload.jti),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Password reset token — short-lived signed JWT carried in the reset link
+// ---------------------------------------------------------------------------
+
+export const RESET_TTL_SECONDS = 30 * 60; // reset link valid for 30 minutes
+
+/** Claims carried inside the password-reset link token. */
+export interface ResetClaims {
+  uid: string;
+  email: string;
+  jti: string; // unique id so each token can be revoked / single-used
+}
+
+/** Sign a short-lived password-reset JWT (30 min). */
+export async function signResetToken(claims: ResetClaims): Promise<string> {
+  return new SignJWT({ ...claims })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(`${RESET_TTL_SECONDS}s`)
+    .sign(secret());
+}
+
+/** Verify a password-reset JWT. Returns null on any failure (expired, tampered, missing). */
+export async function verifyResetToken(token: string | undefined): Promise<ResetClaims | null> {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, secret());
+    return {
+      uid: String(payload.uid),
+      email: String(payload.email),
+      jti: String(payload.jti),
     };
   } catch {
     return null;

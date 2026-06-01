@@ -46,12 +46,12 @@ const MOBILE_NAV_GROUPS: NavGroup[] = [
     label: "Workspace",
     items: [
       { href: "/patient/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/patient/records", label: "Medical Records", icon: FileText, count: 24 },
-      { href: "/patient/prescriptions", label: "Prescriptions", icon: Pill, badge: "1" },
-      { href: "/patient/appointments", label: "Appointments", icon: Calendar, badge: "2" },
+      { href: "/patient/records", label: "Medical Records", icon: FileText },
+      { href: "/patient/prescriptions", label: "Prescriptions", icon: Pill },
+      { href: "/patient/appointments", label: "Appointments", icon: Calendar },
       { href: "/patient/documents", label: "Documents", icon: FolderLock },
-      { href: "/patient/consents", label: "Consents", icon: Shield, badge: "1" },
-      { href: "/patient/messages", label: "Messages", icon: MessageSquare, badge: "3" },
+      { href: "/patient/consents", label: "Consents", icon: Shield },
+      { href: "/patient/messages", label: "Messages", icon: MessageSquare },
     ],
   },
 ];
@@ -69,14 +69,43 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+interface PatientHeaderUser {
+  name: string;
+  email: string;
+  initials: string;
+  tenantName: string | null;
+  mrn: string;
+}
+
 export function PatientHeader() {
   const [dark, setDark] = useState(false);
+  const [user, setUser] = useState<PatientHeaderUser | null>(null);
 
   useEffect(() => {
     const root = document.documentElement;
     if (dark) root.classList.add("dark");
     else root.classList.remove("dark");
   }, [dark]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/dashboard", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setUser({
+          name: data.profile.name,
+          email: data.profile.email,
+          initials: data.profile.initials,
+          tenantName: data.profile.tenantName,
+          mrn: data.profile.mrn,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
@@ -114,11 +143,13 @@ export function PatientHeader() {
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-2.5 rounded-lg p-1 pr-2 text-left hover:bg-[var(--color-muted)]">
               <Avatar className="size-8 ring-2 ring-[var(--color-card)]">
-                <AvatarFallback>AM</AvatarFallback>
+                <AvatarFallback>{user?.initials ?? "··"}</AvatarFallback>
               </Avatar>
               <div className="hidden text-left sm:block">
-                <p className="text-sm font-semibold leading-tight">Aarav Mehta</p>
-                <p className="text-[10px] text-[var(--color-muted-foreground)]">Patient · City General</p>
+                <p className="text-sm font-semibold leading-tight">{user?.name ?? "—"}</p>
+                <p className="text-[10px] text-[var(--color-muted-foreground)]">
+                  Patient{user?.tenantName ? ` · ${user.tenantName}` : ""}
+                </p>
               </div>
               <ChevronDown className="size-3.5 text-[var(--color-muted-foreground)]" />
             </button>
@@ -126,8 +157,8 @@ export function PatientHeader() {
           <DropdownMenuContent align="end" className="w-60">
             <DropdownMenuLabel>Signed in</DropdownMenuLabel>
             <div className="px-2.5 pb-2 text-xs">
-              <p className="font-medium">aarav.mehta@example.com</p>
-              <p className="text-[var(--color-muted-foreground)]">MRN · CG-2026-0481</p>
+              <p className="font-medium">{user?.email ?? "—"}</p>
+              <p className="text-[var(--color-muted-foreground)]">MRN · {user?.mrn ?? "—"}</p>
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>

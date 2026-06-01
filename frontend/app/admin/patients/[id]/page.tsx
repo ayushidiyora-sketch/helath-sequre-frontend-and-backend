@@ -1,240 +1,589 @@
+"use client";
+
+import { use, useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { toast } from "sonner";
 import {
   ArrowLeft,
   User,
-  MapPin,
-  Fingerprint,
-  HeartPulse,
+  Mail,
+  Phone,
+  CalendarDays,
   ShieldCheck,
+  ShieldOff,
+  Loader2,
   Stethoscope,
-  Hash,
-  ClipboardList,
-  Lock,
-  Pencil,
-  Ban,
-  RotateCcw,
-  type LucideIcon,
+  UserPlus,
+  X,
 } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ActionButton } from "@/components/shared/action-button";
-import { PATIENTS, getPatient } from "../patients-data";
-import { AssignmentsCard } from "./assignments-card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input, Label, Textarea } from "@/components/ui/input";
 
-export function generateStaticParams() {
-  return PATIENTS.map((p) => ({ id: p.id }));
+interface Patient {
+  id: string;
+  name: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  gender: string | null;
+  dateOfBirth: string | null;
+  profilePhotoUrl: string | null;
+  status: "active" | "invited" | "suspended" | "deactivated";
+  createdAt: string;
+  lastLoginAt: string | null;
+  mfaEnrolled: boolean;
+  mfaRequired: boolean;
+  assigned: boolean;
+}
+
+interface AssignedClinician {
+  id: string;
+  role: string | null;
+  notes: string | null;
+  startedAt: string;
+  clinician: {
+    id: string;
+    name: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    designation: string | null;
+    department: string | null;
+    profilePhotoUrl: string | null;
+    status: string;
+  };
+}
+
+interface AvailableClinician {
+  id: string;
+  name: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  designation: string | null;
+  department: string | null;
+  profilePhotoUrl: string | null;
+}
+
+export default function AdminPatientDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const [patient, setPatient] = useState<Patient | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [assignments, setAssignments] = useState<AssignedClinician[]>([]);
+  const [available, setAvailable] = useState<AvailableClinician[]>([]);
+  const [assignLoading, setAssignLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/admin/patients/${id}`, { cache: "no-store" })
+      .then(async (r) => {
+        const data = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !data.ok) {
+          setError(data.error ?? `HTTP ${r.status}`);
+          return;
+        }
+        setPatient(data.patient);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Network error — could not load patient.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  const loadAssignments = useCallback(async () => {
+    setAssignLoading(true);
+    try {
+      const r = await fetch(`/api/admin/patients/${id}/clinicians`, { cache: "no-store" });
+      const data = await r.json();
+      if (r.ok && data.ok) {
+        setAssignments(data.assignments ?? []);
+        setAvailable(data.availableClinicians ?? []);
+      }
+    } catch {
+      // surfaced via empty state
+    } finally {
+      setAssignLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    loadAssignments();
+  }, [loadAssignments]);
+
+  async function handleRemove(assignmentId: string, clinicianName: string) {
+    setRemovingId(assignmentId);
+    try {
+      const r = await fetch(`/api/admin/patients/${id}/clinicians/${assignmentId}`, {
+        method: "DELETE",
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? `Could not remove ${clinicianName}.`);
+        return;
+      }
+      toast.success(`${clinicianName} removed from this patient's care team · audit-logged`);
+      await loadAssignments();
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-sm text-[var(--color-muted-foreground)]">
+        <Loader2 className="size-4 animate-spin" /> Loading patient…
+      </div>
+    );
+  }
+  if (error || !patient) {
+    return (
+      <div className="space-y-3 rounded-2xl border border-[var(--color-danger)]/30 bg-[var(--color-danger-soft)] p-6">
+        <p className="text-sm font-medium text-[var(--color-danger)]">{error ?? "Patient not found."}</p>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/patients">
+            <ArrowLeft className="size-3.5" /> Back to patients
+          </Link>
+        </Button>
+      </div>
+    );
+  }
+
+  const initials = ((patient.firstName[0] ?? "") + (patient.lastName[0] ?? "")).toUpperCase();
+  const photo =
+    patient.profilePhotoUrl && /^(data:|https?:)/i.test(patient.profilePhotoUrl)
+      ? patient.profilePhotoUrl
+      : null;
+
+  const assignedIds = new Set(assignments.map((a) => a.clinician.id));
+  const unassignedAvailable = available.filter((c) => !assignedIds.has(c.id));
+
+  return (
+    <>
+      <div className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
+        <Link
+          href="/admin/patients"
+          className="inline-flex items-center gap-1.5 hover:text-[var(--color-foreground)]"
+        >
+          <ArrowLeft className="size-3.5" /> Patients
+        </Link>
+        <span>/</span>
+        <span>{patient.name}</span>
+      </div>
+
+      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Avatar className="size-16">
+              {photo && <AvatarImage src={photo} alt={patient.name} />}
+              <AvatarFallback className="text-lg">{initials}</AvatarFallback>
+            </Avatar>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">{patient.name}</h1>
+              <p className="mt-0.5 text-sm text-[var(--color-muted-foreground)]">
+                {patient.gender ?? "—"}
+                {patient.dateOfBirth ? ` · DOB ${patient.dateOfBirth}` : ""}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <StatusBadge status={patient.status} />
+                {!patient.assigned && <Badge variant="muted" size="sm">Unassigned</Badge>}
+                {patient.mfaEnrolled ? (
+                  <Badge variant="success" size="sm">
+                    <ShieldCheck className="size-3" /> 2FA on
+                  </Badge>
+                ) : (
+                  <Badge variant="muted" size="sm">
+                    <ShieldOff className="size-3" /> 2FA off
+                  </Badge>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <Section icon={User} title="A · Personal information">
+        <Grid>
+          <Field label="First name" value={patient.firstName} />
+          <Field label="Last name" value={patient.lastName} />
+          <Field
+            label="Email"
+            value={
+              <span className="inline-flex items-center gap-1.5">
+                <Mail className="size-3.5 text-[var(--color-muted-foreground)]" /> {patient.email}
+              </span>
+            }
+          />
+          <Field
+            label="Phone"
+            value={
+              patient.phone ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Phone className="size-3.5 text-[var(--color-muted-foreground)]" /> {patient.phone}
+                </span>
+              ) : (
+                <em className="text-[var(--color-muted-foreground)]">—</em>
+              )
+            }
+          />
+          <Field label="Date of birth" value={patient.dateOfBirth ?? "—"} />
+          <Field label="Gender" value={patient.gender ?? "—"} />
+        </Grid>
+      </Section>
+
+      <Section
+        icon={Stethoscope}
+        title="B · Assigned clinicians"
+        action={
+          <Button size="sm" onClick={() => setDialogOpen(true)} disabled={unassignedAvailable.length === 0}>
+            <UserPlus className="size-3.5" /> Assign clinician
+          </Button>
+        }
+      >
+        {assignLoading ? (
+          <div className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
+            <Loader2 className="size-3.5 animate-spin" /> Loading care team…
+          </div>
+        ) : assignments.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/40 p-6 text-center text-sm text-[var(--color-muted-foreground)]">
+            No clinicians assigned yet.
+            {unassignedAvailable.length === 0 && (
+              <span className="mt-1 block">
+                Add clinicians to this tenant before you can assign one.
+              </span>
+            )}
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {assignments.map((a) => {
+              const cInitials = (
+                (a.clinician.firstName[0] ?? "") + (a.clinician.lastName[0] ?? "")
+              ).toUpperCase();
+              const cPhoto =
+                a.clinician.profilePhotoUrl &&
+                /^(data:|https?:)/i.test(a.clinician.profilePhotoUrl)
+                  ? a.clinician.profilePhotoUrl
+                  : null;
+              return (
+                <li
+                  key={a.id}
+                  className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-background)] p-3"
+                >
+                  <Avatar className="size-10">
+                    {cPhoto && <AvatarImage src={cPhoto} alt={a.clinician.name} />}
+                    <AvatarFallback>{cInitials}</AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{a.clinician.name}</p>
+                    <p className="truncate text-xs text-[var(--color-muted-foreground)]">
+                      {[a.clinician.designation, a.clinician.department].filter(Boolean).join(" · ") ||
+                        a.clinician.email}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-muted-foreground)]">
+                      {a.role && <Badge variant="muted" size="sm">{a.role}</Badge>}
+                      <span>Since {new Date(a.startedAt).toLocaleDateString()}</span>
+                      {a.notes && <span className="italic">· {a.notes}</span>}
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleRemove(a.id, a.clinician.name)}
+                    disabled={removingId === a.id}
+                  >
+                    {removingId === a.id ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin" /> Removing…
+                      </>
+                    ) : (
+                      <>
+                        <X className="size-3.5" /> Remove
+                      </>
+                    )}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Section>
+
+      <Section icon={CalendarDays} title="C · Account">
+        <Grid>
+          <Field
+            label="Enrolled"
+            value={new Date(patient.createdAt).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          />
+          <Field
+            label="Last sign-in"
+            value={
+              patient.lastLoginAt
+                ? new Date(patient.lastLoginAt).toLocaleString()
+                : <em className="text-[var(--color-muted-foreground)]">Never</em>
+            }
+          />
+          <Field label="Status" value={<StatusBadge status={patient.status} />} />
+          <Field
+            label="Tenant"
+            value={patient.assigned ? "Bound to this tenant" : "Self-registered (unassigned)"}
+          />
+        </Grid>
+      </Section>
+
+      <Section icon={ShieldCheck} title="D · Security">
+        <Grid>
+          <Field
+            label="2FA / TOTP"
+            value={
+              patient.mfaEnrolled ? (
+                <span className="inline-flex items-center gap-1 text-[var(--color-success)]">
+                  <ShieldCheck className="size-3.5" /> Authenticator app enrolled
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[var(--color-muted-foreground)]">
+                  <ShieldOff className="size-3.5" /> Not enrolled
+                </span>
+              )
+            }
+          />
+          <Field
+            label="MFA on sign-in"
+            value={patient.mfaRequired ? "Required" : "Optional"}
+          />
+        </Grid>
+      </Section>
+
+      <div className="flex justify-end gap-2 border-t border-[var(--color-border)] pt-5">
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/patients">
+            <ArrowLeft className="size-3.5" /> Back to patients
+          </Link>
+        </Button>
+      </div>
+
+      <AssignDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        patientId={id}
+        patientName={patient.name}
+        clinicians={unassignedAvailable}
+        onAssigned={loadAssignments}
+      />
+    </>
+  );
+}
+
+function AssignDialog({
+  open,
+  onOpenChange,
+  patientId,
+  patientName,
+  clinicians,
+  onAssigned,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  patientId: string;
+  patientName: string;
+  clinicians: AvailableClinician[];
+  onAssigned: () => Promise<void> | void;
+}) {
+  const [clinicianId, setClinicianId] = useState("");
+  const [role, setRole] = useState("primary");
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setClinicianId("");
+      setRole("primary");
+      setNotes("");
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!clinicianId) {
+      toast.error("Pick a clinician to assign.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const r = await fetch(`/api/admin/patients/${patientId}/clinicians`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clinicianId, role: role || undefined, notes: notes || undefined }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "Could not assign clinician.");
+        return;
+      }
+      toast.success(`${data.assignment.clinician.name} assigned to ${patientName} · audit-logged`);
+      onOpenChange(false);
+      await onAssigned();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Assign clinician to {patientName}</DialogTitle>
+          <DialogDescription>
+            Adds the clinician to this patient&apos;s care team. The change is audit-logged.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="clinician">Clinician</Label>
+            <select
+              id="clinician"
+              required
+              value={clinicianId}
+              onChange={(e) => setClinicianId(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+            >
+              <option value="">Select a clinician…</option>
+              {clinicians.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                  {c.designation ? ` — ${c.designation}` : ""}
+                  {c.department ? ` · ${c.department}` : ""}
+                </option>
+              ))}
+            </select>
+            {clinicians.length === 0 && (
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                No unassigned clinicians available.
+              </p>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="role">Role on the care team</Label>
+            <select
+              id="role"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="flex h-9 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
+            >
+              <option value="primary">Primary</option>
+              <option value="specialist">Specialist</option>
+              <option value="consulting">Consulting</option>
+              <option value="covering">Covering</option>
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="notes">Notes (optional)</Label>
+            <Textarea
+              id="notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. Diabetes panel · referred by Dr. X"
+              rows={2}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting || !clinicianId}>
+              {submitting ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" /> Assigning…
+                </>
+              ) : (
+                "Assign clinician"
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function Section({
   icon: Icon,
   title,
+  action,
   children,
 }: {
-  icon: LucideIcon;
+  icon: React.ComponentType<{ className?: string }>;
   title: string;
-  children: React.ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
-      <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
-        <Icon className="size-4" /> {title}
-      </h2>
-      <div className="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
-    </div>
-  );
-}
-
-function Info({
-  label,
-  value,
-  mono,
-  locked,
-  full,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  locked?: boolean;
-  full?: boolean;
-}) {
-  return (
-    <div className={full ? "sm:col-span-2 lg:col-span-3" : ""}>
-      <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)]">
-        {label}
-        {locked && <Lock className="size-3" />}
-      </p>
-      <p className={`mt-0.5 text-sm ${mono ? "font-mono" : ""}`}>{value || "—"}</p>
-    </div>
-  );
-}
-
-export default async function PatientDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const p = getPatient(id);
-  if (!p) notFound();
-
-  return (
-    <>
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
-        <Link href="/admin/patients" className="inline-flex items-center gap-1.5 hover:text-[var(--color-foreground)]">
-          <ArrowLeft className="size-3.5" /> Patients
-        </Link>
-        <span>/</span>
-        <span className="text-[var(--color-foreground)]">{p.name}</span>
-      </div>
-
-      {/* Header */}
-      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <Avatar className="size-14 text-base">
-              <AvatarFallback>{p.initials}</AvatarFallback>
-            </Avatar>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{p.name}</h1>
-                {p.status === "active" ? (
-                  <Badge variant="success" size="sm" dot>Active</Badge>
-                ) : (
-                  <Badge variant="muted" size="sm">Deactivated</Badge>
-                )}
-                <Badge variant="muted" size="sm">{p.patientType}</Badge>
-              </div>
-              <p className="mt-1 font-mono text-xs text-[var(--color-muted-foreground)]">
-                MRN {p.mrn} · {p.patientId}
-              </p>
-              <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
-                {p.department} · {p.clinician} · enrolled {p.since}
-              </p>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/admin/patients/${p.id}/edit`}>
-                <Pencil /> Edit details
-              </Link>
-            </Button>
-            {p.status === "active" ? (
-              <ActionButton
-                variant="outline"
-                size="sm"
-                className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
-                confirm={{
-                  title: `Deactivate ${p.name}?`,
-                  description:
-                    "The patient loses portal access. The record and audit trail are preserved. This action is audit-logged.",
-                  confirmLabel: "Deactivate",
-                  variant: "destructive",
-                }}
-                toastMessage={`${p.name} deactivated`}
-                toastDescription="Audit-logged"
-                toastVariant="warning"
-              >
-                <Ban /> Deactivate
-              </ActionButton>
-            ) : (
-              <ActionButton
-                variant="outline"
-                size="sm"
-                toastMessage={`${p.name} reactivated`}
-                toastDescription="Portal access restored · audit-logged"
-              >
-                <RotateCcw /> Reactivate
-              </ActionButton>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Assignments + consent gate */}
-      <AssignmentsCard patientId={p.id} />
-
-      {/* A — Personal */}
-      <Section icon={User} title="A · Personal information">
-        <Info label="First name" value={p.firstName} />
-        <Info label="Last name" value={p.lastName} />
-        <Info label="Date of birth" value={p.dob} />
-        <Info label="Gender" value={p.gender} />
-        <Info label="Blood group" value={p.bloodGroup} />
-        <Info label="Email" value={p.email} />
-        <Info label="Phone" value={p.phone} />
-      </Section>
-
-      {/* B — Contact & address */}
-      <Section icon={MapPin} title="B · Contact & address">
-        <Info label="Address" value={p.address} full />
-        <Info label="City" value={p.city} />
-        <Info label="State" value={p.state} />
-        <Info label="Postal code" value={p.postalCode} />
-        <Info label="Country" value={p.country} />
-      </Section>
-
-      {/* C — Identity */}
-      <Section icon={Fingerprint} title="C · Identity (India)">
-        <Info label="Aadhaar number" value={p.aadhaarMasked} mono locked />
-        <Info label="ABHA ID" value={p.abhaId} mono />
-      </Section>
-
-      {/* D — Emergency contact */}
-      <Section icon={User} title="D · Emergency contact">
-        <Info label="Contact name" value={p.emergencyName} />
-        <Info label="Relationship" value={p.emergencyRelation} />
-        <Info label="Contact phone" value={p.emergencyPhone} />
-      </Section>
-
-      {/* E — Medical information (PHI — restricted) */}
-      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
+      <div className="flex items-center justify-between gap-3">
         <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
-          <HeartPulse className="size-4" /> E · Medical information
+          <Icon className="size-4" /> {title}
         </h2>
-        <div className="mt-4 flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)]/40 p-4">
-          <Lock className="mt-0.5 size-4 shrink-0 text-[var(--color-muted-foreground)]" />
-          <div>
-            <p className="text-sm font-medium">Medical PHI is not visible to Org Admin</p>
-            <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
-              Allergies, conditions, medications, and history are consent-bound and
-              visible only to the patient and assigned clinicians.
-            </p>
-          </div>
-        </div>
+        {action}
       </div>
+      <div className="mt-4">{children}</div>
+    </div>
+  );
+}
 
-      {/* F — Insurance */}
-      <Section icon={ShieldCheck} title="F · Insurance">
-        <Info label="Provider" value={p.insuranceProvider} />
-        <Info label="Policy number" value={p.insurancePolicyMasked} mono locked />
-      </Section>
+function Grid({ children }: { children: ReactNode }) {
+  return <dl className="grid gap-4 sm:grid-cols-2">{children}</dl>;
+}
 
-      {/* H — Assignment */}
-      <Section icon={Stethoscope} title="H · Assignment">
-        <Info label="Assigned clinician" value={p.clinician} />
-        <Info label="Department" value={p.department} />
-        <Info label="Patient type" value={p.patientType} />
-        <Info label="Referral source" value={p.referralSource} />
-      </Section>
+function Field({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div>
+      <dt className="text-[11px] uppercase tracking-wider text-[var(--color-muted-foreground)]">{label}</dt>
+      <dd className="mt-1 text-sm font-medium">{value}</dd>
+    </div>
+  );
+}
 
-      {/* I — Registration meta */}
-      <Section icon={Hash} title="I · Registration meta">
-        <Info label="Registered by" value={p.registeredBy} />
-        <Info label="Registration method" value={p.registrationMethod} />
-        <Info label="Registered on" value={p.registeredOn} />
-        <Info label="MRN" value={p.mrn} mono />
-        <Info label="Patient ID" value={p.patientId} mono />
-      </Section>
-
-      {/* J — Visit info */}
-      <Section icon={ClipboardList} title="J · Visit info">
-        <Info label="Visit reason" value={p.visitReason} full />
-        <Info label="Preferred language" value={p.preferredLanguage} />
-        <Info label="Preferred contact" value={p.preferredContact} />
-      </Section>
-    </>
+function StatusBadge({ status }: { status: Patient["status"] }) {
+  if (status === "deactivated") return <Badge variant="muted" size="sm">Deactivated</Badge>;
+  if (status === "suspended")
+    return (
+      <Badge variant="danger" size="sm" dot>
+        Suspended
+      </Badge>
+    );
+  if (status === "invited")
+    return (
+      <Badge variant="warning" size="sm" dot>
+        Invited
+      </Badge>
+    );
+  return (
+    <Badge variant="success" size="sm" dot>
+      Active
+    </Badge>
   );
 }

@@ -36,6 +36,28 @@ function fileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Guess a document category from a File's mime type and filename so the
+ * uploader doesn't have to manually pick. The user can still override via the
+ * Category dropdown. Without this, every upload landed as "Other" — which is
+ * what caused the patient's Documents sidebar to show "Other · 4" with every
+ * other tag at 0.
+ */
+function guessCategory(file: File): DocumentCategory {
+  const name = file.name.toLowerCase();
+  const mime = (file.type || "").toLowerCase();
+  // Image files (PNG/JPG/JPEG/GIF/SVG/WEBP/DICOM thumbnails) → Imaging unless
+  // the filename clearly says otherwise.
+  const isImage = mime.startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|svg|tiff?|bmp|dcm)$/.test(name);
+  if (/insur/.test(name)) return "Insurance";
+  if (/aadhaar|aadhar|passport|driving|licen[cs]e|pan[-_ ]?card/.test(name)) return "ID Proof";
+  if (/(prescription|^rx[-_ ]|[-_ ]rx[-_ ]|amlodip|atorvas|metformin)/.test(name)) return "Prescription";
+  if (/(lab|report|panel|blood|cbc|lipid|hba1c|hemoglobin|urine|biopsy)/.test(name)) return "Lab Report";
+  if (/(ecg|ekg|x[-_]?ray|mri|ct[-_ ]?scan|ultrasound|usg|sonograph|echo|imaging)/.test(name)) return "Imaging";
+  if (isImage) return "Imaging";
+  return "Other";
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const { addDocument } = usePatientStore();
@@ -44,7 +66,10 @@ export default function UploadPage() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [title, setTitle] = useState("");
-  const [category, setCategory] = useState<DocumentCategory>("Insurance");
+  const [category, setCategory] = useState<DocumentCategory>("Other");
+  // True once the user manually picks a category — disables auto-detect so
+  // their override sticks even when they add more files.
+  const [categoryEdited, setCategoryEdited] = useState(false);
 
   function addFiles(list: FileList | null) {
     if (!list) return;
@@ -56,24 +81,61 @@ export default function UploadPage() {
       }
       accepted.push(f);
     }
-    if (accepted.length) setFiles((prev) => [...prev, ...accepted]);
+    if (accepted.length) {
+      setFiles((prev) => [...prev, ...accepted]);
+      // Auto-pick a category from the FIRST file (only if the user hasn't
+      // overridden the dropdown yet). Multi-file uploads in mixed categories
+      // are unusual; if it happens the user can re-pick before submitting.
+      if (!categoryEdited && accepted[0]) {
+        const guess = guessCategory(accepted[0]);
+        setCategory(guess);
+        if (guess !== "Other") {
+          toast.info(`Tagged as ${guess}`, {
+            description: "Auto-detected from the filename — change the Category dropdown if needed.",
+          });
+        }
+      }
+    }
   }
 
-  function startUpload() {
+  function readAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function startUpload() {
     if (files.length === 0) return;
     setUploading(true);
-    // Persist each file into the patient store. The store auto-flips
+    // Persist each file into the patient store INCLUDING its bytes (base64
+    // data URL) and mime type so the documents page can render a real preview
+    // in a new tab and download the real file. The store auto-flips
     // scanStatus from pending_scan → clean after ~1.5s to simulate ClamAV.
-    files.forEach((f, i) => {
+    for (const f of files) {
+      let dataUrl = "";
+      try {
+        dataUrl = await readAsDataUrl(f);
+      } catch {
+        // If FileReader fails for some reason we still persist the metadata —
+        // the row will show but the preview/download will be a placeholder.
+      }
+      // If the user explicitly picked a category, apply it to every file.
+      // Otherwise each file gets its own auto-detected category — uploading
+      // an insurance card + a lab report at once tags them correctly.
+      const perFileCategory = categoryEdited ? category : guessCategory(f);
       addDocument({
         name: files.length === 1 && title.trim() ? title.trim() : f.name,
-        category,
+        category: perFileCategory,
         sizeBytes: f.size,
         uploadedBy: "patient",
         uploaderName: undefined,
+        dataUrl,
+        mimeType: f.type || undefined,
       });
-      void i;
-    });
+    }
     setTimeout(() => {
       toast.success(`${files.length} file${files.length > 1 ? "s" : ""} uploaded`, {
         description: "Virus scan queued · encrypted at rest · audit-logged",
@@ -205,7 +267,10 @@ export default function UploadPage() {
                   id="cat"
                   className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
                   value={category}
-                  onChange={(e) => setCategory(e.target.value as DocumentCategory)}
+                  onChange={(e) => {
+                    setCategory(e.target.value as DocumentCategory);
+                    setCategoryEdited(true);
+                  }}
                 >
                   {CATEGORIES.map((c) => (
                     <option key={c}>{c}</option>

@@ -20,15 +20,7 @@ export default function StaffLoginPage() {
         </p>
       </div>
 
-      <CredentialsForm
-        scope="staff"
-        demoAccounts={[
-          ["Clinician", "priya.shah@citygeneral.health"],
-          ["Org Admin", "maya.iyer@citygeneral.health"],
-          ["Compliance", "compliance@citygeneral.health"],
-          ["Auditor", "anand.verma@regulator.gov"],
-        ]}
-      />
+      <CredentialsForm scope="staff" />
     </div>
   );
 }

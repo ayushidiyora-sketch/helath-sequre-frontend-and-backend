@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -31,29 +31,87 @@ import {
 interface ScopeRow {
   key: ConsentScope;
   icon: React.ComponentType<{ className?: string }>;
+  /** Which DocumentCategory this scope corresponds to (for live count). */
+  category?: "Insurance" | "ID Proof" | "Lab Report" | "Imaging" | "Prescription" | "Other";
   desc: string;
   defaultOn: boolean;
 }
 
+// Category-driven scopes — same tags the patient sees on /patient/documents.
+// Counts are computed from the patient store on render so the user can see
+// how much PHI they're about to expose with each toggle.
 const SCOPES: ScopeRow[] = [
-  { key: "lab", icon: Beaker, desc: "Read existing and future lab results", defaultOn: true },
-  { key: "prescriptions", icon: Pill, desc: "View current medications and history", defaultOn: true },
-  { key: "imaging", icon: FileImage, desc: "DICOM and radiology reports", defaultOn: false },
-  { key: "notes", icon: FileText, desc: "Finalized notes only — never drafts", defaultOn: true },
-  { key: "mental_health", icon: Brain, desc: "Separate consent — sensitive category", defaultOn: false },
+  { key: "insurance",    icon: ScrollText, category: "Insurance",    desc: "Insurance cards & policy docs",       defaultOn: false },
+  { key: "id_proof",     icon: FileText,   category: "ID Proof",     desc: "Aadhaar / passport / licence scans",  defaultOn: false },
+  { key: "lab",          icon: Beaker,     category: "Lab Report",   desc: "Lab results & panels",                defaultOn: true  },
+  { key: "imaging",      icon: FileImage,  category: "Imaging",      desc: "ECG / X-ray / MRI / scans",           defaultOn: false },
+  { key: "prescriptions",icon: Pill,       category: "Prescription", desc: "Medications and Rx history",          defaultOn: true  },
+  { key: "other",        icon: Brain,      category: "Other",        desc: "Everything else in your vault",       defaultOn: false },
 ];
 
-const CLINICIANS = [
-  { initials: "PS", name: "Dr. Priya Shah", department: "Cardiology", role: "Cardiology · MD, DM" },
-  { initials: "RI", name: "Dr. Rohan Iyer", department: "General Medicine", role: "General Medicine · MBBS, MD" },
-  { initials: "NK", name: "Dr. Neha Kapoor", department: "Dermatology", role: "Dermatology · MBBS" },
-];
+interface Clinician {
+  id: string;
+  initials: string;
+  name: string;
+  department: string;
+  role: string;
+  isAssigned: boolean;
+}
 
 export default function GrantConsentPage() {
   const router = useRouter();
-  const { addConsent, addNotification } = usePatientStore();
+  const { state, addConsent, addNotification } = usePatientStore();
+  const documents = state.documents;
   const [query, setQuery] = useState("");
-  const [selectedName, setSelectedName] = useState(CLINICIANS[0].name);
+  // Real clinicians from /api/patient/clinicians — patient's care team first,
+  // then other active clinicians in the tenant. Replaces the hardcoded
+  // "Priya / Rohan / Neha" demo list that lied on every fresh login.
+  const [clinicians, setClinicians] = useState<Clinician[]>([]);
+  const [clinLoading, setClinLoading] = useState(true);
+  const [selectedName, setSelectedName] = useState<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/clinicians", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        type ApiRow = {
+          id: string;
+          name: string;
+          initials: string;
+          designation: string | null;
+          department: string | null;
+          isAssigned: boolean;
+        };
+        // Dedup by id in case the API ever returns the same clinician twice
+        // (e.g. assigned + tenant-pool overlap on a different code path) —
+        // the React list keys off id so collisions would warn loudly.
+        const byId = new Map<string, Clinician>();
+        for (const c of data.clinicians as ApiRow[]) {
+          if (byId.has(c.id)) continue;
+          byId.set(c.id, {
+            id: c.id,
+            initials: c.initials,
+            name: c.name,
+            department: c.department ?? c.designation ?? "Care team",
+            role: [c.department, c.designation].filter(Boolean).join(" · ") || "Care team",
+            isAssigned: !!c.isAssigned,
+          });
+        }
+        const list = [...byId.values()];
+        setClinicians(list);
+        if (list.length > 0 && !selectedName) setSelectedName(list[0].name);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setClinLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [scopeOn, setScopeOn] = useState<Record<ConsentScope, boolean>>(() => {
     const out = {} as Record<ConsentScope, boolean>;
     for (const s of SCOPES) out[s.key] = s.defaultOn;
@@ -63,14 +121,14 @@ export default function GrantConsentPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const q = query.trim().toLowerCase();
-  const visible = q ? CLINICIANS.filter((c) => `${c.name} ${c.role}`.toLowerCase().includes(q)) : CLINICIANS;
-  const selected = CLINICIANS.find((c) => c.name === selectedName) ?? CLINICIANS[0];
+  const visible = q ? clinicians.filter((c) => `${c.name} ${c.role}`.toLowerCase().includes(q)) : clinicians;
+  const selected = clinicians.find((c) => c.name === selectedName) ?? clinicians[0];
 
   const activeScopes = (Object.keys(scopeOn) as ConsentScope[]).filter((k) => scopeOn[k]);
-  const canSubmit = ackPolicy && activeScopes.length > 0 && !submitting;
+  const canSubmit = ackPolicy && activeScopes.length > 0 && !submitting && !!selected;
 
   function submit() {
-    if (!canSubmit) return;
+    if (!canSubmit || !selected) return;
     setSubmitting(true);
     const con = addConsent({
       clinician: selected.name,
@@ -125,14 +183,22 @@ export default function GrantConsentPage() {
               onChange={(e) => setQuery(e.target.value)}
             />
 
-            {visible.length === 0 ? (
+            {clinLoading ? (
+              <p className="mt-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/20 px-4 py-8 text-center text-sm text-[var(--color-muted-foreground)]">
+                Loading clinicians…
+              </p>
+            ) : clinicians.length === 0 ? (
+              <p className="mt-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/20 px-4 py-8 text-center text-sm text-[var(--color-muted-foreground)]">
+                No clinicians available in your tenant yet. Once a clinician is assigned (or you book an appointment) they&apos;ll appear here.
+              </p>
+            ) : visible.length === 0 ? (
               <p className="mt-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/20 px-4 py-8 text-center text-sm text-[var(--color-muted-foreground)]">
                 No clinicians or roles match your search.
               </p>
             ) : (
               <ul className="mt-4 space-y-2">
                 {visible.map((c) => (
-                  <li key={c.name}>
+                  <li key={c.id}>
                     <label
                       className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors ${
                         c.name === selectedName
@@ -142,7 +208,12 @@ export default function GrantConsentPage() {
                     >
                       <Avatar className="size-10"><AvatarFallback>{c.initials}</AvatarFallback></Avatar>
                       <div className="flex-1">
-                        <p className="text-sm font-semibold">{c.name}</p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-semibold">{c.name}</p>
+                          {c.isAssigned && (
+                            <Badge variant="success" size="sm">Your care team</Badge>
+                          )}
+                        </div>
                         <p className="text-xs text-[var(--color-muted-foreground)]">{c.role}</p>
                       </div>
                       <input
@@ -159,29 +230,43 @@ export default function GrantConsentPage() {
             )}
           </div>
 
-          {/* Scope */}
+          {/* Scope — document-category-driven checklist matching the
+              patient's /patient/documents Tags sidebar. Counts come from the
+              patient store so the user sees exactly how many docs each scope
+              would expose. */}
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
             <h2 className="text-sm font-semibold">Scope</h2>
             <p className="text-xs text-[var(--color-muted-foreground)]">
-              Choose which record categories this clinician can read.
+              Choose which document categories this clinician can read. Counts reflect what&apos;s currently in your vault.
             </p>
             <div className="mt-4 space-y-2">
               {SCOPES.map((s) => {
                 const Icon = s.icon;
+                const count = s.category
+                  ? documents.filter((d) => d.category === s.category).length
+                  : 0;
+                const checked = !!scopeOn[s.key];
                 return (
                   <label
                     key={s.key}
-                    className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3.5 transition-colors hover:bg-[var(--color-muted)]/30"
+                    className={`flex items-center gap-3 rounded-xl border p-3.5 transition-colors cursor-pointer ${
+                      checked
+                        ? "border-[var(--color-primary)] bg-[var(--color-primary-50)]/40"
+                        : "border-[var(--color-border)] bg-[var(--color-card)] hover:bg-[var(--color-muted)]/30"
+                    }`}
                   >
                     <span className="flex size-10 items-center justify-center rounded-lg bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
                       <Icon className="size-4.5" />
                     </span>
                     <div className="flex-1">
-                      <p className="text-sm font-semibold">{CONSENT_SCOPE_LABEL[s.key]}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold">{CONSENT_SCOPE_LABEL[s.key]}</p>
+                        <Badge variant="muted" size="sm">{count}</Badge>
+                      </div>
                       <p className="text-[11px] text-[var(--color-muted-foreground)]">{s.desc}</p>
                     </div>
                     <Switch
-                      checked={scopeOn[s.key]}
+                      checked={checked}
                       onCheckedChange={(v) => setScopeOn((curr) => ({ ...curr, [s.key]: v }))}
                     />
                   </label>
@@ -239,11 +324,19 @@ export default function GrantConsentPage() {
               You&apos;re about to grant
             </p>
             <div className="mt-3 flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)]/30 p-3">
-              <Avatar className="size-9"><AvatarFallback>{selected.initials}</AvatarFallback></Avatar>
-              <div>
-                <p className="text-sm font-semibold">{selected.name}</p>
-                <p className="text-xs text-[var(--color-muted-foreground)]">{selected.department}</p>
-              </div>
+              {selected ? (
+                <>
+                  <Avatar className="size-9"><AvatarFallback>{selected.initials}</AvatarFallback></Avatar>
+                  <div>
+                    <p className="text-sm font-semibold">{selected.name}</p>
+                    <p className="text-xs text-[var(--color-muted-foreground)]">{selected.department}</p>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs italic text-[var(--color-muted-foreground)]">
+                  Pick a clinician above to start.
+                </p>
+              )}
             </div>
             <p className="mt-4 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Scope</p>
             <div className="mt-2 flex flex-wrap gap-1.5">

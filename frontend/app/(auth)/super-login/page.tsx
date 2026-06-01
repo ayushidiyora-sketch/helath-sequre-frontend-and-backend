@@ -35,10 +35,7 @@ export default function SuperLoginPage() {
         </div>
       </div> */}
 
-      <CredentialsForm
-        scope="super"
-        demoAccounts={[["Super Admin", "riya.sen@sensussoft.com"]]}
-      />
+      <CredentialsForm scope="super" />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -15,13 +15,16 @@ import {
   Power,
   Check,
   Upload,
+  Loader2,
+  Pencil,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/shared/page-header";
-import { InviteUserDialog } from "@/components/shared/form-dialogs";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -30,13 +33,42 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { useAdminStore, fullName, type StaffMember, type StaffRole, type ActiveStatus, type InvitationStatus } from "@/lib/admin-store";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogClose,
+} from "@/components/ui/dialog";
+
+interface Staff {
+  id: string;
+  slug: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  role: string;
+  status: "active" | "invited" | "suspended" | "deactivated";
+  invitation: "pending" | "accepted";
+  profilePhotoUrl: string | null;
+  createdAt: string;
+}
+
+const PAGE_SIZE = 10;
+
+/** Prefix every clinical/staff name with "Dr." for display. */
+function displayName(u: { firstName: string; lastName: string }): string {
+  return `Dr. ${u.firstName} ${u.lastName}`.trim();
+}
 
 const TABS = [
   { key: "all", label: "All" },
   { key: "clinicians", label: "Clinicians" },
-  { key: "admins", label: "Admins" },
-  { key: "invited", label: "Invited" },
+  { key: "compliance", label: "Compliance Managers" },
+  { key: "auditors", label: "Auditors" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -48,50 +80,107 @@ const STATUS_FILTERS: { key: StatusKey; label: string }[] = [
   { key: "deactivated", label: "Deactivated" },
 ];
 
-function matchesStatus(u: StaffMember, status: StatusKey): boolean {
-  if (status === "all") return true;
-  if (status === "invited") return u.invitationStatus === "pending";
-  if (status === "active") return u.invitationStatus === "accepted" && u.status === "active";
-  if (status === "deactivated") return u.status === "deactivated";
+const ROLE_OPTIONS = ["Clinician", "Compliance Manager", "Auditor"] as const;
+
+const SELECT_CLASS =
+  "flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15";
+
+// Unprefixed name kept for search matching so "Patience" still finds the row.
+function fullName(u: { firstName: string; lastName: string }) {
+  return `${u.firstName} ${u.lastName}`.trim();
+}
+
+function matchesStatus(u: Staff, filter: StatusKey): boolean {
+  if (filter === "all") return true;
+  if (filter === "invited") return u.status === "invited";
+  if (filter === "active") return u.status === "active";
+  if (filter === "deactivated") return u.status === "deactivated";
   return true;
 }
 
 export default function AdminUsersPage() {
-  const { state, setStaffStatus, forcePasswordReset, addStaff, markOnboardingStep } = useAdminStore();
+  const [staff, setStaff] = useState<Staff[]>([]);
+  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("all");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusKey>("all");
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [page, setPage] = useState(1);
 
-  // Compute before any early return so hook order stays stable.
+  // Reset to page 1 whenever the visible set changes — otherwise the user
+  // could be stuck on a page that no longer exists after a filter change.
+  useEffect(() => {
+    setPage(1);
+  }, [tab, search, statusFilter]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch("/api/admin/users", { cache: "no-store" });
+      const data = await r.json();
+      if (r.ok && data.ok) setStaff(data.staff);
+    } catch {
+      /* keep last successful list */
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    refresh().finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh]);
+
   const visible = useMemo(() => {
-    return state.staff.filter((u) => {
+    return staff.filter((u) => {
       if (tab === "clinicians" && u.role !== "Clinician") return false;
-      if (tab === "admins" && u.role !== "Org Admin") return false;
-      if (tab === "invited" && u.invitationStatus !== "pending") return false;
+      if (tab === "compliance" && u.role !== "Compliance Manager") return false;
+      if (tab === "auditors" && u.role !== "Auditor") return false;
       if (!matchesStatus(u, statusFilter)) return false;
       const q = search.trim().toLowerCase();
-      if (q && !`${fullName(u)} ${u.email} ${u.role} ${u.department ?? ""}`.toLowerCase().includes(q)) return false;
+      if (q && !`${fullName(u)} ${u.email} ${u.role}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [state.staff, tab, statusFilter, search]);
+  }, [staff, tab, statusFilter, search]);
 
-  if (!state.hydrated) {
-    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
-  }
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const paged = visible.slice(pageStart, pageStart + PAGE_SIZE);
 
   const counts = {
-    total: state.staff.length,
-    active: state.staff.filter((u) => u.invitationStatus === "accepted" && u.status === "active").length,
-    invited: state.staff.filter((u) => u.invitationStatus === "pending").length,
-    deactivated: state.staff.filter((u) => u.status === "deactivated").length,
+    total: staff.length,
+    active: staff.filter((u) => u.status === "active").length,
+    invited: staff.filter((u) => u.status === "invited").length,
+    deactivated: staff.filter((u) => u.status === "deactivated").length,
   };
+
+  async function patchStaff(id: string, body: Record<string, unknown>, msg: { ok: string; fail: string }) {
+    try {
+      const r = await fetch(`/api/admin/users/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(msg.fail, { description: data.error ?? `HTTP ${r.status}` });
+        return;
+      }
+      toast.success(msg.ok);
+      await refresh();
+    } catch {
+      toast.error(msg.fail, { description: "Network error" });
+    }
+  }
 
   return (
     <>
       <PageHeader
         eyebrow="Staff"
         title="User management"
-        description="Provision users via invitation tokens. Deactivation preserves the audit trail; you cannot delete users."
+        description="Invite users by email. Each invite mints a single-use onboarding link and a temporary password the user replaces on first sign-in. Deactivation preserves the audit trail; you cannot delete users."
         actions={
           <>
             <DropdownMenu>
@@ -112,21 +201,18 @@ export default function AdminUsersPage() {
               </DropdownMenuContent>
             </DropdownMenu>
             <Button asChild size="sm" variant="outline">
-              <Link href="/admin/users/bulk"><Upload /> Bulk CSV</Link>
+              <Link href="/admin/users/bulk">
+                <Upload /> Bulk CSV
+              </Link>
             </Button>
             <Button asChild size="sm" variant="outline">
-              <Link href="/admin/users/invite">Add full profile</Link>
+              <Link href="/admin/users/invite">
+                <UserCog /> Add full profile
+              </Link>
             </Button>
-            <InviteUserDialog
-              defaultRole="Care Team"
-              triggerLabel={<><Plus /> Invite staff</>}
-              triggerProps={{ size: "sm" }}
-              onCreated={({ firstName, lastName, email, role, department }) => {
-                addStaff({ firstName, lastName, email, role: role as StaffRole, department });
-                if (role === "Compliance Manager") markOnboardingStep("complianceManagerInvited", true);
-                else markOnboardingStep("firstStaffInvited", true);
-              }}
-            />
+            <Button size="sm" onClick={() => setInviteOpen(true)}>
+              <Plus /> Invite staff
+            </Button>
           </>
         }
       />
@@ -167,37 +253,96 @@ export default function AdminUsersPage() {
         <div className="grid grid-cols-12 gap-4 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
           <div className="col-span-4">User</div>
           <div className="col-span-3">Role</div>
-          <div className="col-span-2">Department</div>
+          <div className="col-span-2">Joined</div>
           <div className="col-span-1">MFA</div>
           <div className="col-span-2 text-right">Status</div>
         </div>
-        {visible.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 px-5 py-12 text-sm text-[var(--color-muted-foreground)]">
+            <Loader2 className="size-4 animate-spin" /> Loading staff…
+          </div>
+        ) : visible.length === 0 ? (
           <p className="px-5 py-10 text-center text-sm text-[var(--color-muted-foreground)]">
-            {state.staff.length === 0 ? "No staff yet. Invite your first staff member." : "No users match the current filters."}
+            {staff.length === 0
+              ? "No staff yet. Invite your first staff member."
+              : "No users match the current filters."}
           </p>
         ) : (
           <ul className="divide-y divide-[var(--color-border)]">
-            {visible.map((u) => (
+            {paged.map((u) => (
               <UserRow
                 key={u.id}
                 user={u}
-                onForceReset={() => {
-                  forcePasswordReset(u.id);
-                  toast.warning("Password reset enforced", { description: `${fullName(u)} · all sessions revoked · email sent` });
-                }}
-                onDeactivate={() => {
-                  setStaffStatus(u.id, "deactivated");
-                  toast.warning("User deactivated", { description: `${fullName(u)} · audit trail preserved` });
-                }}
-                onReactivate={() => {
-                  setStaffStatus(u.id, "active");
-                  toast.success("User reactivated");
-                }}
+                onForceReset={() =>
+                  patchStaff(
+                    u.id,
+                    { forcePasswordReset: true },
+                    { ok: `Reset enforced for ${displayName(u)}`, fail: "Could not enforce reset" },
+                  )
+                }
+                onDeactivate={() =>
+                  patchStaff(
+                    u.id,
+                    { status: "deactivated" },
+                    { ok: `${displayName(u)} deactivated`, fail: "Could not deactivate" },
+                  )
+                }
+                onReactivate={() =>
+                  patchStaff(
+                    u.id,
+                    { status: "active" },
+                    { ok: `${displayName(u)} reactivated`, fail: "Could not reactivate" },
+                  )
+                }
               />
             ))}
           </ul>
         )}
+        {!loading && visible.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] bg-[var(--color-muted)]/30 px-5 py-3 text-xs">
+            <span className="text-[var(--color-muted-foreground)]">
+              Showing{" "}
+              <span className="font-medium text-[var(--color-foreground)]">
+                {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, visible.length)}
+              </span>{" "}
+              of{" "}
+              <span className="font-medium text-[var(--color-foreground)]">{visible.length}</span>
+            </span>
+            <div className="inline-flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="icon-sm"
+                aria-label="Previous page"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                <ChevronLeft />
+              </Button>
+              <span className="px-2 tabular-nums text-[var(--color-muted-foreground)]">
+                Page <span className="font-medium text-[var(--color-foreground)]">{currentPage}</span>{" "}
+                of <span className="font-medium text-[var(--color-foreground)]">{totalPages}</span>
+              </span>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                aria-label="Next page"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                <ChevronRight />
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
+
+      <InviteStaffDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        onCreated={async () => {
+          await refresh();
+        }}
+      />
     </>
   );
 }
@@ -206,41 +351,62 @@ function Stat({ label, value, accent }: { label: string; value: number; accent?:
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
       <p className="text-xs font-medium text-[var(--color-muted-foreground)]">{label}</p>
-      <p className={`mt-1 text-2xl font-semibold tabular-nums ${
-        accent === "success" ? "text-[var(--color-success)]" :
-        accent === "warning" ? "text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]" : ""
-      }`}>{value}</p>
+      <p
+        className={`mt-1 text-2xl font-semibold tabular-nums ${
+          accent === "success"
+            ? "text-[var(--color-success)]"
+            : accent === "warning"
+              ? "text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]"
+              : ""
+        }`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
 
-function UserRow({ user, onForceReset, onDeactivate, onReactivate }: {
-  user: StaffMember;
+function UserRow({
+  user,
+  onForceReset,
+  onDeactivate,
+  onReactivate,
+}: {
+  user: Staff;
   onForceReset: () => void;
   onDeactivate: () => void;
   onReactivate: () => void;
 }) {
   const initials = ((user.firstName[0] ?? "") + (user.lastName[0] ?? "")).toUpperCase();
+  const joined = new Date(user.createdAt).toLocaleDateString();
+  const photo = user.profilePhotoUrl && /^(data:|https?:)/i.test(user.profilePhotoUrl) ? user.profilePhotoUrl : null;
   return (
     <li className="grid grid-cols-12 items-center gap-4 px-5 py-3.5 hover:bg-[var(--color-muted)]/40">
       <div className="col-span-4 flex items-center gap-3 min-w-0">
-        <Avatar className="size-9"><AvatarFallback>{initials}</AvatarFallback></Avatar>
+        <Avatar className="size-9">
+          {photo && <AvatarImage src={photo} alt={fullName(user)} />}
+          <AvatarFallback>{initials}</AvatarFallback>
+        </Avatar>
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{fullName(user)}</p>
+          <p className="truncate text-sm font-semibold">{displayName(user)}</p>
           <p className="truncate text-[11px] text-[var(--color-muted-foreground)]">{user.email}</p>
         </div>
       </div>
       <div className="col-span-3 text-sm">{user.role}</div>
-      <div className="col-span-2 text-xs text-[var(--color-muted-foreground)]">{user.department ?? "—"}</div>
+      <div className="col-span-2 text-xs text-[var(--color-muted-foreground)]">{joined}</div>
       <div className="col-span-1">
-        {user.invitationStatus === "accepted" ? (
-          <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-success)]"><ShieldCheck className="size-3.5" /> On</span>
+        {user.status === "active" ? (
+          <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-success)]">
+            <ShieldCheck className="size-3.5" /> On
+          </span>
         ) : (
-          <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-muted-foreground)]"><KeyRound className="size-3.5" /> —</span>
+          <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-muted-foreground)]">
+            <KeyRound className="size-3.5" /> —
+          </span>
         )}
       </div>
       <div className="col-span-2 flex items-center justify-end gap-2">
-        <StatusBadge invitation={user.invitationStatus} status={user.status} />
+        <StatusBadge status={user.status} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${fullName(user)}`}>
@@ -248,11 +414,16 @@ function UserRow({ user, onForceReset, onDeactivate, onReactivate }: {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuLabel className="truncate">{fullName(user)}</DropdownMenuLabel>
+            <DropdownMenuLabel className="truncate">{displayName(user)}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <Link href={user.role === "Clinician" ? `/admin/clinicians/${user.id}` : "#"}>
+              <Link href={`/admin/users/${user.slug}`}>
                 <UserCog /> View profile
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href={`/admin/users/${user.slug}/edit`}>
+                <Pencil /> Edit profile
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onForceReset}>
@@ -278,11 +449,176 @@ function UserRow({ user, onForceReset, onDeactivate, onReactivate }: {
   );
 }
 
-function StatusBadge({ invitation, status }: { invitation: InvitationStatus; status: ActiveStatus }) {
+function StatusBadge({ status }: { status: Staff["status"] }) {
   if (status === "deactivated") return <Badge variant="muted" size="sm">Deactivated</Badge>;
-  if (status === "under_investigation") return <Badge variant="danger" size="sm" dot>Under review</Badge>;
-  if (invitation === "pending") return <Badge variant="warning" size="sm" dot>Invited</Badge>;
-  if (invitation === "expired") return <Badge variant="muted" size="sm">Expired</Badge>;
-  if (invitation === "bounced") return <Badge variant="danger" size="sm" dot>Bounced</Badge>;
-  return <Badge variant="success" size="sm" dot>Active</Badge>;
+  if (status === "suspended")
+    return (
+      <Badge variant="danger" size="sm" dot>
+        Suspended
+      </Badge>
+    );
+  if (status === "invited")
+    return (
+      <Badge variant="warning" size="sm" dot>
+        Invited
+      </Badge>
+    );
+  return (
+    <Badge variant="success" size="sm" dot>
+      Active
+    </Badge>
+  );
+}
+
+function InviteStaffDialog({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onCreated: () => Promise<void> | void;
+}) {
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [role, setRole] = useState<(typeof ROLE_OPTIONS)[number]>("Clinician");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setFirstName("");
+      setLastName("");
+      setEmail("");
+      setPhone("");
+      setRole("Clinician");
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ firstName, lastName, email, phone, role }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error("Could not invite", { description: data.error ?? `HTTP ${r.status}` });
+        setSubmitting(false);
+        return;
+      }
+      if (data.mailSent) {
+        toast.success(`Invited ${firstName} ${lastName}`, {
+          description: `Welcome email sent via ${data.mailVia} to ${email} · audit-logged`,
+        });
+      } else {
+        const pw = data.devCredentials?.password as string | undefined;
+        toast.warning(`Invited ${firstName} ${lastName} — email NOT delivered`, {
+          description: `${data.mailError ?? "Mail transport failed"}${
+            pw ? `\n\nTemp password (share out-of-band): ${pw}` : ""
+          }`,
+          duration: 20000,
+        });
+      }
+      await onCreated();
+      onOpenChange(false);
+    } catch {
+      toast.error("Could not invite", { description: "Network error" });
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>Invite staff member</DialogTitle>
+          <DialogDescription>
+            We&apos;ll create their account, mint a single-use onboarding link, and email them
+            sign-in credentials. They&apos;ll be asked to change the password on first sign-in.
+          </DialogDescription>
+        </DialogHeader>
+        <form className="space-y-4 pt-2" onSubmit={submit}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="inv-first">First name</Label>
+              <Input
+                id="inv-first"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="inv-last">Last name</Label>
+              <Input
+                id="inv-last"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="inv-email">Email</Label>
+            <Input
+              id="inv-email"
+              type="email"
+              placeholder="staff@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="inv-role">Role</Label>
+              <select
+                id="inv-role"
+                className={SELECT_CLASS}
+                value={role}
+                onChange={(e) => setRole(e.target.value as (typeof ROLE_OPTIONS)[number])}
+              >
+                {ROLE_OPTIONS.map((r) => (
+                  <option key={r}>{r}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="inv-phone">Phone (optional)</Label>
+              <Input
+                id="inv-phone"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+91 …"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={submitting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? (
+                <>
+                  <Loader2 className="animate-spin" /> Sending invite…
+                </>
+              ) : (
+                <>
+                  <Plus /> Send invite
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
 }

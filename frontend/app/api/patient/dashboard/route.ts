@@ -1,0 +1,168 @@
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { AppointmentStatus, RoleKind } from "@prisma/client";
+import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  const jar = await cookies();
+  const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
+  if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
+  if (claims.role !== "Patient")
+    return NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 });
+
+  const me = await prisma.user.findUnique({
+    where: { id: claims.uid },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      gender: true,
+      dateOfBirth: true,
+      profilePhotoUrl: true,
+      organizationId: true,
+      createdAt: true,
+      mfaEnrolledAt: true,
+      mfaRequired: true,
+      organization: { select: { name: true } },
+      roleKind: true,
+    },
+  });
+  if (!me || me.roleKind !== RoleKind.patient)
+    return NextResponse.json({ ok: false, error: "Patient not found" }, { status: 404 });
+
+  const now = new Date();
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+
+  // Appointments today/future for this patient (booked against their email).
+  const [upcoming, past, careTeam] = await Promise.all([
+    prisma.appointment.findMany({
+      where: {
+        patientEmail: me.email,
+        deletedAt: null,
+        startsAt: { gte: dayStart },
+        status: { notIn: [AppointmentStatus.cancelled, AppointmentStatus.no_show] },
+      },
+      orderBy: { startsAt: "asc" },
+      take: 10,
+      include: {
+        clinician: {
+          select: { firstName: true, lastName: true, designation: true, department: true },
+        },
+      },
+    }),
+    prisma.appointment.count({
+      where: {
+        patientEmail: me.email,
+        deletedAt: null,
+        startsAt: { lt: dayStart },
+      },
+    }),
+    prisma.patientAssignment.findMany({
+      where: { patientId: me.id, endedAt: null },
+      orderBy: { startedAt: "desc" },
+      include: {
+        clinician: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            designation: true,
+            department: true,
+            profilePhotoUrl: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  const next = upcoming[0] ?? null;
+
+  // Synthetic MRN — first 8 chars of the patient UUID, prefixed.
+  const mrn = `CG-${me.createdAt.getUTCFullYear()}-${me.id.slice(0, 4).toUpperCase()}`;
+
+  return NextResponse.json({
+    ok: true,
+    profile: {
+      id: me.id,
+      firstName: me.firstName,
+      lastName: me.lastName,
+      name: `${me.firstName} ${me.lastName}`.trim(),
+      initials: ((me.firstName[0] ?? "") + (me.lastName[0] ?? "")).toUpperCase(),
+      email: me.email,
+      phone: me.phone,
+      gender: me.gender,
+      dateOfBirth: me.dateOfBirth ? me.dateOfBirth.toISOString().slice(0, 10) : null,
+      profilePhotoUrl: me.profilePhotoUrl,
+      tenantName: me.organization?.name ?? null,
+      mfaEnrolled: !!me.mfaEnrolledAt,
+      mfaRequired: me.mfaRequired,
+      mrn,
+      enrolledAt: me.createdAt.toISOString(),
+    },
+    stats: {
+      upcomingCount: upcoming.length,
+      pastCount: past,
+      careTeamSize: careTeam.length,
+      documents: 0,
+      activeConsents: careTeam.length,
+      unreadMessages: 0,
+    },
+    next: next
+      ? {
+          id: next.id,
+          startsAt: next.startsAt.toISOString(),
+          date: next.startsAt.toISOString().slice(0, 10),
+          time: next.startsAt.toLocaleTimeString("en-US", {
+            hour: "numeric",
+            minute: "2-digit",
+            hour12: true,
+          }),
+          durationMinutes: next.durationMinutes,
+          room: next.room,
+          status: next.status,
+          notes: next.notes,
+          clinician: `Dr. ${next.clinician.firstName} ${next.clinician.lastName}`.trim(),
+          clinicianDepartment: next.clinician.department,
+          clinicianDesignation: next.clinician.designation,
+        }
+      : null,
+    upcoming: upcoming.map((a) => ({
+      id: a.id,
+      startsAt: a.startsAt.toISOString(),
+      date: a.startsAt.toISOString().slice(0, 10),
+      time: a.startsAt.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      durationMinutes: a.durationMinutes,
+      room: a.room,
+      status: a.status,
+      notes: a.notes,
+      clinician: `Dr. ${a.clinician.firstName} ${a.clinician.lastName}`.trim(),
+      clinicianDepartment: a.clinician.department,
+    })),
+    careTeam: careTeam.map((c) => ({
+      assignmentId: c.id,
+      role: c.role,
+      startedAt: c.startedAt.toISOString(),
+      clinician: {
+        id: c.clinician.id,
+        name: `Dr. ${c.clinician.firstName} ${c.clinician.lastName}`.trim(),
+        firstName: c.clinician.firstName,
+        lastName: c.clinician.lastName,
+        initials: ((c.clinician.firstName[0] ?? "") + (c.clinician.lastName[0] ?? "")).toUpperCase(),
+        email: c.clinician.email,
+        designation: c.clinician.designation,
+        department: c.clinician.department,
+        profilePhotoUrl: c.clinician.profilePhotoUrl,
+      },
+    })),
+  });
+}

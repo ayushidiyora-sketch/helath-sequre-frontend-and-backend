@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { MoreHorizontal, Eye, Settings2, PauseCircle, PlayCircle } from "lucide-react";
+import { MoreHorizontal, Eye, Settings2, PauseCircle, PlayCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label } from "@/components/ui/input";
@@ -30,10 +30,15 @@ interface Tenant {
   type: string;
   tier: string;
   users: number;
-  patients: number;
   storage: string;
   region: string;
-  status: "active" | "trial" | "suspended";
+  status: "active" | "trial" | "suspended" | "archived";
+}
+
+interface TenantRowMenuProps {
+  tenant: Tenant;
+  /** Called after a successful mutation so the parent can refetch the list. */
+  onChanged?: () => void | Promise<void>;
 }
 
 type DialogKind = "view" | "configure" | "suspend" | null;
@@ -42,10 +47,82 @@ const SELECT_CLASS =
   "flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15";
 
 /** Per-row tenant actions — opens a details, configure, or suspend dialog. */
-export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
+export function TenantRowMenu({ tenant, onChanged }: TenantRowMenuProps) {
   const [dialog, setDialog] = useState<DialogKind>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Configure-form local state, seeded each time the dialog opens.
+  const [cfgName, setCfgName] = useState(tenant.name);
+  const [cfgTier, setCfgTier] = useState(tenant.tier);
+  const [cfgRegion, setCfgRegion] = useState(tenant.region);
+
   const suspended = tenant.status === "suspended";
   const close = () => setDialog(null);
+
+  function openConfigure() {
+    setCfgName(tenant.name);
+    setCfgTier(tenant.tier);
+    setCfgRegion(tenant.region);
+    setDialog("configure");
+  }
+
+  async function handleConfigureSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/super/tenants/${encodeURIComponent(tenant.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: cfgName, tier: cfgTier, region: cfgRegion }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        toast.error("Could not save settings", { description: data.error ?? `HTTP ${res.status}` });
+        return;
+      }
+      toast.success("Tenant settings saved", { description: `${cfgName} · audit-logged` });
+      close();
+      await onChanged?.();
+    } catch {
+      toast.error("Network error", { description: "Could not reach the server." });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSuspendToggle() {
+    const nextStatus = suspended ? "active" : "suspended";
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/super/tenants/${encodeURIComponent(tenant.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        toast.error(`Could not ${suspended ? "reactivate" : "suspend"} tenant`, {
+          description: data.error ?? `HTTP ${res.status}`,
+        });
+        return;
+      }
+      if (suspended) {
+        toast.success("Tenant reactivated", {
+          description: `${tenant.name} is active again · audit-logged`,
+        });
+      } else {
+        toast.warning("Tenant suspended", {
+          description: `${tenant.name} · sign-in blocked · audit-logged`,
+        });
+      }
+      close();
+      await onChanged?.();
+    } catch {
+      toast.error("Network error", { description: "Could not reach the server." });
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <>
@@ -63,7 +140,7 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
           <DropdownMenuItem onSelect={() => setDialog("view")}>
             <Eye /> View tenant
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setDialog("configure")}>
+          <DropdownMenuItem onSelect={openConfigure}>
             <Settings2 /> Configure
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -96,7 +173,15 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
               label="Status"
               value={
                 <Badge
-                  variant={suspended ? "danger" : tenant.status === "trial" ? "warning" : "success"}
+                  variant={
+                    suspended
+                      ? "danger"
+                      : tenant.status === "trial"
+                        ? "warning"
+                        : tenant.status === "archived"
+                          ? "muted"
+                          : "success"
+                  }
                   size="sm"
                   dot
                 >
@@ -105,7 +190,6 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
               }
             />
             <Detail label="Users" value={String(tenant.users)} />
-            <Detail label="Patients" value={tenant.patients.toLocaleString()} />
             <Detail label="Storage used" value={tenant.storage} />
           </dl>
           <DialogFooter>
@@ -122,27 +206,28 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
           <DialogHeader>
             <DialogTitle>Configure {tenant.name}</DialogTitle>
             <DialogDescription>
-              Tenant-level settings. Changes are audit-logged.
+              Tenant-level settings. Changes are saved to Postgres and audit-logged.
             </DialogDescription>
           </DialogHeader>
-          <form
-            className="space-y-4 pt-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              close();
-              toast.success("Tenant settings saved", {
-                description: `${tenant.name} · audit-logged`,
-              });
-            }}
-          >
+          <form className="space-y-4 pt-2" onSubmit={handleConfigureSubmit}>
             <div className="space-y-1.5">
               <Label htmlFor="cfg-name">Tenant name</Label>
-              <Input id="cfg-name" defaultValue={tenant.name} required />
+              <Input
+                id="cfg-name"
+                value={cfgName}
+                onChange={(e) => setCfgName(e.target.value)}
+                required
+              />
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="cfg-tier">Subscription tier</Label>
-                <select id="cfg-tier" className={SELECT_CLASS} defaultValue={tenant.tier}>
+                <select
+                  id="cfg-tier"
+                  className={SELECT_CLASS}
+                  value={cfgTier}
+                  onChange={(e) => setCfgTier(e.target.value)}
+                >
                   <option>Basic</option>
                   <option>Pro</option>
                   <option>Enterprise</option>
@@ -150,7 +235,12 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="cfg-region">Region</Label>
-                <select id="cfg-region" className={SELECT_CLASS} defaultValue={tenant.region}>
+                <select
+                  id="cfg-region"
+                  className={SELECT_CLASS}
+                  value={cfgRegion}
+                  onChange={(e) => setCfgRegion(e.target.value)}
+                >
                   <option>ap-south-1</option>
                   <option>us-east-1</option>
                   <option>eu-west-1</option>
@@ -160,11 +250,19 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
             </div>
             <DialogFooter>
               <DialogClose asChild>
-                <Button type="button" variant="outline">
+                <Button type="button" variant="outline" disabled={submitting}>
                   Cancel
                 </Button>
               </DialogClose>
-              <Button type="submit">Save settings</Button>
+              <Button type="submit" disabled={submitting}>
+                {submitting ? (
+                  <>
+                    <Loader2 className="animate-spin" /> Saving…
+                  </>
+                ) : (
+                  "Save settings"
+                )}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -185,24 +283,24 @@ export function TenantRowMenu({ tenant }: { tenant: Tenant }) {
           </DialogHeader>
           <DialogFooter>
             <DialogClose asChild>
-              <Button variant="outline">Cancel</Button>
+              <Button variant="outline" disabled={submitting}>
+                Cancel
+              </Button>
             </DialogClose>
             <Button
               variant={suspended ? "default" : "destructive"}
-              onClick={() => {
-                close();
-                if (suspended) {
-                  toast.success("Tenant reactivated", {
-                    description: `${tenant.name} is active again · audit-logged`,
-                  });
-                } else {
-                  toast.warning("Tenant suspended", {
-                    description: `${tenant.name} · sign-in blocked · audit-logged`,
-                  });
-                }
-              }}
+              onClick={handleSuspendToggle}
+              disabled={submitting}
             >
-              {suspended ? "Reactivate" : "Suspend tenant"}
+              {submitting ? (
+                <>
+                  <Loader2 className="animate-spin" /> Working…
+                </>
+              ) : suspended ? (
+                "Reactivate"
+              ) : (
+                "Suspend tenant"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

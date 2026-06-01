@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -30,6 +30,7 @@ import {
   hasEffectiveConsent,
   activeApprovedRequest,
   pendingRequest,
+  type AssignedPatient,
   type ClinicianNote,
   type NoteTemplate,
 } from "@/lib/clinician-store";
@@ -67,7 +68,35 @@ export default function PatientRecordsPage({ params }: { params: Promise<{ id: s
   const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "finalized">("all");
   const [requestOpen, setRequestOpen] = useState(false);
 
-  const patient = state.hydrated ? state.assignedPatients.find((p) => p.id === id) : undefined;
+  // DB-fallback for the patient lookup (matches main chart + timeline page).
+  const [apiPatient, setApiPatient] = useState<AssignedPatient | null>(null);
+  const [apiResolved, setApiResolved] = useState<"pending" | "found" | "missing">("pending");
+  const storeHas = state.hydrated && state.assignedPatients.some((p) => p.id === id);
+  useEffect(() => {
+    if (storeHas || !state.hydrated) return;
+    let cancelled = false;
+    fetch(`/api/clinician/patients/${id}`, { cache: "no-store" })
+      .then(async (r) => {
+        const data = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !data.ok) { setApiResolved("missing"); return; }
+        const p = data.patient;
+        setApiPatient({
+          id: p.id, mrn: p.mrn, name: p.name, initials: p.initials,
+          age: p.age ?? 0,
+          sex: (p.sex === "M" ? "M" : p.sex === "F" ? "F" : "Other") as "M" | "F" | "Other",
+          email: p.email, phone: p.phone ?? "", assignedAt: p.startedAt,
+          consentScopes: [], consentStatus: "active", conditions: [], allergies: [],
+        });
+        setApiResolved("found");
+      })
+      .catch(() => { if (!cancelled) setApiResolved("missing"); });
+    return () => { cancelled = true; };
+  }, [id, storeHas, state.hydrated]);
+
+  const patient = state.hydrated
+    ? state.assignedPatients.find((p) => p.id === id) ?? apiPatient ?? undefined
+    : undefined;
 
   const allNotes = useMemo(
     () => (patient ? state.notes.filter((n) => n.patientId === patient.id) : []),
@@ -92,7 +121,7 @@ export default function PatientRecordsPage({ params }: { params: Promise<{ id: s
       .sort((a, b) => (b.finalizedAt ?? b.updatedAt).localeCompare(a.finalizedAt ?? a.updatedAt));
   }, [allNotes, query, templateFilter, statusFilter]);
 
-  if (!state.hydrated) {
+  if (!state.hydrated || (!storeHas && apiResolved === "pending")) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…

@@ -9,7 +9,7 @@ export const DEMO_PASSWORD = "Demo!Pass1234";
 
 export type LoginScope = "patient" | "staff" | "super";
 
-interface DemoUser {
+export interface DemoUser {
   uid: string;
   email: string;
   name: string;
@@ -21,7 +21,7 @@ interface DemoUser {
 const USERS: DemoUser[] = [
   {
     uid: "u_patient_ayushi",
-    email: "ayushi.diyora@sensussoft.com",
+    email: "ayushi.diyora@example.com",
     name: "Ayushi Diyora",
     role: "Patient",
     org: null,
@@ -60,24 +60,31 @@ const USERS: DemoUser[] = [
     scope: "staff",
   },
   {
-    uid: "u_super_riya",
-    email: "riya.sen@sensussoft.com",
-    name: "Riya Sen",
+    uid: "u_super_ayushi",
+    email: "ayushi.diyora@sensussoft.com",
+    name: "Ayushi Diyora",
     role: "Super Admin",
     org: null,
     scope: "super",
   },
 ];
 
-/** Find a demo user by email (case-insensitive). */
+/** Find a demo user by email (case-insensitive). Checks seeded users first, then dynamically-provisioned org admins. */
 export function findDemoUser(email: string): DemoUser | undefined {
   const needle = email.trim().toLowerCase();
-  return USERS.find((u) => u.email === needle);
+  const seeded = USERS.find((u) => u.email === needle);
+  if (seeded) return seeded;
+  // Lazy require to avoid a circular import at module init.
+  const { findTenantUserByEmail } = require("./tenant-store") as typeof import("./tenant-store");
+  return findTenantUserByEmail(needle);
 }
 
 /** Find a demo user by uid (used after the OTP step to rebuild claims). */
 export function findDemoUserByUid(uid: string): DemoUser | undefined {
-  return USERS.find((u) => u.uid === uid);
+  const seeded = USERS.find((u) => u.uid === uid);
+  if (seeded) return seeded;
+  const { findTenantUserByUid } = require("./tenant-store") as typeof import("./tenant-store");
+  return findTenantUserByUid(uid);
 }
 
 /** Build the SessionClaims to embed in `hs_session` for a demo user. */

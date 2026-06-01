@@ -20,7 +20,17 @@ import {
   type ConsentScope,
 } from "@/lib/clinician-store";
 
-const ALL_SCOPES: ConsentScope[] = ["lab", "prescriptions", "notes", "imaging", "mental_health"];
+// Same six document-category scopes the patient consent grant page shows,
+// in the same order so the clinician's request dialog mirrors what the
+// patient will see when they review the request.
+const ALL_SCOPES: ConsentScope[] = [
+  "insurance",
+  "id_proof",
+  "lab",
+  "imaging",
+  "prescriptions",
+  "other",
+];
 
 const DEFAULT_REASON =
   "Covering Dr. Verma — patient escalated overnight. Need lab and imaging history to triage safely.";
@@ -55,20 +65,51 @@ export function RequestAccessDialog({
   }, [open, initialScope]);
 
   const selectedScopes = ALL_SCOPES.filter((s) => scopes[s]);
-  const canSubmit = reason.trim().length > 0 && selectedScopes.length > 0;
+  const canSubmit = reason.trim().length >= 10 && selectedScopes.length > 0;
+  const [submitting, setSubmitting] = React.useState(false);
 
-  function submit() {
-    if (!canSubmit) return;
-    requestAccess({
-      patientId: patient.id,
-      scopes: selectedScopes,
-      durationHours: duration,
-      reason: reason.trim(),
-    });
-    toast.success("Request submitted", {
-      description: "Sai (Compliance Manager) notified · audit-logged",
-    });
-    onOpenChange(false);
+  async function submit() {
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
+    try {
+      // Persist to Postgres via POST /api/clinician/consent-requests. The
+      // patient sees the new request on /patient/consents as a pending banner.
+      const r = await fetch("/api/clinician/consent-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patientId: patient.id,
+          scopes: selectedScopes,
+          durationHours: duration,
+          reason: reason.trim(),
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "Could not submit request.");
+        return;
+      }
+      // Mirror to the local store so the chart's pending-banner reflects the
+      // request immediately without a refetch.
+      try {
+        requestAccess({
+          patientId: patient.id,
+          scopes: selectedScopes,
+          durationHours: duration,
+          reason: reason.trim(),
+        });
+      } catch {
+        // Best-effort local mirror — DB is the canonical source of truth.
+      }
+      toast.success("Request submitted · audit-logged", {
+        description: `${patient.name} will see this on their consents page`,
+      });
+      onOpenChange(false);
+    } catch {
+      toast.error("Network error — please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (

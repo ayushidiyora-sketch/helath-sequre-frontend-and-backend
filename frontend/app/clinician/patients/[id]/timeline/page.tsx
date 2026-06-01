@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -108,7 +108,52 @@ export default function PatientTimelinePage({ params }: { params: Promise<{ id: 
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [range, setRange] = useState<Range>("30d");
 
-  const patient = state.hydrated ? state.assignedPatients.find((p) => p.id === id) : undefined;
+  // DB-fallback for DB-backed patients: the local store is empty after v4
+  // reset, so we fetch /api/clinician/patients/[id] when the store misses.
+  // The API verifies an active PatientAssignment exists for this clinician.
+  const [apiPatient, setApiPatient] = useState<AssignedPatient | null>(null);
+  const [apiResolved, setApiResolved] = useState<"pending" | "found" | "missing">("pending");
+  const storeHas = state.hydrated && state.assignedPatients.some((p) => p.id === id);
+  useEffect(() => {
+    if (storeHas || !state.hydrated) return;
+    let cancelled = false;
+    fetch(`/api/clinician/patients/${id}`, { cache: "no-store" })
+      .then(async (r) => {
+        const data = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !data.ok) {
+          setApiResolved("missing");
+          return;
+        }
+        const p = data.patient;
+        setApiPatient({
+          id: p.id,
+          mrn: p.mrn,
+          name: p.name,
+          initials: p.initials,
+          age: p.age ?? 0,
+          sex: (p.sex === "M" ? "M" : p.sex === "F" ? "F" : "Other") as "M" | "F" | "Other",
+          email: p.email,
+          phone: p.phone ?? "",
+          assignedAt: p.startedAt,
+          consentScopes: [],
+          consentStatus: "active",
+          conditions: [],
+          allergies: [],
+        });
+        setApiResolved("found");
+      })
+      .catch(() => {
+        if (!cancelled) setApiResolved("missing");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, storeHas, state.hydrated]);
+
+  const patient = state.hydrated
+    ? state.assignedPatients.find((p) => p.id === id) ?? apiPatient ?? undefined
+    : undefined;
 
   const events = useMemo<TimelineEvent[]>(() => {
     if (!patient) return [];
@@ -225,6 +270,16 @@ export default function PatientTimelinePage({ params }: { params: Promise<{ id: 
   }
 
   if (!patient) {
+    // Still resolving via API — show a quiet placeholder rather than the
+    // alarming "not on panel" message that the empty-store first render would
+    // otherwise produce.
+    if (!storeHas && apiResolved === "pending") {
+      return (
+        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
+          Loading patient…
+        </div>
+      );
+    }
     return <NotFound id={id} />;
   }
 

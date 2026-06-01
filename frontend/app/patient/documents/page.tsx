@@ -92,26 +92,89 @@ export default function DocumentsPage() {
     return true;
   });
 
-  function downloadDoc(d: PatientDocument) {
+  /**
+   * Convert a base64 data URL to a Blob so we can:
+   *   - download it with the real filename + bytes
+   *   - open a same-origin Object URL in a new tab for inline preview
+   *     (browsers refuse to render some data: URLs in a new window for
+   *     security reasons, so a Blob URL is more reliable).
+   */
+  function dataUrlToBlob(dataUrl: string): Blob | null {
+    const m = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(dataUrl);
+    if (!m) return null;
+    const mime = m[1] || "application/octet-stream";
+    const isBase64 = !!m[2];
+    const payload = m[3];
+    try {
+      if (isBase64) {
+        const bin = atob(payload);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+      }
+      return new Blob([decodeURIComponent(payload)], { type: mime });
+    } catch {
+      return null;
+    }
+  }
+
+  function blockedByScan(d: PatientDocument): boolean {
     if (d.scanStatus === "infected") {
-      toast.error("Download blocked", { description: `${d.name} is quarantined by the virus scanner.` });
-      return;
+      toast.error("Blocked", { description: `${d.name} is quarantined by the virus scanner.` });
+      return true;
     }
     if (d.scanStatus === "pending_scan") {
       toast.warning("Scan in progress", { description: `Try again once ${d.name} is marked clean.` });
+      return true;
+    }
+    return false;
+  }
+
+  function previewDoc(d: PatientDocument) {
+    if (blockedByScan(d)) return;
+    if (!d.dataUrl) {
+      // Legacy / seeded doc without bytes — fall back to a placeholder.
+      const blob = new Blob(
+        [`HealthSecure Portal — secure document\n\nFile: ${d.name}\nType: ${d.category}\nUploaded: ${formatDate(d.uploadedAt)}\n\n(No file bytes — uploaded before binary capture was wired up.)`],
+        { type: "text/plain" },
+      );
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      toast.info("Opened placeholder", { description: `${d.name} · re-upload to view the original file` });
       return;
     }
-    const blob = new Blob(
-      [`HealthSecure Portal — secure document\n\nFile: ${d.name}\nType: ${d.category}\nUploaded: ${formatDate(d.uploadedAt)}\n\n(Demo placeholder export.)`],
-      { type: "text/plain" },
-    );
+    const blob = dataUrlToBlob(d.dataUrl);
+    if (!blob) {
+      toast.error("Could not open document", { description: "The stored data is malformed." });
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener");
+    // Keep the URL alive long enough for the new tab to read it.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    toast.success("Preview opened · audit-logged", { description: `${d.name} · view counted` });
+  }
+
+  function downloadDoc(d: PatientDocument) {
+    if (blockedByScan(d)) return;
+    const blob = d.dataUrl
+      ? dataUrlToBlob(d.dataUrl)
+      : new Blob(
+          [`HealthSecure Portal — secure document\n\nFile: ${d.name}\nType: ${d.category}\nUploaded: ${formatDate(d.uploadedAt)}\n\n(Demo placeholder export — no original bytes stored.)`],
+          { type: "text/plain" },
+        );
+    if (!blob) {
+      toast.error("Could not download", { description: "The stored data is malformed." });
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = d.name;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success("Download started", { description: `${d.name} · signed URL expires in 5 min` });
+    toast.success("Download started · audit-logged", { description: `${d.name} · signed URL expires in 5 min` });
   }
 
   function handleDelete(d: PatientDocument) {
@@ -211,21 +274,31 @@ export default function DocumentsPage() {
                       key={d.id}
                       className="group flex items-center gap-4 p-5 transition-colors hover:bg-[var(--color-muted)]/40"
                     >
-                      <span className={`flex size-11 items-center justify-center rounded-xl bg-gradient-to-br ${meta.color} text-white shadow-[var(--shadow-soft)]`}>
+                      <button
+                        type="button"
+                        onClick={() => previewDoc(d)}
+                        className={`flex size-11 items-center justify-center rounded-xl bg-gradient-to-br ${meta.color} text-white shadow-[var(--shadow-soft)] transition-transform hover:scale-105`}
+                        aria-label={`Open ${d.name} in a new tab`}
+                      >
                         <Icon className="size-5" />
-                      </span>
-                      <div className="min-w-0 flex-1">
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => previewDoc(d)}
+                        className="min-w-0 flex-1 text-left"
+                        aria-label={`Open ${d.name} in a new tab`}
+                      >
                         <div className="flex items-center gap-2">
-                          <p className="truncate text-sm font-semibold">{d.name}</p>
+                          <p className="truncate text-sm font-semibold underline-offset-2 group-hover:underline">{d.name}</p>
                           <Badge variant="muted" size="sm">{d.category}</Badge>
                           {d.uploadedBy === "clinician" && (
                             <Badge variant="info" size="sm">From {d.uploaderName ?? "clinician"}</Badge>
                           )}
                         </div>
                         <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
-                          {formatSize(d.sizeBytes)} · uploaded {formatDate(d.uploadedAt)}
+                          {formatSize(d.sizeBytes)} · uploaded {formatDate(d.uploadedAt)} · click to preview
                         </p>
-                      </div>
+                      </button>
                       <ScanStatus state={d.scanStatus} />
                       <div className="hidden gap-1 sm:flex">
                         <Button

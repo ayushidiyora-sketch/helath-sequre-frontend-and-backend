@@ -21,10 +21,7 @@ export default function PatientLoginPage() {
         </p>
       </div>
 
-      <CredentialsForm
-        scope="patient"
-        demoAccounts={[["Patient", "ayushi.diyora@sensussoft.com"]]}
-      />
+      <CredentialsForm scope="patient" />
 
       <p className="text-center text-xs text-[var(--color-muted-foreground)]">
         Already have an account?{" "}

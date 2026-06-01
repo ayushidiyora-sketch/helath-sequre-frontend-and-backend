@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   UserRound,
@@ -16,13 +17,12 @@ import {
   Loader2,
   AlertCircle,
   Sparkles,
-  MailCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 
-const STEPS = ["Account type", "Your details", "Check your email"] as const;
+const STEPS = ["Account type", "Your details"] as const;
 
 interface FormState {
   accountType: "patient";
@@ -55,6 +55,7 @@ const INITIAL: FormState = {
  *  flow ends on the "Check your email" step — phone OTP is completed in the
  *  verify-email tab that opens from the email link. */
 export function RegistrationWizard() {
+  const router = useRouter();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL);
   const [submitting, setSubmitting] = useState(false);
@@ -94,7 +95,7 @@ export function RegistrationWizard() {
     }
   }
 
-  async function createAccount(): Promise<boolean> {
+  async function createAccount(): Promise<void> {
     setSubmitting(true);
     setError(null);
     try {
@@ -115,26 +116,29 @@ export function RegistrationWizard() {
       const data = await res.json();
       if (!res.ok || !data.ok) {
         setError(data.error ?? "Registration failed. Please try again.");
-        return false;
+        setSubmitting(false);
+        return;
       }
-      return true;
+      toast.success("Welcome to HealthSecure!", {
+        description: "Your account is ready — signing you in…",
+      });
+      // The server has already set the hs_session cookie. Send the patient
+      // straight to their portal.
+      const dest = typeof data.redirect === "string" ? data.redirect : "/patient/dashboard";
+      router.push(dest);
+      router.refresh();
     } catch {
       setError("Network error — could not reach the server.");
-      return false;
-    } finally {
       setSubmitting(false);
     }
   }
 
   async function handleNext() {
     if (!canContinue()) return;
-
     if (step === 1) {
-      const ok = await createAccount();
-      if (ok) setStep(2);
+      await createAccount();
       return;
     }
-
     setStep((s) => s + 1);
   }
 
@@ -259,68 +263,28 @@ export function RegistrationWizard() {
         </div>
       )}
 
-      {/* ---- Step 2 · Check your email ---- */}
-      {step === 2 && (
-        <div className="space-y-5 text-center">
-          <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
-            <MailCheck className="size-6" />
-          </div>
-          <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">Check your inbox</h1>
-            <p className="text-sm text-[var(--color-muted-foreground)]">
-              We sent a verification link to{" "}
-              <span className="font-medium text-[var(--color-foreground)]">{form.email}</span>.
-              Click it to confirm your email — you can keep this tab open.
-            </p>
-          </div>
-          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)]/30 p-3.5 text-left text-xs text-[var(--color-muted-foreground)]">
-            <p className="font-medium text-[var(--color-foreground)]">Didn&apos;t get the email?</p>
-            <ul className="mt-1 list-disc pl-4">
-              <li>Check your spam or promotions folder.</li>
-              <li>Make sure the address is correct (you can go back to edit).</li>
-              <li>http://localhost:3000/verify-email?token=test-token-1234567890abcdef</li>
-            </ul>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              toast.info("Verification link resent", {
-                description: `Sent to ${form.email} · valid for 24 hours`,
-              })
-            }
-            
-            className="text-xs font-medium text-[var(--color-primary-700)] hover:underline"
-          >
-            Resend verification link
-          </button>
-        </div>
-      )}
-
-      {/* Footer — hidden on the terminal "Check your email" step */}
-      {step !== 2 && (
-        <div className="flex items-center gap-3 pt-1">
-          {step > 0 && (
-            <Button variant="outline" size="lg" onClick={() => setStep((s) => s - 1)} disabled={submitting}>
-              <ArrowLeft /> Back
-            </Button>
-          )}
-          <Button size="lg" className="flex-1" onClick={handleNext} disabled={!canContinue() || submitting}>
-            {submitting ? (
-              <>
-                <Loader2 className="animate-spin" /> Creating account…
-              </>
-            ) : step === 1 ? (
-              <>
-                <Sparkles /> Create account
-              </>
-            ) : (
-              <>
-                Continue <ArrowRight />
-              </>
-            )}
+      <div className="flex items-center gap-3 pt-1">
+        {step > 0 && (
+          <Button variant="outline" size="lg" onClick={() => setStep((s) => s - 1)} disabled={submitting}>
+            <ArrowLeft /> Back
           </Button>
-        </div>
-      )}
+        )}
+        <Button size="lg" className="flex-1" onClick={handleNext} disabled={!canContinue() || submitting}>
+          {submitting ? (
+            <>
+              <Loader2 className="animate-spin" /> Creating account…
+            </>
+          ) : step === 1 ? (
+            <>
+              <Sparkles /> Create account
+            </>
+          ) : (
+            <>
+              Continue <ArrowRight />
+            </>
+          )}
+        </Button>
+      </div>
     </div>
   );
 }

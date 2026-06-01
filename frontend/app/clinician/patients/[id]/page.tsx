@@ -63,27 +63,152 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
   const {
     state,
     setAppointmentStatus,
-    addPrescription,
-    finalizePrescription,
     toggleConsent,
     uploadDocument,
-    simulateApprovalDecision,
+    reconcileRemoteRequest,
   } = useClinicianStore();
 
   const [requestOpen, setRequestOpen] = useState(false);
   const [requestInitialScope, setRequestInitialScope] = useState<ConsentScope | undefined>(undefined);
+  const [apiPatient, setApiPatient] = useState<AssignedPatient | null>(null);
+  const [apiResolved, setApiResolved] = useState<"pending" | "found" | "missing">("pending");
 
-  if (!state.hydrated) {
+  // DB-backed prescriptions for this patient. Refetched whenever the chart
+  // remounts and after every onNew/onFinalize so the list reflects Postgres.
+  interface DbRx {
+    id: string;
+    medication: string;
+    dose: string;
+    frequency: string;
+    duration: string;
+    route: string;
+    status: "draft" | "finalized";
+    createdAt: string;
+  }
+  const [dbRxs, setDbRxs] = useState<DbRx[]>([]);
+  const reloadRxs = async () => {
+    const r = await fetch(`/api/clinician/prescriptions?patientId=${id}`, { cache: "no-store" });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.ok) return;
+    setDbRxs(
+      (data.prescriptions as Array<{
+        id: string;
+        drugName: string;
+        strength: string | null;
+        frequency: string | null;
+        duration: string | null;
+        route: string | null;
+        status: string;
+        createdAt: string;
+      }>).map((p) => ({
+        id: p.id,
+        medication: p.drugName,
+        dose: p.strength ?? "",
+        frequency: p.frequency ?? "",
+        duration: p.duration ?? "",
+        route: p.route ?? "",
+        status: p.status === "finalized" ? "finalized" : "draft",
+        createdAt: p.createdAt,
+      })),
+    );
+  };
+  useEffect(() => {
+    void reloadRxs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // Poll DB for this clinician's consent-request decisions on this patient.
+  // When the patient approves on /patient/consents, the next tick reconciles
+  // the local store, flipping the yellow "Awaiting…" banner to the green
+  // "Temporary access · expires in …" banner without a manual refresh.
+  useEffect(() => {
+    let cancelled = false;
+    async function pullStatus() {
+      try {
+        const r = await fetch(`/api/clinician/consent-requests?patientId=${id}`, { cache: "no-store" });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (cancelled || !data?.ok || !Array.isArray(data.requests)) return;
+        for (const row of data.requests) {
+          reconcileRemoteRequest({
+            id: row.id,
+            patientId: row.patientId,
+            scopes: Array.isArray(row.scopes) ? row.scopes : [],
+            durationHours: Number(row.durationHours),
+            reason: row.reason,
+            status: row.status,
+            requestedAt: row.requestedAt,
+            decidedAt: row.decidedAt,
+            expiresAt: row.expiresAt,
+          });
+        }
+      } catch {
+        // network blip — try again next tick
+      }
+    }
+    void pullStatus();
+    const handle = window.setInterval(pullStatus, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // When the localStorage seed doesn't have this UUID (real DB-backed patient),
+  // fetch the patient identity from the API and synthesize a minimal
+  // AssignedPatient shape so the rest of the page renders. Clinical lists
+  // (notes/Rx/docs) come from the mock store and will be empty for DB patients
+  // until those modules are DB-backed too.
+  const storeHasPatient = state.assignedPatients.some((p) => p.id === id);
+  useEffect(() => {
+    if (storeHasPatient || !state.hydrated) return;
+    let cancelled = false;
+    fetch(`/api/clinician/patients/${id}`, { cache: "no-store" })
+      .then(async (r) => {
+        const data = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !data.ok) {
+          setApiResolved("missing");
+          return;
+        }
+        const p = data.patient;
+        setApiPatient({
+          id: p.id,
+          mrn: p.mrn,
+          name: p.name,
+          initials: p.initials,
+          age: p.age ?? 0,
+          sex: (p.sex === "M" ? "M" : p.sex === "F" ? "F" : "Other") as "M" | "F" | "Other",
+          email: p.email,
+          phone: p.phone ?? "",
+          assignedAt: p.startedAt,
+          consentScopes: [],
+          consentStatus: "active",
+          conditions: [],
+          allergies: [],
+        });
+        setApiResolved("found");
+      })
+      .catch(() => {
+        if (!cancelled) setApiResolved("missing");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, storeHasPatient, state.hydrated]);
+
+  if (!state.hydrated || (!storeHasPatient && apiResolved === "pending")) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
   }
 
-  const patient = state.assignedPatients.find((p) => p.id === id);
+  const patient = state.assignedPatients.find((p) => p.id === id) ?? apiPatient;
   if (!patient) return <PatientNotFound id={id} />;
 
   const myAppointments = state.appointments.filter((a) => a.patientId === patient.id);
   const todayAppointment = myAppointments.find((a) => a.date === new Date().toISOString().slice(0, 10) && a.status !== "completed" && a.status !== "cancelled");
   const myNotes = state.notes.filter((n) => n.patientId === patient.id);
-  const myRxs = state.prescriptions.filter((p) => p.patientId === patient.id);
   const myDocs = state.documents.filter((d) => d.patientId === patient.id);
 
   const showRevokedBanner = patient.consentStatus === "revoked";
@@ -161,17 +286,7 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
         />
       )}
 
-      {pending && (
-        <PendingRequestBanner
-          request={pending}
-          onSimulateApprove={() => {
-            simulateApprovalDecision(pending.id, "approve", "Approved by Sai (demo simulation).");
-            toast.success("Compliance approved (demo)", {
-              description: `Temporary access granted for ${pending.durationHours}h · audit-logged`,
-            });
-          }}
-        />
-      )}
+      {pending && <PendingRequestBanner request={pending} />}
 
       {activeGrant && (
         <ApprovedAccessBanner request={activeGrant} />
@@ -195,7 +310,7 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
                 </Link>
               </Button>
             </div>
-            <Timeline patient={patient} appointments={myAppointments} notes={myNotes} prescriptions={myRxs} />
+            <Timeline patient={patient} appointments={myAppointments} notes={myNotes} prescriptions={dbRxs.map((p) => ({ id: p.id, medication: p.medication, dose: p.dose, status: p.status, createdAt: p.createdAt }))} />
           </div>
         </TabsContent>
         <TabsContent value="records">
@@ -220,22 +335,35 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
         <TabsContent value="prescriptions">
           {hasEffectiveConsent(state, patient.id, "prescriptions") ? (
             <Prescriptions
-              rxs={myRxs}
-              onNew={() => {
-                const rx = addPrescription({
-                  patientId: patient.id,
-                  medication: "New prescription",
-                  dose: "",
-                  frequency: "",
-                  duration: "",
-                  route: "Oral",
+              rxs={dbRxs}
+              onNew={async () => {
+                const r = await fetch("/api/clinician/prescriptions", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ patientId: patient.id }),
                 });
+                const data = await r.json();
+                if (!r.ok || !data.ok) {
+                  toast.error(data.error ?? "Could not create draft.");
+                  return;
+                }
                 toast.success("Draft prescription created", { description: "Fill in the details and finalize" });
-                router.push(`/clinician/prescriptions/${rx.id}`);
+                await reloadRxs();
+                router.push(`/clinician/prescriptions/${data.prescription.id}`);
               }}
-              onFinalize={(rxId) => {
-                finalizePrescription(rxId);
+              onFinalize={async (rxId) => {
+                const r = await fetch(`/api/clinician/prescriptions/${rxId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: "finalized" }),
+                });
+                const data = await r.json();
+                if (!r.ok || !data.ok) {
+                  toast.error(data.error ?? "Could not finalize.");
+                  return;
+                }
                 toast.success("Prescription finalized", { description: `${patient.name} · audit-logged` });
+                await reloadRxs();
               }}
             />
           ) : (
@@ -277,10 +405,27 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
           )}
         </TabsContent>
         <TabsContent value="consents">
-          <PatientConsents patient={patient} onToggle={(scope) => {
-            toggleConsent(patient.id, scope);
-            toast.info(`${CONSENT_SCOPE_LABEL[scope]} consent ${patient.consentScopes.includes(scope) ? "removed" : "added"} (demo)`);
-          }} />
+          <PatientConsents
+            // Card-level "granted" check unifies standing consent with any
+            // currently-approved (and not yet expired) access request, so a
+            // scope approved via the request flow flips its card to green
+            // even before consentScopes is updated.
+            isGranted={(scope) => hasEffectiveConsent(state, patient.id, scope)}
+            onToggle={(scope) => {
+              const granted = hasEffectiveConsent(state, patient.id, scope);
+              if (granted) {
+                // Demo-only revoke from the clinician side — the real
+                // revoke flow is patient-initiated.
+                toggleConsent(patient.id, scope);
+                toast.info(`${CONSENT_SCOPE_LABEL[scope]} access removed (demo)`);
+              } else {
+                // Request access: open the existing request-access dialog
+                // pre-scoped to the chosen category, mirroring the dialog
+                // that opens from the per-tab "Request access" CTA.
+                openRequestDialog(scope);
+              }
+            }}
+          />
         </TabsContent>
       </Tabs>
 
@@ -308,13 +453,7 @@ function relativeMinutesAgo(iso: string): string {
   return hours === 1 ? "1h ago" : `${hours}h ago`;
 }
 
-function PendingRequestBanner({
-  request,
-  onSimulateApprove,
-}: {
-  request: AccessRequest;
-  onSimulateApprove: () => void;
-}) {
+function PendingRequestBanner({ request }: { request: AccessRequest }) {
   return (
     <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 px-4 py-3 text-sm">
       <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--color-card)] text-[var(--color-warning-foreground)] ring-1 ring-[var(--color-warning)]/30">
@@ -322,16 +461,13 @@ function PendingRequestBanner({
       </span>
       <div className="min-w-0 flex-1">
         <p className="font-medium text-[var(--color-warning-foreground)]">
-          Request pending Sai&apos;s review
+          Awaiting patient&apos;s consent decision
         </p>
         <p className="mt-0.5 text-[12px] text-[var(--color-muted-foreground)]">
           Submitted {relativeMinutesAgo(request.requestedAt)} · {request.scopes.length} scope
           {request.scopes.length === 1 ? "" : "s"} · {request.durationHours}h window requested
         </p>
       </div>
-      <Button size="sm" variant="outline" onClick={onSimulateApprove}>
-        <ShieldCheck /> (demo) Simulate approval
-      </Button>
     </div>
   );
 }
@@ -703,12 +839,29 @@ function DocumentsList({
 // Consents tab
 // ---------------------------------------------------------------------------
 
-function PatientConsents({ patient, onToggle }: { patient: AssignedPatient; onToggle: (scope: ConsentScope) => void }) {
-  const all: ConsentScope[] = ["lab", "prescriptions", "notes", "imaging", "mental_health"];
+function PatientConsents({
+  isGranted,
+  onToggle,
+}: {
+  isGranted: (scope: ConsentScope) => boolean;
+  onToggle: (scope: ConsentScope) => void;
+}) {
+  // Document-category-driven scope grid — matches the 6 toggles the patient
+  // sees on /patient/consents/grant. Insurance / ID Proof / Lab Report /
+  // Imaging / Prescription / Other replaces the previous PHI-access set
+  // (Lab Reports / Prescriptions / Clinical Notes / Imaging / Mental Health).
+  const all: ConsentScope[] = [
+    "insurance",
+    "id_proof",
+    "lab",
+    "imaging",
+    "prescriptions",
+    "other",
+  ];
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {all.map((scope) => {
-        const granted = patient.consentScopes.includes(scope);
+        const granted = isGranted(scope);
         return (
           <div
             key={scope}

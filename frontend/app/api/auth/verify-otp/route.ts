@@ -11,8 +11,11 @@ import {
   signSession,
   verifyPending,
 } from "@/lib/auth";
-import { claimsFor, findDemoUserByUid } from "@/lib/demo-users";
 import { roleHome } from "@/lib/auth";
+import { lookupUserByUid } from "@/lib/user-lookup";
+import { prisma } from "@/lib/prisma";
+import { UserStatus } from "@prisma/client";
+import { verifyToken as verifyTotp } from "@/lib/mfa";
 
 export const runtime = "nodejs";
 
@@ -58,7 +61,23 @@ export async function POST(req: Request): Promise<NextResponse> {
   const pending = await verifyPending(jar.get(PENDING_COOKIE)?.value);
   if (!pending) return expiredResponse();
 
-  if (sha256(code) !== pending.otpHash) {
+  // Validate the code differently depending on which OTP flavour was started
+  // at login time: email = compare sha256(code) to the hash in the cookie;
+  // totp = run the user's stored secret through the TOTP algorithm.
+  let codeOk = false;
+  if (pending.mode === "totp") {
+    const dbUser = await prisma.user.findUnique({
+      where: { id: pending.uid },
+      select: { mfaSecret: true },
+    });
+    if (dbUser?.mfaSecret) {
+      codeOk = verifyTotp({ token: code, secret: dbUser.mfaSecret });
+    }
+  } else {
+    codeOk = sha256(code) === pending.otpHash;
+  }
+
+  if (!codeOk) {
     const attempts = pending.attempts + 1;
     if (attempts >= MAX_OTP_ATTEMPTS) return expiredResponse();
     const updated = await signPending({ ...pending, attempts });
@@ -81,10 +100,36 @@ export async function POST(req: Request): Promise<NextResponse> {
     return res;
   }
 
-  const user = findDemoUserByUid(pending.uid);
+  const user = await lookupUserByUid(pending.uid);
   if (!user) return expiredResponse();
 
-  const session = await signSession(claimsFor(user));
+  // First-sign-in promotion: a DB-backed user provisioned with status=invited
+  // becomes "active" the moment they successfully complete the OTP step.
+  // Also stamp lastLoginAt + clear any failure counters.
+  if (user.source === "database") {
+    await prisma.user
+      .update({
+        where: { id: user.uid },
+        data: {
+          ...(user.status === "invited" ? { status: UserStatus.active } : {}),
+          lastLoginAt: new Date(),
+          failedLoginCount: 0,
+          lockedUntil: null,
+        },
+      })
+      .catch((err: unknown) => {
+        console.error("[verify-otp] could not update last-login / status:", err);
+      });
+  }
+
+  const session = await signSession({
+    uid: user.uid,
+    sid: `s_${user.uid}_${Date.now().toString(36)}`,
+    role: user.role,
+    org: user.org,
+    name: user.name,
+    email: user.email,
+  });
   // Patients get a one-time "want to set up an authenticator app?" prompt
   // after sign-in. Staff roles already have MFA mandated by /mfa-setup at
   // invite time, so they skip the prompt and land on their role home.

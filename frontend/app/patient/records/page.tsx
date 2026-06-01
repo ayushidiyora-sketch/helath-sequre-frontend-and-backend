@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { jsPDF } from "jspdf";
@@ -32,7 +32,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { RECORDS, type Category } from "./records-data";
+import { type Category, type RecordDetail } from "./records-data";
 
 const LAB = "from-[oklch(0.65_0.13_195)] to-[oklch(0.5_0.12_205)]";
 const RX = "from-[oklch(0.7_0.13_320)] to-[oklch(0.55_0.13_330)]";
@@ -57,7 +57,11 @@ const CATEGORIES: { key: "all" | Category; name: string; icon: typeof Beaker }[]
   { key: "Discharge", name: "Discharge", icon: ClipboardList },
 ];
 
-const CLINICIANS = ["Dr. Priya Shah", "Dr. Rohan Iyer", "Dr. Neha Kapoor", "Radiology Dept."];
+// Clinician filter list is now populated dynamically from the patient's real
+// care team (active PatientAssignment rows) via /api/patient/dashboard. The
+// hardcoded "Dr. Priya Shah / Dr. Rohan Iyer / Dr. Neha Kapoor / Radiology
+// Dept." list misled new patients into thinking those clinicians had written
+// records for them.
 
 const RANGES: { key: string; label: string; days: number | null }[] = [
   { key: "7d", label: "Last 7 days", days: 7 },
@@ -93,11 +97,49 @@ function RecordsPageInner() {
   const [finalizedOnly, setFinalizedOnly] = useState(false);
   const [page, setPage] = useState(0);
 
+  // Real care team — populates the clinician filter list. Falls back to an
+  // empty list (the filter card shows "No clinicians yet") if the patient has
+  // no active PatientAssignment rows.
+  const [clinicianOptions, setClinicianOptions] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/dashboard", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const team = (data.careTeam ?? []) as Array<{ clinician: { name: string } }>;
+        const names = Array.from(new Set(team.map((t) => t.clinician.name).filter(Boolean)));
+        setClinicianOptions(names);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Real medical records — pulls finalized prescriptions + clinical notes +
+  // discharge summaries from the DB, merged into a single MedicalRecord[]
+  // shape. Empty arrays mean "no records yet"; UI renders the empty state.
+  const [records, setRecords] = useState<RecordDetail[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/records", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setRecords(data.records as RecordDetail[]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Re-filter whenever any control changes; reset to the first page.
   const filtered = useMemo(() => {
     const rangeDays = RANGES.find((r) => r.key === range)?.days ?? null;
     const q = search.trim().toLowerCase();
-    return RECORDS.filter((r) => {
+    return records.filter((r) => {
       if (category !== "all" && r.category !== category) return false;
       if (clinicians.length > 0 && !clinicians.includes(r.clinician)) return false;
       if (finalizedOnly && r.status !== "Finalized") return false;
@@ -108,7 +150,7 @@ function RecordsPageInner() {
       if (q && !`${r.title} ${r.clinician} ${r.id}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [category, range, clinicians, search, finalizedOnly]);
+  }, [records, category, range, clinicians, search, finalizedOnly]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -132,10 +174,10 @@ function RecordsPageInner() {
     doc.text("HealthSecure Portal — Clinical history", 14, 20);
     doc.setFontSize(10);
     doc.setTextColor(110);
-    doc.text(`Exported ${TODAY.toDateString()} · ${RECORDS.length} records · HIPAA right-of-access`, 14, 27);
+    doc.text(`Exported ${TODAY.toDateString()} · ${records.length} records · HIPAA right-of-access`, 14, 27);
     doc.setTextColor(20);
     let y = 40;
-    RECORDS.forEach((r, i) => {
+    records.forEach((r, i) => {
       if (y > 275) {
         doc.addPage();
         y = 20;
@@ -149,7 +191,7 @@ function RecordsPageInner() {
       y += 13;
     });
     doc.save("healthsecure-clinical-history.pdf");
-    toast.success("Clinical history exported", { description: `${RECORDS.length} records · PDF downloaded` });
+    toast.success("Clinical history exported", { description: `${records.length} records · PDF downloaded` });
   }
 
   const allFiltersOn = category !== "all" || range !== "12m" || clinicians.length > 0 || search || finalizedOnly;
@@ -183,8 +225,8 @@ function RecordsPageInner() {
                 const Icon = c.icon;
                 const count =
                   c.key === "all"
-                    ? RECORDS.length
-                    : RECORDS.filter((r) => r.category === c.key).length;
+                    ? records.length
+                    : records.filter((r) => r.category === c.key).length;
                 const active = category === c.key;
                 return (
                   <li key={c.key}>
@@ -234,7 +276,12 @@ function RecordsPageInner() {
               Clinician
             </p>
             <div className="space-y-2 text-sm">
-              {CLINICIANS.map((c) => (
+              {clinicianOptions.length === 0 && (
+                <p className="text-[11px] italic text-[var(--color-muted-foreground)]">
+                  No clinicians on your care team yet.
+                </p>
+              )}
+              {clinicianOptions.map((c) => (
                 <label
                   key={c}
                   className="flex cursor-pointer items-center gap-2.5 text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
@@ -295,7 +342,7 @@ function RecordsPageInner() {
             <div className="flex items-center justify-between border-b border-[var(--color-border)] px-5 py-3 text-xs text-[var(--color-muted-foreground)]">
               <span>
                 Showing <span className="font-medium text-[var(--color-foreground)]">{filtered.length}</span> of{" "}
-                {RECORDS.length} records
+                {records.length} records
                 {allFiltersOn && <span> · filtered</span>}
               </span>
               <span className="inline-flex items-center gap-1.5">

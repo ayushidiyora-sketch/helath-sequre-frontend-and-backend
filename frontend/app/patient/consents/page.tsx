@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Plus,
@@ -50,8 +51,74 @@ function scopeIcon(s: ConsentScope) {
   return Shield;
 }
 
+interface PendingRequest {
+  id: string;
+  clinicianName: string;
+  clinicianDepartment: string;
+  scopes: string[];
+  durationHours: number;
+  reason: string;
+  status: string;
+  requestedAt: string;
+}
+
 export default function ConsentsPage() {
   const { state, revokeConsent, addConsent, addNotification } = usePatientStore();
+
+  // Real consent requests from the DB. Replaces the previous hardcoded
+  // "Dr. Neha Kapoor requested access to Imaging" banner. When the clinician
+  // hits Submit in their RequestAccessDialog, that POST creates a row here
+  // which this fetch surfaces as a Pending banner with real reviewer + scopes.
+  const [pending, setPending] = useState<PendingRequest[]>([]);
+  async function loadRequests() {
+    try {
+      const r = await fetch("/api/patient/consent-requests", { cache: "no-store" });
+      const data = await r.json();
+      if (!r.ok || !data.ok) return;
+      setPending((data.requests as PendingRequest[]).filter((req) => req.status === "pending"));
+    } catch {
+      // silent — pending banner just won't show
+    }
+  }
+  useEffect(() => {
+    void loadRequests();
+  }, []);
+
+  async function decideRequest(id: string, decision: "approved" | "declined", req: PendingRequest) {
+    const r = await fetch("/api/patient/consent-requests", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, decision }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      toast.error(data.error ?? "Could not update request.");
+      return;
+    }
+    if (decision === "approved") {
+      // Mirror into the local store so the new consent appears in the Active
+      // tab without a refetch. Cast each API scope key to ConsentScope.
+      const con = addConsent({
+        clinician: req.clinicianName,
+        department: req.clinicianDepartment,
+        scopes: req.scopes as ConsentScope[],
+        policyVersion: "v2.4",
+        expiresAt: null,
+      });
+      addNotification({
+        title: "Consent granted",
+        body: `${req.clinicianName} · ${req.scopes.join(", ")}`,
+        type: "consent",
+        href: `/patient/consents/${con.id}`,
+      });
+      toast.success("Consent granted · audit-logged", {
+        description: `${req.clinicianName} can now read: ${req.scopes.join(", ")}`,
+      });
+    } else {
+      toast.info("Request declined", { description: `${req.clinicianName} will be notified · audit-logged` });
+    }
+    await loadRequests();
+  }
 
   if (!state.hydrated) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
@@ -73,60 +140,55 @@ export default function ConsentsPage() {
         }
       />
 
-      {/* Pending request — demo banner, not store-backed */}
-      <div className="overflow-hidden rounded-2xl border border-[var(--color-warning)]/40 bg-[var(--color-warning-soft)]/30 p-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--color-card)] text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)] ring-1 ring-[var(--color-warning)]/30">
-              <Hourglass className="size-4" />
-            </span>
-            <div>
-              <p className="text-sm font-semibold">Pending consent request</p>
-              <p className="text-xs text-[var(--color-muted-foreground)]">
-                <span className="font-medium text-[var(--color-foreground)]">Dr. Neha Kapoor</span> requested access to your <em>Imaging</em> records.
-                Policy v2.4 will apply on grant.
-              </p>
+      {/* Pending requests — populated by clinician POSTs to
+          /api/clinician/consent-requests. Each row gets its own
+          Decline / Review & approve buttons. */}
+      {pending.map((req) => {
+        const scopeLabels = req.scopes
+          .map((s) => CONSENT_SCOPE_LABEL[s as ConsentScope] ?? s)
+          .join(", ");
+        return (
+          <div
+            key={req.id}
+            className="overflow-hidden rounded-2xl border border-[var(--color-warning)]/40 bg-[var(--color-warning-soft)]/30 p-5"
+          >
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--color-card)] text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)] ring-1 ring-[var(--color-warning)]/30">
+                  <Hourglass className="size-4" />
+                </span>
+                <div>
+                  <p className="text-sm font-semibold">Pending consent request</p>
+                  <p className="text-xs text-[var(--color-muted-foreground)]">
+                    <span className="font-medium text-[var(--color-foreground)]">{req.clinicianName}</span> requested access to your <em>{scopeLabels}</em> records for {req.durationHours}h.
+                    Policy v2.4 will apply on grant.
+                  </p>
+                  {req.reason && (
+                    <p className="mt-1 text-[11px] italic text-[var(--color-muted-foreground)]">
+                      &ldquo;{req.reason}&rdquo;
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => decideRequest(req.id, "declined", req)}
+                >
+                  Decline
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => decideRequest(req.id, "approved", req)}
+                >
+                  Review &amp; approve
+                </Button>
+              </div>
             </div>
           </div>
-          <div className="flex gap-2">
-            <ActionButton
-              size="sm"
-              variant="outline"
-              toastMessage="Request declined"
-              toastDescription="Dr. Neha Kapoor will be notified"
-              toastVariant="info"
-            >
-              Decline
-            </ActionButton>
-            <ConsentRequestDialog
-              requester="Dr. Neha Kapoor"
-              scope="Imaging"
-              triggerLabel="Review & approve"
-              triggerProps={{
-                size: "sm",
-                onClick: () => {
-                  // The ConsentRequestDialog approves with toast-only; mirror
-                  // the grant into the store so the new consent appears in the
-                  // Active tab immediately.
-                  const con = addConsent({
-                    clinician: "Dr. Neha Kapoor",
-                    department: "Dermatology",
-                    scopes: ["imaging"],
-                    policyVersion: "v2.4",
-                    expiresAt: null,
-                  });
-                  addNotification({
-                    title: "Consent granted",
-                    body: `Dr. Neha Kapoor · Imaging`,
-                    type: "consent",
-                    href: `/patient/consents/${con.id}`,
-                  });
-                },
-              }}
-            />
-          </div>
-        </div>
-      </div>
+        );
+      })}
 
       <Tabs defaultValue="active">
         <TabsList>

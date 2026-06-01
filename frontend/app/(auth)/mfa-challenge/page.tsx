@@ -32,10 +32,13 @@ export default function MfaChallengePage() {
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Pull the in-progress sign-in handed over by the login page.
+  const [mode, setMode] = useState<"email" | "totp">("email");
   useEffect(() => {
     const e = sessionStorage.getItem("hs_otp_email");
     setEmail(e);
     setDevOtp(sessionStorage.getItem("hs_otp_dev"));
+    const m = sessionStorage.getItem("hs_otp_mode");
+    setMode(m === "totp" ? "totp" : "email");
     if (e) inputs.current[0]?.focus();
   }, []);
 
@@ -171,8 +174,10 @@ export default function MfaChallengePage() {
         <p className="text-sm text-[var(--color-muted-foreground)]">
           Enter the 6-digit verification code for{" "}
           <span className="font-medium text-[var(--color-foreground)]">{maskEmail(email)}</span>{" "}
-          to finish signing in. Use the code from your authenticator app, or
-          the one we just sent you.
+          to finish signing in.{" "}
+          {mode === "totp"
+            ? "Open your authenticator app (Google Authenticator, Authy, …) and copy the current code."
+            : "Use the code we just sent you by email."}
         </p>
       </div>
 

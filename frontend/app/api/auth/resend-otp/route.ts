@@ -7,6 +7,8 @@ import {
   signPending,
   verifyPending,
 } from "@/lib/auth";
+import { lookupUserByUid } from "@/lib/user-lookup";
+import { mailerConfigured, otpEmail, sendMail } from "@/lib/mail";
 
 export const runtime = "nodejs";
 
@@ -42,7 +44,29 @@ export async function POST(): Promise<NextResponse> {
     attempts: 0,
   });
 
-  const res = NextResponse.json({ ok: true, devOtp: otp });
+  let mailSent = false;
+  // lookupUserByUid checks demo users AND the Postgres `users` table, so
+  // DB-backed patients (self-registered via /register) get a real resend too.
+  const user = await lookupUserByUid(pending.uid);
+  if (mailerConfigured() && user) {
+    const { subject, text, html } = otpEmail(otp);
+    const result = await sendMail({ to: user.email, subject, text, html });
+    mailSent = result.ok;
+    if (result.ok) {
+      console.log(`[auth/resend-otp] OTP resent via ${result.via} to ${user.email}`);
+    } else {
+      console.error(`[auth/resend-otp] mail send failed via ${result.via}: ${result.error}`);
+    }
+  }
+
+  // Mirror the login route: in non-production always include the OTP so the
+  // user can fall back to the on-screen banner when the email is silently
+  // dropped by a temp-mail / spam filter, even if the transport said 200.
+  const includeDevOtp = !mailSent || process.env.NODE_ENV !== "production";
+  const res = NextResponse.json({
+    ok: true,
+    ...(includeDevOtp ? { devOtp: otp } : {}),
+  });
   res.cookies.set(PENDING_COOKIE, updated, {
     httpOnly: true,
     sameSite: "lax",

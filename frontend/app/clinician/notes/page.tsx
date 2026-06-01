@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FileSignature, FileText, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,25 +14,76 @@ function dateTimeLabel(iso: string): string {
   return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+interface DbNote {
+  id: string;
+  patientId: string;
+  template: string;
+  status: "draft" | "finalized";
+  createdAt: string;
+  updatedAt: string;
+  finalizedAt: string | null;
+  patientName: string | null;
+}
+
 export default function NotesIndexPage() {
   const { state } = useClinicianStore();
   const [draftQuery, setDraftQuery] = useState("");
   const [finalizedQuery, setFinalizedQuery] = useState("");
 
-  const patientName = (id: string) => state.assignedPatients.find((p) => p.id === id)?.name ?? "Unknown patient";
+  // DB-backed notes feed. Replaces the localStorage `state.notes` source so
+  // patient names resolve via the medical_records → users join instead of the
+  // (often-empty) `state.assignedPatients` lookup. That's what caused every
+  // row to say "Unknown patient" on a fresh login.
+  const [dbNotes, setDbNotes] = useState<DbNote[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/clinician/notes", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setDbNotes(data.notes as DbNote[]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Patient name now comes from the API row directly; MRN isn't on the note,
+  // so we keep the store lookup as a soft fallback for demo/seeded data.
+  const patientName = (id: string, fromApi?: string | null) =>
+    fromApi || state.assignedPatients.find((p) => p.id === id)?.name || "Patient";
   const patientMrn = (id: string) => state.assignedPatients.find((p) => p.id === id)?.mrn ?? "";
 
-  const drafts = useMemo(() => state.notes.filter((n) => n.status === "draft").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [state.notes]);
-  const finalized = useMemo(() => state.notes.filter((n) => n.status === "finalized").sort((a, b) => (b.finalizedAt ?? "").localeCompare(a.finalizedAt ?? "")), [state.notes]);
+  const drafts = useMemo(
+    () =>
+      dbNotes
+        .filter((n) => n.status === "draft")
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [dbNotes],
+  );
+  const finalized = useMemo(
+    () =>
+      dbNotes
+        .filter((n) => n.status === "finalized")
+        .sort((a, b) => (b.finalizedAt ?? "").localeCompare(a.finalizedAt ?? "")),
+    [dbNotes],
+  );
 
   const dq = draftQuery.trim().toLowerCase();
   const filteredDrafts = dq
-    ? drafts.filter((d) => [d.template, patientName(d.patientId)].some((f) => f.toLowerCase().includes(dq)))
+    ? drafts.filter((d) =>
+        [d.template, patientName(d.patientId, d.patientName)].some((f) => f.toLowerCase().includes(dq)),
+      )
     : drafts;
 
   const fq = finalizedQuery.trim().toLowerCase();
   const filteredFinalized = fq
-    ? finalized.filter((f) => [f.template, patientName(f.patientId), f.id].some((field) => field.toLowerCase().includes(fq)))
+    ? finalized.filter((f) =>
+        [f.template, patientName(f.patientId, f.patientName), f.id].some((field) =>
+          field.toLowerCase().includes(fq),
+        ),
+      )
     : finalized;
 
   if (!state.hydrated) {
@@ -76,9 +127,9 @@ export default function NotesIndexPage() {
                       <FileText className="size-4.5" />
                     </span>
                     <div className="flex-1">
-                      <p className="text-sm font-semibold">{d.template} — {patientName(d.patientId)}</p>
+                      <p className="text-sm font-semibold">{d.template} — {patientName(d.patientId, d.patientName)}</p>
                       <p className="text-[11px] text-[var(--color-muted-foreground)]">
-                        {patientName(d.patientId)} · {patientMrn(d.patientId)} · updated {dateTimeLabel(d.updatedAt)}
+                        {patientName(d.patientId, d.patientName)}{patientMrn(d.patientId) ? ` · ${patientMrn(d.patientId)}` : ""} · updated {dateTimeLabel(d.updatedAt)}
                       </p>
                     </div>
                     <span className="text-xs font-medium text-[var(--color-primary-700)]">Continue editing →</span>
@@ -110,9 +161,9 @@ export default function NotesIndexPage() {
                     <FileSignature className="size-4.5" />
                   </span>
                   <div className="flex-1">
-                    <p className="text-sm font-semibold">{f.template} — {patientName(f.patientId)}</p>
+                    <p className="text-sm font-semibold">{f.template} — {patientName(f.patientId, f.patientName)}</p>
                     <p className="text-[11px] text-[var(--color-muted-foreground)]">
-                      {patientName(f.patientId)} · finalized {f.finalizedAt ? dateTimeLabel(f.finalizedAt) : "—"} · <span className="font-mono">{f.id}</span>
+                      {patientName(f.patientId, f.patientName)} · finalized {f.finalizedAt ? dateTimeLabel(f.finalizedAt) : "—"} · <span className="font-mono">{f.id}</span>
                     </p>
                   </div>
                   <Badge variant="success" size="sm" dot>Locked</Badge>

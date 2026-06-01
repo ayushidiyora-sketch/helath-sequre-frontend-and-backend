@@ -1,7 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Search,
   Filter,
@@ -10,6 +9,7 @@ import {
   Users,
   HardDrive,
   Globe,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,24 +26,72 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
-const tenants = [
-  { id: "org_citygen", name: "City General Hospital", type: "Hospital", tier: "Enterprise", users: 64, patients: 4128, storage: "612 GB", region: "ap-south-1", status: "active" as const },
-  { id: "org_riverside", name: "Riverside Family Clinic", type: "Clinic", tier: "Pro", users: 24, patients: 1241, storage: "12 GB", region: "us-east-1", status: "active" as const },
-  { id: "org_northpoint", name: "Northpoint Telecare", type: "Telemedicine", tier: "Basic", users: 8, patients: 412, storage: "1 GB", region: "eu-west-1", status: "trial" as const },
-  { id: "org_greenleaf", name: "GreenLeaf Diagnostics", type: "Diagnostic", tier: "Enterprise", users: 41, patients: 8821, storage: "98 GB", region: "ap-south-1", status: "active" as const },
-  { id: "org_bluepine", name: "Bluepine Pediatrics", type: "Clinic", tier: "Pro", users: 12, patients: 612, storage: "8 GB", region: "us-east-1", status: "active" as const },
-  { id: "org_sunset", name: "Sunset Health", type: "Clinic", tier: "Basic", users: 5, patients: 89, storage: "0.4 GB", region: "ap-southeast-2", status: "suspended" as const },
-];
+interface TenantRow {
+  id: string;
+  name: string;
+  type: string;
+  tier: string;
+  users: number;
+  storage: string;
+  region: string;
+  status: "active" | "trial" | "suspended" | "archived";
+}
+
+interface ApiTenant {
+  id: string;
+  name: string;
+  type: string;
+  tier: string;
+  region: string;
+  status: "active" | "trial" | "suspended" | "archived";
+  usersCount?: number;
+}
 
 const TIERS = ["Basic", "Pro", "Enterprise"] as const;
 const TYPES = ["Clinic", "Hospital", "Telemedicine", "Diagnostic"] as const;
-type Tier = typeof TIERS[number];
-type TenantType = typeof TYPES[number];
+type Tier = (typeof TIERS)[number];
+type TenantType = (typeof TYPES)[number];
 
 export default function SuperTenants() {
   const [query, setQuery] = useState("");
   const [tierFilters, setTierFilters] = useState<Tier[]>([]);
   const [typeFilters, setTypeFilters] = useState<TenantType[]>([]);
+  const [tenants, setTenants] = useState<TenantRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch("/api/super/tenants", { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data: { tenants?: ApiTenant[] } = await r.json();
+      const rows: TenantRow[] = (data.tenants ?? []).map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.type,
+        tier: t.tier,
+        users: t.usersCount ?? 0,
+        storage: "0 GB",
+        region: t.region,
+        status: t.status,
+      }));
+      setTenants(rows);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load tenants");
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    refresh().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh]);
 
   function toggleTier(t: Tier) {
     setTierFilters((curr) => (curr.includes(t) ? curr.filter((x) => x !== t) : [...curr, t]));
@@ -66,10 +114,24 @@ export default function SuperTenants() {
           return false;
         return true;
       }),
-    [q, tierFilters, typeFilters],
+    [q, tierFilters, typeFilters, tenants],
   );
 
-  const activeCount = tierFilters.length + typeFilters.length;
+  const stats = useMemo(() => {
+    let active = 0;
+    let trial = 0;
+    let suspended = 0;
+    let totalUsers = 0;
+    for (const t of tenants) {
+      if (t.status === "active") active += 1;
+      else if (t.status === "trial") trial += 1;
+      else if (t.status === "suspended") suspended += 1;
+      totalUsers += t.users;
+    }
+    return { active, trial, suspended, totalUsers };
+  }, [tenants]);
+
+  const activeFilterCount = tierFilters.length + typeFilters.length;
 
   return (
     <>
@@ -82,20 +144,32 @@ export default function SuperTenants() {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm">
-                  <Filter /> Filter{activeCount > 0 ? ` · ${activeCount}` : ""}
+                  <Filter /> Filter{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>Tier</DropdownMenuLabel>
                 {TIERS.map((t) => (
-                  <DropdownMenuItem key={t} onSelect={(e) => { e.preventDefault(); toggleTier(t); }}>
+                  <DropdownMenuItem
+                    key={t}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      toggleTier(t);
+                    }}
+                  >
                     {tierFilters.includes(t) ? <Check className="size-3.5" /> : <span className="size-3.5" />} {t}
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>Type</DropdownMenuLabel>
                 {TYPES.map((t) => (
-                  <DropdownMenuItem key={t} onSelect={(e) => { e.preventDefault(); toggleType(t); }}>
+                  <DropdownMenuItem
+                    key={t}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      toggleType(t);
+                    }}
+                  >
                     {typeFilters.includes(t) ? <Check className="size-3.5" /> : <span className="size-3.5" />} {t}
                   </DropdownMenuItem>
                 ))}
@@ -112,14 +186,23 @@ export default function SuperTenants() {
 
       <div className="grid gap-3 sm:grid-cols-4">
         {[
-          { label: "Active", value: 16, good: true },
-          { label: "Trial", value: 1, warn: true },
-          { label: "Suspended", value: 1 },
-          { label: "Total users", value: "87,422" },
+          { label: "Active", value: stats.active, good: true },
+          { label: "Trial", value: stats.trial, warn: true },
+          { label: "Suspended", value: stats.suspended },
+          { label: "Total users", value: stats.totalUsers.toLocaleString() },
         ].map((s) => (
-          <div key={s.label} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+          <div
+            key={s.label}
+            className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4"
+          >
             <p className="text-xs font-medium text-[var(--color-muted-foreground)]">{s.label}</p>
-            <p className={`mt-1 text-2xl font-semibold tabular-nums ${s.good ? "text-[var(--color-success)]" : s.warn ? "text-[var(--color-warning)]" : ""}`}>{s.value}</p>
+            <p
+              className={`mt-1 text-2xl font-semibold tabular-nums ${
+                s.good ? "text-[var(--color-success)]" : s.warn ? "text-[var(--color-warning)]" : ""
+              }`}
+            >
+              {s.value}
+            </p>
           </div>
         ))}
       </div>
@@ -140,37 +223,81 @@ export default function SuperTenants() {
           <div className="col-span-1">Storage</div>
           <div className="col-span-2 text-right">Status</div>
         </div>
-        {filteredTenants.length === 0 ? (
-          <p className="px-5 py-10 text-center text-sm text-[var(--color-muted-foreground)]">No tenants match the current filters.</p>
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 px-5 py-12 text-sm text-[var(--color-muted-foreground)]">
+            <Loader2 className="size-4 animate-spin" /> Loading tenants…
+          </div>
+        ) : error ? (
+          <p className="px-5 py-10 text-center text-sm text-[var(--color-danger)]">Failed to load tenants — {error}</p>
+        ) : filteredTenants.length === 0 ? (
+          <p className="px-5 py-10 text-center text-sm text-[var(--color-muted-foreground)]">
+            {tenants.length === 0
+              ? "No tenants yet. Click “Create New Tenant” to provision the first one."
+              : "No tenants match the current filters."}
+          </p>
         ) : (
-        <ul className="divide-y divide-[var(--color-border)]">
-          {filteredTenants.map((t) => (
-            <li key={t.id} className="grid grid-cols-12 items-center gap-4 px-5 py-3.5 hover:bg-[var(--color-muted)]/40">
-              <div className="col-span-4 flex items-center gap-3 min-w-0">
-                <span className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-[oklch(0.62_0.18_22)] to-[oklch(0.48_0.16_22)] text-white shadow-[var(--shadow-soft)] text-xs font-semibold">
-                  {t.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">{t.name}</p>
-                  <p className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{t.id}</p>
+          <ul className="divide-y divide-[var(--color-border)]">
+            {filteredTenants.map((t) => (
+              <li
+                key={t.id}
+                className="grid grid-cols-12 items-center gap-4 px-5 py-3.5 hover:bg-[var(--color-muted)]/40"
+              >
+                <div className="col-span-4 flex items-center gap-3 min-w-0">
+                  <span className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-[oklch(0.62_0.18_22)] to-[oklch(0.48_0.16_22)] text-white shadow-[var(--shadow-soft)] text-xs font-semibold">
+                    {t.name
+                      .split(" ")
+                      .map((p) => p[0])
+                      .slice(0, 2)
+                      .join("")
+                      .toUpperCase()}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{t.name}</p>
+                    <p className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{t.id}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="col-span-2 space-y-0.5">
-                <Badge variant="muted" size="sm">{t.tier}</Badge>
-                <p className="text-[10px] text-[var(--color-muted-foreground)]">{t.type}</p>
-              </div>
-              <div className="col-span-2 text-xs inline-flex items-center gap-1"><Globe className="size-3.5 text-[var(--color-muted-foreground)]" />{t.region}</div>
-              <div className="col-span-1 text-xs tabular-nums"><Users className="mr-1 inline-block size-3.5 text-[var(--color-muted-foreground)]" />{t.users}</div>
-              <div className="col-span-1 text-xs tabular-nums"><HardDrive className="mr-1 inline-block size-3.5 text-[var(--color-muted-foreground)]" />{t.storage}</div>
-              <div className="col-span-2 flex items-center justify-end gap-2">
-                {t.status === "active" && <Badge variant="success" size="sm" dot>Active</Badge>}
-                {t.status === "trial" && <Badge variant="warning" size="sm" dot>Trial</Badge>}
-                {t.status === "suspended" && <Badge variant="danger" size="sm" dot>Suspended</Badge>}
-                <TenantRowMenu tenant={t} />
-              </div>
-            </li>
-          ))}
-        </ul>
+                <div className="col-span-2 space-y-0.5">
+                  <Badge variant="muted" size="sm">{t.tier}</Badge>
+                  <p className="text-[10px] text-[var(--color-muted-foreground)]">{t.type}</p>
+                </div>
+                <div className="col-span-2 text-xs inline-flex items-center gap-1">
+                  <Globe className="size-3.5 text-[var(--color-muted-foreground)]" />
+                  {t.region}
+                </div>
+                <div className="col-span-1 text-xs tabular-nums">
+                  <Users className="mr-1 inline-block size-3.5 text-[var(--color-muted-foreground)]" />
+                  {t.users}
+                </div>
+                <div className="col-span-1 text-xs tabular-nums">
+                  <HardDrive className="mr-1 inline-block size-3.5 text-[var(--color-muted-foreground)]" />
+                  {t.storage}
+                </div>
+                <div className="col-span-2 flex items-center justify-end gap-2">
+                  {t.status === "active" && (
+                    <Badge variant="success" size="sm" dot>
+                      Active
+                    </Badge>
+                  )}
+                  {t.status === "trial" && (
+                    <Badge variant="warning" size="sm" dot>
+                      Trial
+                    </Badge>
+                  )}
+                  {t.status === "suspended" && (
+                    <Badge variant="danger" size="sm" dot>
+                      Suspended
+                    </Badge>
+                  )}
+                  {t.status === "archived" && (
+                    <Badge variant="muted" size="sm" dot>
+                      Archived
+                    </Badge>
+                  )}
+                  <TenantRowMenu tenant={t} onChanged={refresh} />
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Users,
@@ -42,8 +43,43 @@ function relativeTime(iso: string): string {
   return `${Math.round(hr / 24)}d ago`;
 }
 
+interface TenantInfo {
+  name: string;
+  tier: string;
+  type: string;
+  region: string;
+  multiAz: boolean;
+  status: string;
+}
+interface TenantCounts {
+  totalUsers: number;
+  staff: number;
+  clinicians: number;
+  patients: number;
+  pendingInvites: number;
+}
+
 export default function AdminDashboard() {
   const { state } = useAdminStore();
+  const [tenant, setTenant] = useState<TenantInfo | null>(null);
+  const [counts, setCounts] = useState<TenantCounts | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/admin/tenant", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { ok?: boolean; tenant?: TenantInfo; counts?: TenantCounts } | null) => {
+        if (cancelled || !data?.ok) return;
+        setTenant(data.tenant ?? null);
+        setCounts(data.counts ?? null);
+      })
+      .catch(() => {
+        /* fall back to local-store values */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (!state.hydrated) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
@@ -55,9 +91,11 @@ export default function AdminDashboard() {
   return (
     <>
       <Hero
-        orgName={state.orgProfile.name}
-        patientCount={state.patients.length}
-        staffPending={state.staff.filter((s) => s.invitationStatus === "pending").length}
+        orgName={tenant?.name ?? state.orgProfile.name}
+        tier={tenant?.tier ?? "Enterprise"}
+        multiAz={tenant?.multiAz ?? true}
+        patientCount={counts?.patients ?? state.patients.length}
+        staffPending={counts?.pendingInvites ?? state.staff.filter((s) => s.invitationStatus === "pending").length}
       />
       {showWizard && <OnboardingWizard checklist={state.onboarding} />}
       <Stats
@@ -85,7 +123,25 @@ export default function AdminDashboard() {
   );
 }
 
-function Hero({ orgName, patientCount, staffPending }: { orgName: string; patientCount: number; staffPending: number }) {
+function Hero({
+  orgName,
+  tier,
+  multiAz,
+  patientCount,
+  staffPending,
+}: {
+  orgName: string;
+  tier: string;
+  multiAz: boolean;
+  patientCount: number;
+  staffPending: number;
+}) {
+  const tierBlurb =
+    tier === "Enterprise"
+      ? `${multiAz ? "Multi-AZ · " : ""}SMS enabled · 99.9% SLA`
+      : tier === "Pro"
+        ? `${multiAz ? "Multi-AZ · " : ""}SMS enabled · 99.5% SLA`
+        : `${multiAz ? "Multi-AZ · " : ""}Email only · 99% SLA`;
   return (
     <div className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-gradient-to-br from-[var(--color-card)] via-[var(--color-card)] to-[oklch(0.96_0.025_320)] p-6 sm:p-7">
       <div className="pointer-events-none absolute -right-16 -top-16 size-56 rounded-full bg-gradient-to-br from-[oklch(0.75_0.15_320)] to-transparent opacity-25 blur-3xl" />
@@ -117,10 +173,10 @@ function Hero({ orgName, patientCount, staffPending }: { orgName: string; patien
         </div>
         <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-[var(--shadow-soft)]">
           <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)]">Subscription tier</p>
-          <p className="mt-1 text-lg font-semibold">Enterprise</p>
-          <p className="text-xs text-[var(--color-muted-foreground)]">Multi-AZ · SMS enabled · 99.9% SLA</p>
+          <p className="mt-1 text-lg font-semibold">{tier}</p>
+          <p className="text-xs text-[var(--color-muted-foreground)]">{tierBlurb}</p>
           <div className="mt-3 flex items-center justify-between text-xs">
-            <span className="inline-flex items-center gap-1 text-[var(--color-muted-foreground)]"><HardDrive className="size-3.5" /> Storage 612 GB / 2 TB</span>
+            <span className="inline-flex items-center gap-1 text-[var(--color-muted-foreground)]"><HardDrive className="size-3.5" /> Storage 0 GB / 2 TB</span>
             <Link href="/admin/settings" className="font-medium text-[var(--color-primary-700)] hover:underline">Manage →</Link>
           </div>
         </div>

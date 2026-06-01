@@ -56,6 +56,12 @@ export interface PatientDocument {
   scanStatus: DocumentScanStatus;
   uploadedBy: "patient" | "clinician";
   uploaderName?: string;
+  /** Base64 data URL of the uploaded file. Empty for seeded demo docs.
+   *  Used for in-browser preview (new tab) and real-bytes download. */
+  dataUrl?: string;
+  /** MIME type captured from the File object on upload. Drives the preview
+   *  behaviour (PDFs/images render inline; other types still download). */
+  mimeType?: string;
 }
 
 export type ConsentScope =
@@ -63,14 +69,23 @@ export type ConsentScope =
   | "prescriptions"
   | "notes"
   | "imaging"
-  | "mental_health";
+  | "mental_health"
+  // Document-category scopes — these match the tags on the patient's
+  // Documents page (Insurance, ID Proof, Other) so the grant UI can be
+  // category-driven instead of generic PHI-access-driven.
+  | "insurance"
+  | "id_proof"
+  | "other";
 
 export const CONSENT_SCOPE_LABEL: Record<ConsentScope, string> = {
-  lab: "Lab Reports",
-  prescriptions: "Prescriptions",
+  lab: "Lab Report",
+  prescriptions: "Prescription",
   notes: "Clinical Notes",
   imaging: "Imaging",
   mental_health: "Mental Health",
+  insurance: "Insurance",
+  id_proof: "ID Proof",
+  other: "Other",
 };
 
 export interface Consent {
@@ -240,314 +255,53 @@ export interface PatientState {
 }
 
 // ---------------------------------------------------------------------------
-// Seed
+// Seed (empty — see comment in makeSeed)
 // ---------------------------------------------------------------------------
 
-function isoDaysFromNow(days: number, hour = 10, min = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  d.setHours(hour, min, 0, 0);
-  return d.toISOString();
-}
-
-function dateOnly(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
 function makeSeed(): Omit<PatientState, "hydrated"> {
+  // No demo data. Every slice starts empty so a freshly-signed-in patient
+  // (Tarun, Ayushi, etc.) does NOT see Aarav Mehta's appointments, records,
+  // family, insurance, etc. The Profile slice is intentionally empty because
+  // patient identity now comes from /api/patient/profile on every render.
   return {
-    appointments: [
-      {
-        id: "apt-1",
-        clinician: "Dr. Priya Shah",
-        department: "Cardiology",
-        date: dateOnly(2),
-        time: "10:00 AM",
-        mode: "in-person",
-        status: "confirmed",
-        reason: "Chest pain follow-up",
-        documentIds: ["doc-1"],
-        createdAt: isoDaysFromNow(-3),
-      },
-      {
-        id: "apt-2",
-        clinician: "Dr. Rohan Iyer",
-        department: "General Medicine",
-        date: dateOnly(-7),
-        time: "2:30 PM",
-        mode: "telehealth",
-        status: "completed",
-        reason: "Annual physical",
-        documentIds: [],
-        createdAt: isoDaysFromNow(-14),
-      },
-    ],
-    documents: [
-      {
-        id: "doc-1",
-        name: "Previous ECG report.pdf",
-        category: "Lab Report",
-        sizeBytes: 124_300,
-        uploadedAt: isoDaysFromNow(-3),
-        scanStatus: "clean",
-        uploadedBy: "patient",
-      },
-      {
-        id: "doc-2",
-        name: "Insurance card.pdf",
-        category: "Insurance",
-        sizeBytes: 84_120,
-        uploadedAt: isoDaysFromNow(-12),
-        scanStatus: "clean",
-        uploadedBy: "patient",
-      },
-      {
-        id: "doc-3",
-        name: "Echo Test Report.pdf",
-        category: "Imaging",
-        sizeBytes: 412_000,
-        uploadedAt: isoDaysFromNow(-1),
-        scanStatus: "clean",
-        uploadedBy: "clinician",
-        uploaderName: "Dr. Priya Shah",
-      },
-    ],
-    consents: [
-      {
-        id: "con-1",
-        clinician: "Dr. Priya Shah",
-        department: "Cardiology",
-        scopes: ["lab", "prescriptions", "notes", "imaging"],
-        policyVersion: "v2.4",
-        grantedAt: isoDaysFromNow(-3),
-        status: "active",
-        expiresAt: null,
-      },
-    ],
-    threads: [
-      {
-        id: "thr-1",
-        with: "Dr. Priya Shah",
-        withRole: "Cardiology",
-        subject: "Aspirin question",
-        unread: false,
-        pinned: false,
-        messages: [
-          {
-            id: "msg-1",
-            from: "patient",
-            fromName: "You",
-            body: "Doctor, I started Aspirin 2 days ago. Feeling slight stomach discomfort. Should I continue or stop?",
-            at: isoDaysFromNow(-2, 11, 0),
-          },
-          {
-            id: "msg-2",
-            from: "clinician",
-            fromName: "Dr. Priya Shah",
-            body: "Take Aspirin with food, not empty stomach. If discomfort continues, stop and contact me.",
-            at: isoDaysFromNow(-2, 14, 0),
-          },
-        ],
-        lastActivity: isoDaysFromNow(-2, 14, 0),
-      },
-    ],
-    notifications: [
-      {
-        id: "ntf-1",
-        title: "Appointment reminder",
-        body: "Your appointment with Dr. Priya Shah is in 2 days.",
-        type: "appointment",
-        href: "/patient/appointments",
-        read: false,
-        createdAt: isoDaysFromNow(-1, 9, 0),
-      },
-      {
-        id: "ntf-2",
-        title: "New record available",
-        body: "Dr. Priya Shah uploaded your Echo Test Report.",
-        type: "record",
-        href: "/patient/documents",
-        read: false,
-        createdAt: isoDaysFromNow(-1, 16, 0),
-      },
-    ],
+    appointments: [],
+    documents: [],
+    consents: [],
+    threads: [],
+    notifications: [],
     profile: {
-      firstName: "Aarav",
-      lastName: "Mehta",
-      email: "aarav.mehta@example.com",
-      phone: "+91 98765 43210",
-      dob: "1981-04-14",
-      address: "Flat 302, Sky Heights",
-      city: "Ahmedabad",
-      state: "Gujarat",
-      postalCode: "380015",
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      dob: "",
+      address: "",
+      city: "",
+      state: "",
+      postalCode: "",
     },
     security: {
       mfaEnabled: false,
-      sessions: [
-        {
-          id: "ses-1",
-          device: "Chrome · Windows 10",
-          location: "Ahmedabad, IN",
-          ip: "203.0.113.42",
-          lastSeen: new Date().toISOString(),
-          current: true,
-          trusted: true,
-        },
-        {
-          id: "ses-2",
-          device: "Safari · iPhone 14",
-          location: "Ahmedabad, IN",
-          ip: "203.0.113.99",
-          lastSeen: isoDaysFromNow(-3, 21, 0),
-          current: false,
-          trusted: true,
-        },
-        {
-          id: "ses-3",
-          device: "Firefox · Ubuntu 22.04",
-          location: "Mumbai, IN",
-          ip: "198.51.100.7",
-          lastSeen: isoDaysFromNow(-9, 14, 35),
-          current: false,
-          trusted: false,
-        },
-      ],
+      sessions: [],
     },
-    family: [
-      {
-        id: "fam-spouse",
-        name: "Aanya Sharma",
-        relationship: "Spouse",
-        dob: "1992-08-14",
-        isMinor: false,
-        canManageAccount: true,
-        phone: "+91 98201 11111",
-        email: "aanya.sharma@example.com",
-        notes: "Authorised caregiver — can manage appointments on my behalf.",
-        addedAt: isoDaysFromNow(-90),
-      },
-      {
-        id: "fam-child",
-        name: "Vivaan Sharma",
-        relationship: "Child",
-        dob: "2018-03-22",
-        isMinor: true,
-        canManageAccount: false,
-        phone: "+91 98201 22222",
-        notes: "Pediatrician: Dr. Priya Shah at City General.",
-        addedAt: isoDaysFromNow(-60),
-      },
-    ],
+    family: [],
     emergencyContact: {
-      primaryName: "Aanya Sharma",
-      primaryRelationship: "Spouse",
-      primaryPhone: "+91 98201 11111",
-      secondaryName: "Rajiv Sharma",
-      secondaryRelationship: "Parent",
-      secondaryPhone: "+91 98201 33333",
-      bloodGroup: "O+",
-      allergies: ["Penicillin", "Sulfa drugs"],
-      criticalMedications: ["Atorvastatin 10mg (daily)"],
-      medicalIds: [
-        { label: "Diabetic", value: "Type 2 since 2022" },
-        { label: "Hypertension", value: "Controlled with medication" },
-      ],
-      organDonor: true,
-      preferredHospital: "City General Hospital, Ahmedabad",
-      updatedAt: isoDaysFromNow(-14),
+      primaryName: "",
+      primaryRelationship: "",
+      primaryPhone: "",
+      secondaryName: "",
+      secondaryRelationship: "",
+      secondaryPhone: "",
+      bloodGroup: "Unknown",
+      allergies: [],
+      criticalMedications: [],
+      medicalIds: [],
+      organDonor: false,
+      preferredHospital: "",
+      updatedAt: new Date().toISOString(),
     },
-    insurance: [
-      {
-        id: "ins-star",
-        provider: "Star Health",
-        planName: "Family Health Optima",
-        policyNumberMasked: "XXXXXX4471",
-        groupNumber: "GH-2024",
-        memberId: "MEM-998812",
-        coverageType: "Family",
-        startDate: "2024-04-01",
-        endDate: "2026-03-31",
-        isPrimary: true,
-        cardFrontFileName: "star-health-card.pdf",
-        preAuthorizationStatus: "none",
-        notes: "Cashless network — City General is in-network.",
-        addedAt: isoDaysFromNow(-180),
-      },
-      {
-        id: "ins-hdfc",
-        provider: "HDFC Ergo",
-        planName: "Optima Restore",
-        policyNumberMasked: "XXXXXX8820",
-        memberId: "HDFCE-44712",
-        coverageType: "Self",
-        startDate: "2025-01-15",
-        endDate: "2026-01-14",
-        isPrimary: false,
-        preAuthorizationStatus: "approved",
-        notes: "Top-up plan for hospitalisation > ₹5L.",
-        addedAt: isoDaysFromNow(-100),
-      },
-    ],
-    vaccinations: [
-      {
-        id: "vac-covid-1",
-        vaccine: "COVID-19 (Covishield)",
-        manufacturer: "Serum Institute",
-        doseNumber: 2,
-        totalDoses: 2,
-        administeredOn: "2023-09-12",
-        administeredBy: "City General Hospital",
-        lotNumber: "CSH-2023-0912-A",
-        certificateFileName: "covishield-dose2-cert.pdf",
-        forTravel: false,
-      },
-      {
-        id: "vac-flu",
-        vaccine: "Influenza (Quadrivalent)",
-        manufacturer: "Sanofi",
-        doseNumber: 1,
-        totalDoses: 1,
-        administeredOn: dateOnly(-60),
-        administeredBy: "Dr. Priya Shah",
-        nextDoseDue: dateOnly(305),
-        forTravel: false,
-      },
-      {
-        id: "vac-tetanus",
-        vaccine: "Tetanus / Tdap",
-        doseNumber: 1,
-        totalDoses: 1,
-        administeredOn: "2024-01-10",
-        administeredBy: "City General Hospital",
-        nextDoseDue: "2034-01-10",
-        forTravel: false,
-      },
-      {
-        id: "vac-yellow",
-        vaccine: "Yellow Fever",
-        manufacturer: "Bio-Manguinhos",
-        doseNumber: 1,
-        totalDoses: 1,
-        administeredOn: dateOnly(-180),
-        administeredBy: "Travel Health Clinic",
-        certificateFileName: "yellow-fever-icvp.pdf",
-        forTravel: true,
-        notes: "Required for travel to Brazil. Lifelong protection.",
-      },
-      {
-        id: "vac-hep-b",
-        vaccine: "Hepatitis B",
-        doseNumber: 2,
-        totalDoses: 3,
-        administeredOn: dateOnly(-30),
-        administeredBy: "Dr. Rohan Iyer",
-        nextDoseDue: dateOnly(20),
-        forTravel: false,
-      },
-    ],
+    insurance: [],
+    vaccinations: [],
   };
 }
 
@@ -555,7 +309,10 @@ function makeSeed(): Omit<PatientState, "hydrated"> {
 // Store
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = "hs_patient_store_v2";
+// Bumped v2 → v3 when all seed data was stripped (2026-06-01). Returning
+// patients with a v2 localStorage blob keep their seeded Aarav-Mehta values
+// otherwise; v3 ensures they reseed with the empty shape.
+const STORAGE_KEY = "hs_patient_store_v3";
 
 function loadFromStorage(): Omit<PatientState, "hydrated"> | null {
   if (typeof window === "undefined") return null;

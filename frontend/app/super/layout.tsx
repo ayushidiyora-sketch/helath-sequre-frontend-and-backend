@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard,
   Building2,
@@ -15,44 +16,64 @@ import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/ro
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
 
-const GROUPS: NavGroup[] = [
-  {
-    label: "Platform",
-    items: [
-      { href: "/super/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/super/tenants", label: "Tenants", icon: Building2, count: 18 },
-      { href: "/super/platform", label: "Configuration", icon: Plug },
-    ],
-  },
-  {
-    label: "Operations",
-    items: [
-      { href: "/super/health", label: "Health & status", icon: Activity },
-      { href: "/super/security", label: "Security stream", icon: ShieldAlert, badge: "2" },
-      { href: "/super/incidents", label: "Incidents", icon: AlertCircle },
-      { href: "/super/break-glass", label: "Break-glass", icon: Flame },
-    ],
-  },
-];
-
 const UTILITY: NavItem[] = [
   { href: "/super/notifications", label: "Notifications", icon: Bell },
   { href: "/super/settings", label: "Settings", icon: Settings },
 ];
 
 export default function SuperLayout({ children }: { children: React.ReactNode }) {
+  const [tenantCount, setTenantCount] = useState<number | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/super/tenants")
+      .then((r) => (r.ok ? r.json() : { tenants: [] }))
+      .then((data: { tenants?: { id: string }[] }) => {
+        if (!cancelled) setTenantCount(data.tenants?.length ?? 0);
+      })
+      .catch(() => {
+        /* leave count undefined; sidebar omits the badge */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const groups: NavGroup[] = useMemo(
+    () => [
+      {
+        label: "Platform",
+        items: [
+          { href: "/super/dashboard", label: "Dashboard", icon: LayoutDashboard },
+          { href: "/super/tenants", label: "Tenants", icon: Building2, count: tenantCount },
+          { href: "/super/platform", label: "Configuration", icon: Plug },
+        ],
+      },
+      {
+        label: "Operations",
+        items: [
+          { href: "/super/health", label: "Health & status", icon: Activity },
+          { href: "/super/security", label: "Security stream", icon: ShieldAlert, badge: "2" },
+          { href: "/super/incidents", label: "Incidents", icon: AlertCircle },
+          { href: "/super/break-glass", label: "Break-glass", icon: Flame },
+        ],
+      },
+    ],
+    [tenantCount],
+  );
+
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--color-background)]">
       <IdleTimeout />
-      <RoleSidebar groups={GROUPS} utility={UTILITY} />
+      <RoleSidebar groups={groups} utility={UTILITY} />
       <div className="flex min-w-0 flex-1 flex-col">
         <RoleHeader
-          user={{ name: "Riya Sen", subtitle: "Super Admin · Sensussoft", initials: "RS", email: "riya.sen@sensussoft.com" }}
+          user={{ name: "Ayushi Diyora", subtitle: "Super Admin · Sensussoft", initials: "AD", email: "ayushi.diyora@sensussoft.com" }}
           sessionMins={9}
           searchPlaceholder="Search tenants, incidents, security events…"
           settingsHref="/super/settings"
           notificationsHref="/super/notifications"
-          navGroups={GROUPS}
+          navGroups={groups}
           navUtility={UTILITY}
         />
         <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8 lg:py-8">

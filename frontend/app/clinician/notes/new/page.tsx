@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -110,8 +110,50 @@ function NewNotePageInner() {
   const [activeIdx, setActiveIdx] = useState(0);
   const active = TEMPLATES[activeIdx];
 
-  const initialPatient = params.get("patient") ?? state.assignedPatients[0]?.id ?? "";
+  // The clinician's panel is DB-backed now (not in the local store), so the
+  // patient dropdown must fetch /api/clinician/patients. Without this the
+  // dropdown shows "— No patients assigned —" for every clinician whose
+  // localStorage is on v4 (post-seed-clear).
+  type ApiPatient = { id: string; name: string };
+  const [apiPatients, setApiPatients] = useState<ApiPatient[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/clinician/patients", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setApiPatients(
+          (data.patients as Array<{ id: string; name: string }>).map((p) => ({
+            id: p.id,
+            name: p.name,
+          })),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Unify store + API patients (store still wins for seeded demo users with
+  // mock chart data). Dedup by id, preserve order: store first, then API.
+  const allPatients = useMemo(() => {
+    const out: { id: string; name: string }[] = state.assignedPatients.map((p) => ({
+      id: p.id,
+      name: p.name,
+    }));
+    const seen = new Set(out.map((p) => p.id));
+    for (const p of apiPatients) if (!seen.has(p.id)) out.push(p);
+    return out;
+  }, [state.assignedPatients, apiPatients]);
+
+  const initialPatient = params.get("patient") ?? allPatients[0]?.id ?? "";
   const [patientId, setPatientId] = useState(initialPatient);
+  // If patients land asynchronously after first render, auto-pick the first
+  // one once available.
+  useEffect(() => {
+    if (!patientId && allPatients.length > 0) setPatientId(allPatients[0].id);
+  }, [allPatients, patientId]);
 
   const [encounterType, setEncounterType] = useState("Office visit");
   const [encounterDate, setEncounterDate] = useState(new Date().toISOString().slice(0, 10));
@@ -143,39 +185,86 @@ function NewNotePageInner() {
     toast.info(`Switched to ${TEMPLATES[idx].name} note`);
   }
 
-  function persistDraft(): string | null {
+  // DB-backed persistence. Drafts and finalized notes both round-trip through
+  // /api/clinician/notes — the local store is also updated (best-effort) so
+  // the existing `/clinician/notes` list keeps working while the user is on
+  // this page, but the DB is the source of truth.
+  async function persistToDb(finalize: boolean): Promise<string | null> {
     if (!patientId) {
       toast.warning("Pick a patient first");
       return null;
     }
     setSaving(true);
-    let id = draftId;
-    if (!id) {
-      const note = addNote({
-        patientId,
+    try {
+      // The template form has flexible field names — only persist the ones
+      // the medical_records table knows about (subjective/objective/assessment/
+      // plan/body). Anything else stays local.
+      const payload: Record<string, unknown> = {
         template: active.name,
-        ...fields,
-      });
-      id = note.id;
-      setDraftId(id);
-    } else {
-      updateNote(id, { template: active.name, ...fields });
+        subjective: typeof fields.subjective === "string" ? fields.subjective : undefined,
+        objective: typeof fields.objective === "string" ? fields.objective : undefined,
+        assessment: typeof fields.assessment === "string" ? fields.assessment : undefined,
+        plan: typeof fields.plan === "string" ? fields.plan : undefined,
+        body: typeof fields.body === "string" ? fields.body : undefined,
+      };
+      if (finalize) payload.status = "finalized";
+
+      if (!draftId) {
+        const r = await fetch("/api/clinician/notes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patientId, ...payload }),
+        });
+        const data = await r.json();
+        if (!r.ok || !data.ok) {
+          toast.error(data.error ?? "Could not save note.");
+          return null;
+        }
+        setDraftId(data.note.id);
+        // Mirror to local store so the /clinician/notes list shows it without
+        // a refetch.
+        try {
+          const local = addNote({ patientId, template: active.name, ...fields });
+          // If finalize succeeded server-side, also finalize the local mirror.
+          if (finalize) finalizeNote(local.id);
+        } catch {
+          // Local mirror is best-effort — DB has the canonical row.
+        }
+        return data.note.id as string;
+      } else {
+        const r = await fetch(`/api/clinician/notes/${draftId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok || !data.ok) {
+          toast.error(data.error ?? "Could not update note.");
+          return null;
+        }
+        try {
+          updateNote(draftId, { template: active.name, ...fields });
+          if (finalize) finalizeNote(draftId);
+        } catch {
+          // best-effort
+        }
+        return draftId;
+      }
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
-    return id;
   }
 
-  function handleSaveDraft() {
-    const id = persistDraft();
+  async function handleSaveDraft() {
+    const id = await persistToDb(false);
     if (id) {
-      toast.success("Draft saved", { description: `Note ${id.slice(-6)} · audit-logged` });
+      toast.success("Draft saved · audit-logged", { description: `Note ${id.slice(-6)}` });
     }
   }
 
-  function handleFinalize() {
-    const id = persistDraft();
+  async function handleFinalize() {
+    const id = await persistToDb(true);
     if (!id) return;
-    finalizeNote(id);
     toast.success("Note finalized · locked", { description: "Patient notified · audit-logged as record.finalize" });
     router.push("/clinician/notes");
   }
@@ -239,10 +328,16 @@ function NewNotePageInner() {
                   onChange={(e) => setPatientId(e.target.value)}
                   className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
                 >
-                  {state.assignedPatients.length === 0 && <option value="">— No patients assigned —</option>}
-                  {state.assignedPatients.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} · {p.mrn}</option>
-                  ))}
+                  {allPatients.length === 0 && <option value="">— No patients assigned —</option>}
+                  {allPatients.map((p) => {
+                    const storePatient = state.assignedPatients.find((sp) => sp.id === p.id);
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                        {storePatient ? ` · ${storePatient.mrn}` : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
               <div className="flex items-end">
