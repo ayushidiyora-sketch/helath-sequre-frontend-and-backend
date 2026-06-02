@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { AppointmentStatus, RoleKind } from "@prisma/client";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -12,6 +12,18 @@ export async function GET() {
   if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
   if (claims.role !== "Patient")
     return NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 });
+  // Demo-user session (uid like "u_patient_ayushi") — return an empty payload
+  // so the page renders without P2023'ing on a non-UUID id.
+  if (!isDbUid(claims.uid)) {
+    return NextResponse.json({
+      ok: true,
+      me: { id: claims.uid, name: claims.name, email: claims.email, mrn: null, dateOfBirth: null, profilePhotoUrl: null, organization: null },
+      nextAppointment: null,
+      pastAppointments: [],
+      activePrescriptions: [],
+      consents: [],
+    });
+  }
 
   const me = await prisma.user.findUnique({
     where: { id: claims.uid },

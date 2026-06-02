@@ -80,13 +80,55 @@ function todayIso(): string {
 }
 
 export function VaccinationsManager() {
-  const { state, addVaccination, updateVaccination, removeVaccination } = usePatientStore();
+  const [all, setAll] = React.useState<VaccinationRecord[]>([]);
+  const [hydrated, setHydrated] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
   const [filter, setFilter] = React.useState<Filter>("all");
   const [query, setQuery] = React.useState("");
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<VaccinationRecord | null>(null);
 
-  const all = state.vaccinations;
+  const reload = React.useCallback(async () => {
+    const r = await fetch("/api/patient/vaccinations", { cache: "no-store" });
+    const data = await r.json();
+    if (data?.ok && Array.isArray(data.vaccinations)) setAll(data.vaccinations as VaccinationRecord[]);
+  }, []);
+  React.useEffect(() => {
+    void reload().finally(() => setHydrated(true));
+  }, [reload]);
+
+  async function addVaccination(values: Omit<VaccinationRecord, "id">) {
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/patient/vaccinations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not add vaccination.");
+      await reload();
+    } finally { setSubmitting(false); }
+  }
+  async function updateVaccination(id: string, values: Omit<VaccinationRecord, "id">) {
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/patient/vaccinations", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...values }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not update vaccination.");
+      await reload();
+    } finally { setSubmitting(false); }
+  }
+  async function removeVaccination(id: string) {
+    const r = await fetch(`/api/patient/vaccinations?id=${id}`, { method: "DELETE" });
+    const data = await r.json();
+    if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not remove vaccination.");
+    await reload();
+  }
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -112,7 +154,7 @@ export function VaccinationsManager() {
       .sort((a, b) => b.administeredOn.localeCompare(a.administeredOn));
   }, [all, filter, query]);
 
-  if (!state.hydrated) {
+  if (!hydrated) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…
@@ -297,7 +339,7 @@ export function VaccinationsManager() {
                       }}
                       toastMessage="Vaccination removed"
                       toastDescription={`${v.vaccine} · audit-logged`}
-                      onClick={() => removeVaccination(v.id)}
+                      onClick={() => void removeVaccination(v.id)}
                     >
                       <Trash2 /> Remove
                     </ActionButton>
@@ -313,12 +355,13 @@ export function VaccinationsManager() {
         open={open}
         onOpenChange={setOpen}
         editing={editing}
-        onSubmit={(values) => {
+        submitting={submitting}
+        onSubmit={async (values) => {
           if (editing) {
-            updateVaccination(editing.id, values);
+            await updateVaccination(editing.id, values);
             toast.success("Vaccination updated", { description: `${values.vaccine} · audit-logged` });
           } else {
-            addVaccination(values);
+            await addVaccination(values);
             toast.success("Vaccination added", { description: `${values.vaccine} · audit-logged` });
           }
           setOpen(false);
@@ -345,12 +388,14 @@ function VaccineDialog({
   open,
   onOpenChange,
   editing,
+  submitting,
   onSubmit,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   editing: VaccinationRecord | null;
-  onSubmit: (values: FormValues) => void;
+  submitting?: boolean;
+  onSubmit: (values: FormValues) => void | Promise<void>;
 }) {
   const [vaccine, setVaccine] = React.useState("");
   const [manufacturer, setManufacturer] = React.useState("");
@@ -507,7 +552,9 @@ function VaccineDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={!valid}>{editing ? "Save changes" : "Add vaccination"}</Button>
+          <Button onClick={submit} disabled={!valid || !!submitting}>
+            {submitting ? "Saving…" : editing ? "Save changes" : "Add vaccination"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

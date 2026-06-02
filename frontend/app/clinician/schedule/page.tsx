@@ -518,12 +518,16 @@ function WeekView({
     });
   }, [anchor]);
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  // Local YYYY-MM-DD — toISOString() shifts to UTC and would bucket east-of-UTC
+  // appointments into the previous day.
+  const toLocalIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const todayIso = toLocalIso(new Date());
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
       {days.map((d) => {
-        const iso = d.toISOString().slice(0, 10);
+        const iso = toLocalIso(d);
         const dayAppts = appointments
           .filter((a) => a.date === iso)
           .sort((a, b) => a.time.localeCompare(b.time));

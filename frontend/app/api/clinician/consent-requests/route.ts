@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -17,6 +17,10 @@ async function guardClinician() {
   if (!claims) return { error: NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 }) } as const;
   if (claims.role !== "Clinician")
     return { error: NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 }) } as const;
+  // Demo-user session — short-circuit with an empty list so the chart's 15s
+  // poll doesn't 500 on a non-UUID id in the `::uuid` cast below.
+  if (!isDbUid(claims.uid))
+    return { error: NextResponse.json({ ok: true, requests: [] }) } as const;
   return { claims } as const;
 }
 

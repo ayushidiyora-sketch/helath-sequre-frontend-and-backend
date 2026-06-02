@@ -40,16 +40,65 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { EmojiPicker } from "./emoji-picker";
-import { usePatientStore, type MessageThread, type MessageAttachment } from "@/lib/patient-store";
 
-const CARE_TEAM = [
-  { name: "Dr. Priya Shah", role: "Cardiology", initials: "PS" },
-  { name: "Dr. Rohan Iyer", role: "General Medicine", initials: "RI" },
-  { name: "Dr. Meera Nair", role: "Endocrinology", initials: "MN" },
-  { name: "Care coordinator", role: "Care Team", initials: "CC" },
-  { name: "Radiology Dept.", role: "Imaging", initials: "RD" },
-  { name: "Pharmacy", role: "Medication", initials: "PH" },
-] as const;
+// DB-backed shape — keeps the old field names so the JSX below renders
+// unchanged. Pinning and attachments are UI-only (no DB column yet).
+interface PatientThread {
+  id: string;          // otherUserId (clinician UUID)
+  with: string;
+  withRole: string;
+  unread: boolean;
+  pinned?: boolean;
+  lastActivity: string; // ISO
+  preview: string;
+  sentByMe: boolean;
+  online: boolean;
+  lastActiveAt: string | null;
+  messages: PatientMessage[];
+}
+
+interface PatientMessage {
+  id: string;
+  from: "patient" | "clinician";
+  body: string;
+  at: string;
+  attachments?: MessageAttachment[];
+}
+
+interface MessageAttachment {
+  name: string;
+  size: number;
+  kind: "image" | "file";
+  mimeType: string;
+  dataUrl: string;
+}
+
+interface ApiThread {
+  otherUserId: string;
+  otherName: string;
+  otherRole: string;
+  otherLastActiveAt: string | null;
+  otherOnline: boolean;
+  lastBody: string;
+  lastSentAt: string;
+  lastSenderRole: string;
+  unread: number;
+}
+
+interface ApiMessage {
+  id: string;
+  senderRole: string;
+  body: string;
+  sentAt: string;
+  attachments?: Array<{ name: string; mimeType: string; size: number; dataUrl: string }>;
+}
+
+interface CareTeamMember {
+  id: string;
+  name: string;
+  initials: string;
+  role: string;
+}
 
 function initials(name: string): string {
   return name
@@ -61,8 +110,6 @@ function initials(name: string): string {
     .toUpperCase();
 }
 
-// Locale-independent formatters so server and client agree byte-for-byte
-// during hydration.
 const PT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function formatClock(date: Date): string {
@@ -97,12 +144,33 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function MessagesView({ initialThreadId }: { initialThreadId?: string } = {}) {
-  const { state, sendMessage, createThread, markThreadRead, togglePinThread } = usePatientStore();
-  const search = useSearchParams();
-  const queryThread = search.get("thread") ?? initialThreadId ?? null;
+function dayKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
+function dayLabel(iso: string): string {
+  const today = new Date();
+  const yest = new Date();
+  yest.setDate(today.getDate() - 1);
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const yestKey = `${yest.getFullYear()}-${String(yest.getMonth() + 1).padStart(2, "0")}-${String(yest.getDate()).padStart(2, "0")}`;
+  const k = dayKey(iso);
+  if (k === todayKey) return "Today";
+  if (k === yestKey) return "Yesterday";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+export function MessagesView() {
+  const search = useSearchParams();
+  const queryThread = search.get("thread");
+
+  const [threads, setThreads] = useState<PatientThread[]>([]);
+  const [careTeam, setCareTeam] = useState<CareTeamMember[]>([]);
+  const [hydrated, setHydrated] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeMessages, setActiveMessages] = useState<PatientMessage[]>([]);
   const [tab, setTab] = useState<"inbox" | "pinned" | "all">("inbox");
   const [searchQuery, setSearchQuery] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
@@ -110,77 +178,261 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<MessageAttachment[]>([]);
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
 
-  // Pick an initial active thread once hydrated.
-  useEffect(() => {
-    if (!state.hydrated) return;
-    if (activeId && state.threads.some((t) => t.id === activeId)) return;
-    const target =
-      (queryThread && state.threads.find((t) => t.id === queryThread)?.id) ??
-      state.threads[0]?.id ??
-      null;
-    setActiveId(target);
-    if (target) markThreadRead(target);
-  }, [state.hydrated, state.threads, queryThread, activeId, markThreadRead]);
+  const reloadThreads = async (preferOther?: string) => {
+    let data: { ok?: boolean; threads?: ApiThread[] } | null = null;
+    try {
+      const r = await fetch("/api/messages/threads", { cache: "no-store" });
+      data = await r.json();
+    } catch {
+      return;
+    }
+    if (!data?.ok || !Array.isArray(data.threads)) return;
+    const shaped: PatientThread[] = (data.threads as ApiThread[]).map((t) => ({
+      id: t.otherUserId,
+      with: t.otherName,
+      withRole: t.otherRole,
+      unread: t.unread > 0,
+      pinned: pinnedIds.has(t.otherUserId),
+      lastActivity: t.lastSentAt,
+      preview: t.lastBody,
+      sentByMe: t.lastSenderRole === "patient",
+      online: t.otherOnline,
+      lastActiveAt: t.otherLastActiveAt,
+      messages: [],
+    }));
+    setThreads(shaped);
+    if (preferOther) {
+      setActiveId(preferOther);
+    } else if (!activeId && shaped.length > 0) {
+      setActiveId((queryThread && shaped.find((t) => t.id === queryThread)?.id) ?? shaped[0].id);
+    }
+  };
 
-  if (!state.hydrated) {
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/clinicians", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data?.ok || !Array.isArray(data.clinicians)) return;
+        type Row = { id: string; name: string; initials: string; designation: string | null; department: string | null };
+        setCareTeam(
+          (data.clinicians as Row[]).map((c) => ({
+            id: c.id,
+            name: c.name,
+            initials: c.initials,
+            role: c.designation ?? c.department ?? "Care team",
+          })),
+        );
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    void reloadThreads().finally(() => setHydrated(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!activeId) {
+      setActiveMessages([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/messages?withUserId=${activeId}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const msgs: PatientMessage[] = (data.messages as ApiMessage[]).map((m) => ({
+          id: m.id,
+          from: m.senderRole === "patient" ? "patient" : "clinician",
+          body: m.body,
+          at: m.sentAt,
+          attachments: (m.attachments ?? []).map((a) => ({
+            name: a.name,
+            size: a.size,
+            mimeType: a.mimeType,
+            kind: a.mimeType.startsWith("image/") ? "image" : "file",
+            dataUrl: a.dataUrl,
+          })),
+        }));
+        setActiveMessages(msgs);
+        setThreads((curr) => curr.map((t) => (t.id === activeId ? { ...t, unread: false } : t)));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeId]);
+
+  // Poll every 10s for inbound updates.
+  useEffect(() => {
+    const tick = setInterval(() => {
+      void reloadThreads();
+      if (activeId) {
+        fetch(`/api/messages?withUserId=${activeId}`, { cache: "no-store" })
+          .then((r) => r.json())
+          .then((data) => {
+            if (!data?.ok) return;
+            const msgs: PatientMessage[] = (data.messages as ApiMessage[]).map((m) => ({
+              id: m.id,
+              from: m.senderRole === "patient" ? "patient" : "clinician",
+              body: m.body,
+              at: m.sentAt,
+              attachments: (m.attachments ?? []).map((a) => ({
+                name: a.name,
+                size: a.size,
+                mimeType: a.mimeType,
+                kind: a.mimeType.startsWith("image/") ? "image" : "file",
+                dataUrl: a.dataUrl,
+              })),
+            }));
+            setActiveMessages(msgs);
+          })
+          .catch(() => {});
+      }
+    }, 10_000);
+    return () => clearInterval(tick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+
+  if (!hydrated) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
   }
 
-  if (state.threads.length === 0) return <EmptyInbox onCompose={() => setComposeOpen(true)} composeOpen={composeOpen} setComposeOpen={setComposeOpen} onStart={start} />;
+  if (threads.length === 0) {
+    return (
+      <EmptyInbox
+        onCompose={() => setComposeOpen(true)}
+        composeOpen={composeOpen}
+        setComposeOpen={setComposeOpen}
+        careTeam={careTeam}
+        onStart={start}
+      />
+    );
+  }
 
-  const active = state.threads.find((t) => t.id === activeId) ?? state.threads[0];
-  const unreadTotal = state.threads.filter((t) => t.unread).length;
+  const active = threads.find((t) => t.id === activeId) ?? threads[0];
+  const unreadTotal = threads.filter((t) => t.unread).length;
 
-  const visible = state.threads.filter((t) => {
+  const visible = threads.filter((t) => {
     if (tab === "pinned" && !t.pinned) return false;
     if (unreadOnly && !t.unread) return false;
     const q = searchQuery.trim().toLowerCase();
     if (!q) return true;
-    const last = t.messages[t.messages.length - 1]?.body ?? "";
     return (
       t.with.toLowerCase().includes(q) ||
       t.withRole.toLowerCase().includes(q) ||
-      last.toLowerCase().includes(q)
+      t.preview.toLowerCase().includes(q)
     );
   });
 
   function openThread(id: string) {
     setActiveId(id);
-    markThreadRead(id);
   }
 
-  function send() {
+  function togglePin(id: string) {
+    setPinnedIds((curr) => {
+      const next = new Set(curr);
+      const pinnedNow = !next.has(id);
+      if (pinnedNow) next.add(id);
+      else next.delete(id);
+      toast.info(pinnedNow ? "Conversation pinned" : "Conversation unpinned");
+      return next;
+    });
+    setThreads((curr) => curr.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)));
+  }
+
+  async function send() {
     if (!active) return;
-    const hasBody = draft.trim().length > 0;
-    const hasAtt = pendingAttachments.length > 0;
-    if (!hasBody && !hasAtt) return;
-    sendMessage(active.id, draft.trim(), pendingAttachments);
+    const body = draft.trim();
+    const atts = pendingAttachments;
+    if (!body && atts.length === 0) return;
+    const savedBody = draft;
+    const savedAtts = atts;
     setDraft("");
     setPendingAttachments([]);
     setEmojiOpen(false);
+    try {
+      const r = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toUserId: active.id,
+          body,
+          attachments: atts.map((a) => ({ name: a.name, mimeType: a.mimeType, size: a.size, dataUrl: a.dataUrl })),
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not send.");
+        setDraft(savedBody);
+        setPendingAttachments(savedAtts);
+        return;
+      }
+      const optimistic: PatientMessage = {
+        id: data.message.id,
+        from: "patient",
+        body,
+        at: data.message.sentAt,
+        attachments: atts,
+      };
+      setActiveMessages((curr) => [...curr, optimistic]);
+      await reloadThreads();
+    } catch {
+      toast.error("Network error.");
+      setDraft(savedBody);
+      setPendingAttachments(savedAtts);
+    }
   }
 
-  function start(recipient: (typeof CARE_TEAM)[number], message: string) {
-    const thread = createThread({
-      with: recipient.name,
-      withRole: recipient.role,
-      subject: message.trim().slice(0, 40) || `New conversation with ${recipient.name}`,
-      initialBody: message.trim() || "Hello",
-    });
-    setActiveId(thread.id);
-    setComposeOpen(false);
-    toast.success("Conversation started", { description: `New message to ${recipient.name}` });
+  async function start(recipient: CareTeamMember, message: string) {
+    const body = message.trim() || "Hello";
+    try {
+      const r = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toUserId: recipient.id, body }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not start conversation.");
+        return;
+      }
+      toast.success("Conversation started", { description: `New message to ${recipient.name}` });
+      setComposeOpen(false);
+      await reloadThreads(recipient.id);
+    } catch {
+      toast.error("Network error.");
+    }
   }
 
   function noteAttachment(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (f) {
+      if (f.size > 5 * 1024 * 1024) {
+        toast.error(`${f.name} is over 5 MB — pick a smaller file.`);
+        e.target.value = "";
+        return;
+      }
       const kind: MessageAttachment["kind"] = e.target === imageRef.current ? "image" : "file";
-      setPendingAttachments((curr) => [...curr, { name: f.name, size: f.size, kind }]);
-      toast.success("Attachment ready", { description: `${f.name} · scanned · clean · will send with your next message` });
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        if (!dataUrl.startsWith("data:")) {
+          toast.error("Could not read the file.");
+          return;
+        }
+        setPendingAttachments((curr) => [
+          ...curr,
+          { name: f.name, size: f.size, kind, mimeType: f.type || "application/octet-stream", dataUrl },
+        ]);
+        toast.success("Attachment ready", { description: `${f.name} · sends with your next message` });
+      };
+      reader.onerror = () => toast.error("Could not read the file.");
+      reader.readAsDataURL(f);
     }
     e.target.value = "";
   }
@@ -260,7 +512,6 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
               </li>
             )}
             {visible.map((t) => {
-              const last = t.messages[t.messages.length - 1];
               const isActive = t.id === active?.id;
               return (
                 <li key={t.id}>
@@ -270,9 +521,18 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
                       isActive ? "bg-[var(--color-primary-50)]" : "hover:bg-[var(--color-muted)]/50"
                     }`}
                   >
-                    <Avatar className="size-10 shrink-0">
-                      <AvatarFallback>{initials(t.with)}</AvatarFallback>
-                    </Avatar>
+                    <div className="relative shrink-0">
+                      <Avatar className="size-10">
+                        <AvatarFallback>{initials(t.with)}</AvatarFallback>
+                      </Avatar>
+                      {t.online && (
+                        <span
+                          className="absolute bottom-0 right-0 block size-2.5 rounded-full bg-[var(--color-success)] ring-2 ring-[var(--color-card)]"
+                          aria-label="Online"
+                          title="Online"
+                        />
+                      )}
+                    </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
                         <p className={`flex items-center gap-1 truncate text-sm ${t.unread ? "font-semibold" : "font-medium"} ${isActive ? "text-[var(--color-primary-700)]" : ""}`}>
@@ -283,7 +543,8 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
                       </div>
                       <p className="text-[11px] text-[var(--color-muted-foreground)]">{t.withRole}</p>
                       <p className="mt-1 line-clamp-2 text-xs text-[var(--color-muted-foreground)]">
-                        {last?.body ?? "No messages yet"}
+                        {t.sentByMe && <span className="mr-1 text-[var(--color-primary-700)]">You:</span>}
+                        {t.preview}
                       </p>
                     </div>
                     {t.unread && (
@@ -302,13 +563,11 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
         {active ? (
           <ThreadView
             active={active}
+            messages={activeMessages}
             draft={draft}
             setDraft={setDraft}
             onSend={send}
-            onTogglePin={() => {
-              togglePinThread(active.id);
-              toast.info(active.pinned ? "Conversation unpinned" : "Conversation pinned");
-            }}
+            onTogglePin={() => togglePin(active.id)}
             emojiOpen={emojiOpen}
             setEmojiOpen={setEmojiOpen}
             fileRef={fileRef}
@@ -324,13 +583,14 @@ export function MessagesView({ initialThreadId }: { initialThreadId?: string } =
         )}
       </div>
 
-      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onStart={start} />
+      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} careTeam={careTeam} onStart={start} />
     </div>
   );
 }
 
 function ThreadView({
   active,
+  messages,
   draft,
   setDraft,
   onSend,
@@ -343,7 +603,8 @@ function ThreadView({
   pendingAttachments,
   onRemoveAttachment,
 }: {
-  active: MessageThread;
+  active: PatientThread;
+  messages: PatientMessage[];
   draft: string;
   setDraft: (v: string) => void;
   onSend: () => void;
@@ -356,16 +617,38 @@ function ThreadView({
   pendingAttachments: MessageAttachment[];
   onRemoveAttachment: (name: string) => void;
 }) {
-  const messages = active.messages;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [active.id, messages.length]);
   return (
-    <section className="flex min-w-0 flex-col bg-[var(--color-background)]">
+    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--color-background)]">
       <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-card)]/80 px-5 py-3 backdrop-blur">
-        <Avatar className="size-9">
-          <AvatarFallback>{initials(active.with)}</AvatarFallback>
-        </Avatar>
+        <div className="relative">
+          <Avatar className="size-9">
+            <AvatarFallback>{initials(active.with)}</AvatarFallback>
+          </Avatar>
+          {active.online && (
+            <span
+              className="absolute bottom-0 right-0 block size-2.5 rounded-full bg-[var(--color-success)] ring-2 ring-[var(--color-card)]"
+              aria-label="Online"
+              title="Online"
+            />
+          )}
+        </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">{active.with}</p>
-          <p className="text-[11px] text-[var(--color-muted-foreground)]">{active.withRole} · last active {relativeTime(active.lastActivity)}</p>
+          <p className="text-[11px] text-[var(--color-muted-foreground)]">
+            {active.withRole} ·{" "}
+            {active.online ? (
+              <span className="font-medium text-[var(--color-success)]">online</span>
+            ) : active.lastActiveAt ? (
+              <>last active {relativeTime(active.lastActiveAt)}</>
+            ) : (
+              <>offline</>
+            )}
+          </p>
         </div>
         <SecurityBadge variant="encrypted" className="hidden sm:inline-flex" />
         <SecurityBadge variant="audited" className="hidden md:inline-flex" />
@@ -374,7 +657,7 @@ function ThreadView({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         <div className="mb-4 flex items-center justify-center gap-3">
           <span className="h-px flex-1 bg-[var(--color-border)]" />
           <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)]">
@@ -389,8 +672,20 @@ function ThreadView({
           </p>
         ) : (
           <div className="space-y-3">
-            {messages.map((m) => (
-              <div key={m.id} className={`flex gap-2.5 ${m.from === "patient" ? "justify-end" : ""}`}>
+            {messages.map((m, i) => {
+              const prevKey = i > 0 ? dayKey(messages[i - 1].at) : null;
+              const thisKey = dayKey(m.at);
+              const showDate = prevKey !== thisKey;
+              return (
+              <div key={m.id}>
+              {showDate && (
+                <div className="my-3 flex items-center justify-center">
+                  <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)] shadow-[var(--shadow-soft)]">
+                    {dayLabel(m.at)}
+                  </span>
+                </div>
+              )}
+              <div className={`flex gap-2.5 ${m.from === "patient" ? "justify-end" : ""}`}>
                 {m.from === "clinician" && (
                   <Avatar className="size-7 shrink-0">
                     <AvatarFallback>{initials(active.with)}</AvatarFallback>
@@ -413,13 +708,33 @@ function ThreadView({
                       {m.attachments.map((a) => {
                         const isMine = m.from === "patient";
                         const Icon = a.kind === "image" ? ImageIcon : Paperclip;
+                        if (a.kind === "image" && a.dataUrl) {
+                          return (
+                            <a
+                              key={a.name}
+                              href={a.dataUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download={a.name}
+                              className="block overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-soft)] hover:opacity-90"
+                              title={`${a.name} · ${formatSize(a.size)}`}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={a.dataUrl} alt={a.name} className="max-h-56 max-w-[260px] object-contain" />
+                            </a>
+                          );
+                        }
                         return (
-                          <span
+                          <a
                             key={a.name}
-                            className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium shadow-[var(--shadow-soft)] ${
+                            href={a.dataUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            download={a.name}
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium shadow-[var(--shadow-soft)] transition-colors ${
                               isMine
-                                ? "border-[var(--color-primary)]/30 bg-[var(--color-primary)]/15 text-[var(--color-primary-700)]"
-                                : "border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-foreground)]"
+                                ? "border-[var(--color-primary)]/30 bg-[var(--color-primary)]/15 text-[var(--color-primary-700)] hover:bg-[var(--color-primary)]/25"
+                                : "border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-foreground)] hover:bg-[var(--color-muted)]/40"
                             }`}
                           >
                             <Icon className="size-3.5" />
@@ -427,7 +742,7 @@ function ThreadView({
                             <span className="font-mono text-[10px] text-[var(--color-muted-foreground)]">
                               {formatSize(a.size)}
                             </span>
-                          </span>
+                          </a>
                         );
                       })}
                     </div>
@@ -438,7 +753,9 @@ function ThreadView({
                   </div>
                 </div>
               </div>
-            ))}
+              </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -473,7 +790,7 @@ function ThreadView({
         )}
         <div className="relative rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-2">
           <Textarea
-            placeholder="Write a message… End-to-end encrypted, scanned for attachments."
+            placeholder="Write a message… End-to-end encrypted, audit-logged."
             className="min-h-12 resize-none border-0 bg-transparent px-3 py-2 focus:outline-none focus:ring-0"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -514,7 +831,7 @@ function ThreadView({
               <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-muted-foreground)]">
                 <Lock className="size-3" /> Encrypted
               </span>
-              <Button size="sm" onClick={onSend} disabled={!draft.trim()}>
+              <Button size="sm" onClick={onSend} disabled={!draft.trim() && pendingAttachments.length === 0}>
                 <Send /> Send
               </Button>
             </div>
@@ -528,15 +845,21 @@ function ThreadView({
 function ComposeDialog({
   open,
   onOpenChange,
+  careTeam,
   onStart,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  onStart: (recipient: (typeof CARE_TEAM)[number], message: string) => void;
+  careTeam: CareTeamMember[];
+  onStart: (recipient: CareTeamMember, message: string) => void;
 }) {
   const [recipientIdx, setRecipientIdx] = useState(0);
   const [message, setMessage] = useState("");
-  const recipients = useMemo(() => CARE_TEAM, []);
+  const recipients = useMemo(() => careTeam, [careTeam]);
+
+  useEffect(() => {
+    if (recipientIdx >= recipients.length) setRecipientIdx(0);
+  }, [recipients.length, recipientIdx]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -551,6 +874,7 @@ function ComposeDialog({
           className="space-y-4 pt-2"
           onSubmit={(e) => {
             e.preventDefault();
+            if (recipients.length === 0) return;
             onStart(recipients[recipientIdx], message);
             setMessage("");
             setRecipientIdx(0);
@@ -558,18 +882,24 @@ function ComposeDialog({
         >
           <div className="space-y-1.5">
             <Label htmlFor="recipient">Recipient</Label>
-            <select
-              id="recipient"
-              value={recipientIdx}
-              onChange={(e) => setRecipientIdx(Number(e.target.value))}
-              className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
-            >
-              {recipients.map((c, i) => (
-                <option key={c.name} value={i}>
-                  {c.name} · {c.role}
-                </option>
-              ))}
-            </select>
+            {recipients.length === 0 ? (
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                No clinicians in your care team yet. Book an appointment to get started.
+              </p>
+            ) : (
+              <select
+                id="recipient"
+                value={recipientIdx}
+                onChange={(e) => setRecipientIdx(Number(e.target.value))}
+                className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
+              >
+                {recipients.map((c, i) => (
+                  <option key={c.id} value={i}>
+                    {c.name} · {c.role}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="first-message">Message</Label>
@@ -585,7 +915,7 @@ function ComposeDialog({
             <DialogClose asChild>
               <Button type="button" variant="outline">Cancel</Button>
             </DialogClose>
-            <Button type="submit">
+            <Button type="submit" disabled={!message.trim() || recipients.length === 0}>
               <Send /> Start conversation
             </Button>
           </DialogFooter>
@@ -599,12 +929,14 @@ function EmptyInbox({
   onCompose,
   composeOpen,
   setComposeOpen,
+  careTeam,
   onStart,
 }: {
   onCompose: () => void;
   composeOpen: boolean;
   setComposeOpen: (v: boolean) => void;
-  onStart: (recipient: (typeof CARE_TEAM)[number], message: string) => void;
+  careTeam: CareTeamMember[];
+  onStart: (recipient: CareTeamMember, message: string) => void;
 }) {
   return (
     <>
@@ -614,11 +946,11 @@ function EmptyInbox({
         </div>
         <p className="text-sm font-semibold">No conversations yet</p>
         <p className="max-w-md text-xs text-[var(--color-muted-foreground)]">
-          Send a secure, encrypted message to anyone on your care team — clinicians, care coordinators, or your pharmacy.
+          Send a secure, encrypted message to anyone on your care team.
         </p>
         <Button onClick={onCompose} className="mt-1"><Plus /> Start a conversation</Button>
       </div>
-      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onStart={onStart} />
+      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} careTeam={careTeam} onStart={onStart} />
     </>
   );
 }

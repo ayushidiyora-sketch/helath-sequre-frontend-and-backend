@@ -39,29 +39,76 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { EmojiPicker } from "../../patient/messages/emoji-picker";
-import {
-  THREADS,
-  FLAG_META,
-  type ClinicianThread,
-  type ClinicianMessage,
-  type MsgAttachment,
-} from "./clinician-messages-data";
 
-// Assigned panel — recipients available when composing a new thread.
-const PATIENT_PANEL = [
-  { name: "Aarav Mehta", initials: "AM", mrn: "MRN-44118", role: "Patient · Cardiology panel" },
-  { name: "Riya Mehta", initials: "RM", mrn: "MRN-44119", role: "Patient · Endocrinology panel" },
-  { name: "Tarun Mehta", initials: "TM", mrn: "MRN-44120", role: "Patient · Cardiology panel" },
-  { name: "Aanya Verma", initials: "AV", mrn: "MRN-44211", role: "Patient · Internal Medicine panel" },
-  { name: "Kabir Joshi", initials: "KJ", mrn: "MRN-44309", role: "Patient · Radiology referral" },
-  { name: "Meera Singh", initials: "MS", mrn: "MRN-44402", role: "Patient · Cardiology panel" },
-  { name: "Ramesh Patel", initials: "RP", mrn: "CITY-001234", role: "Patient · Cardiology panel" },
-  { name: "Sai Iyer", initials: "SI", mrn: "MRN-44501", role: "Patient · Cardiology panel" },
-];
+// DB-backed thread shape derived from /api/messages/threads. Keeps the same
+// field names the old view used so the existing render code below works
+// unchanged. Pinning is UI-only (no DB column); attachments are UI-only too
+// (no DB rows yet).
+interface ClinicianThread {
+  id: string;            // otherUserId (patient UUID)
+  patient: string;
+  initials: string;
+  mrn: string;
+  role: string;
+  preview: string;
+  unread: number;
+  sentByMe: boolean;
+  lastActivity: string;  // ISO
+  online: boolean;
+  lastActiveAt: string | null;
+  pinned?: boolean;
+  messages: ClinicianMessage[];
+}
 
-// Locale-independent formatters so server and client agree byte-for-byte
-// during hydration. Node's default LC_ALL on this machine emits "PM" while
-// the browser emits "pm" — that mismatch broke hydration on /clinician/messages.
+interface ClinicianMessage {
+  id: string;
+  from: "clinician" | "patient";
+  body: string;
+  at: string;            // ISO
+  attachments?: MsgAttachment[];
+}
+
+interface MsgAttachment {
+  name: string;
+  size: number;
+  kind: "image" | "file";
+  mimeType: string;
+  /** data: URL — present for pending (just-attached) AND received attachments. */
+  dataUrl: string;
+}
+
+interface ApiThread {
+  otherUserId: string;
+  otherName: string;
+  otherInitials: string;
+  otherRole: string;
+  otherLastActiveAt: string | null;
+  otherOnline: boolean;
+  lastBody: string;
+  lastSentAt: string;
+  lastSenderRole: string;
+  unread: number;
+}
+
+interface ApiMessage {
+  id: string;
+  senderRole: string;
+  fromMe: boolean;
+  body: string;
+  sentAt: string;
+  attachments?: Array<{ name: string; mimeType: string; size: number; dataUrl: string }>;
+}
+
+interface PanelPatient {
+  id: string;
+  name: string;
+  initials: string;
+  mrn: string;
+  role: string | null;
+}
+
+// Locale-independent formatters — Node and the browser disagree on AM/PM
+// casing on this machine; hardcoding keeps hydration stable.
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function formatClock(date: Date): string {
@@ -96,15 +143,34 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: string } = {}) {
-  const search = useSearchParams();
-  const queryThread = search.get("thread") ?? initialThreadId ?? null;
+/** Local-day key for grouping (YYYY-MM-DD in browser tz). */
+function dayKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
-  // Local mutable copy so pinning/unread/messages persist across the session.
-  const [threads, setThreads] = useState<ClinicianThread[]>(() =>
-    THREADS.map((t) => ({ ...t, messages: [...t.messages] })),
-  );
+/** "Today" / "Yesterday" / "Mon, May 30, 2026" — WhatsApp-style day pill. */
+function dayLabel(iso: string): string {
+  const today = new Date();
+  const yest = new Date();
+  yest.setDate(today.getDate() - 1);
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const yestKey = `${yest.getFullYear()}-${String(yest.getMonth() + 1).padStart(2, "0")}-${String(yest.getDate()).padStart(2, "0")}`;
+  const k = dayKey(iso);
+  if (k === todayKey) return "Today";
+  if (k === yestKey) return "Yesterday";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+export function ClinicianMessagesView() {
+  const search = useSearchParams();
+  const queryThread = search.get("thread");
+
+  const [threads, setThreads] = useState<ClinicianThread[]>([]);
+  const [panel, setPanel] = useState<PanelPatient[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeMessages, setActiveMessages] = useState<ClinicianMessage[]>([]);
   const [tab, setTab] = useState<"inbox" | "pinned" | "all">("inbox");
   const [searchQuery, setSearchQuery] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
@@ -114,18 +180,143 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
   const [composeOpen, setComposeOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
+  // Local-only pinned set (no DB column).
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
 
-  // Pick an initial active thread.
+  // Lookup map: otherUserId → {mrn, role} so the inbox row matches the
+  // compose dialog's identity for the same patient.
+  const panelById = useMemo(() => {
+    const m = new Map<string, { mrn: string; role: string }>();
+    for (const p of panel) m.set(p.id, { mrn: p.mrn, role: `Patient${p.role ? ` · ${p.role}` : ""}` });
+    return m;
+  }, [panel]);
+
+  // Reload thread list + apply panel-derived enrichments.
+  const reloadThreads = async (preferOther?: string) => {
+    let data: { ok?: boolean; threads?: ApiThread[] } | null = null;
+    try {
+      const r = await fetch("/api/messages/threads", { cache: "no-store" });
+      data = await r.json();
+    } catch {
+      // Network blip or dev-server restart — leave the existing list visible
+      // and try again on the next tick.
+      return;
+    }
+    if (!data?.ok || !Array.isArray(data.threads)) return;
+    const shaped: ClinicianThread[] = (data.threads as ApiThread[]).map((t) => {
+      const meta = panelById.get(t.otherUserId);
+      return {
+        id: t.otherUserId,
+        patient: t.otherName,
+        initials: t.otherInitials,
+        mrn: meta?.mrn ?? "",
+        role: meta?.role ?? `Patient · ${t.otherRole}`,
+        preview: t.lastBody,
+        unread: t.unread,
+        sentByMe: t.lastSenderRole === "clinician",
+        lastActivity: t.lastSentAt,
+        online: t.otherOnline,
+        lastActiveAt: t.otherLastActiveAt,
+        pinned: pinnedIds.has(t.otherUserId),
+        messages: [],
+      };
+    });
+    setThreads(shaped);
+    if (preferOther) {
+      setActiveId(preferOther);
+    } else if (!activeId && shaped.length > 0) {
+      setActiveId((queryThread && shaped.find((t) => t.id === queryThread)?.id) ?? shaped[0].id);
+    }
+  };
+
+  // Fetch the patient panel once for MRN/role enrichment + compose dialog.
   useEffect(() => {
-    if (activeId && threads.some((t) => t.id === activeId)) return;
-    const target =
-      (queryThread && threads.find((t) => t.id === queryThread)?.id) ??
-      threads[0]?.id ??
-      null;
-    setActiveId(target);
-    if (target) markRead(target);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    fetch("/api/clinician/patients", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data?.ok || !Array.isArray(data.patients)) return;
+        setPanel(
+          (data.patients as Array<{ id: string; name: string; initials: string; mrn: string; role: string | null }>).map((p) => ({
+            id: p.id,
+            name: p.name,
+            initials: p.initials,
+            mrn: p.mrn,
+            role: p.role,
+          })),
+        );
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    void reloadThreads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelById.size]);
+
+  // Load messages whenever active thread changes.
+  useEffect(() => {
+    if (!activeId) {
+      setActiveMessages([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/messages?withUserId=${activeId}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const msgs: ClinicianMessage[] = (data.messages as ApiMessage[]).map((m) => ({
+          id: m.id,
+          from: m.senderRole === "clinician" ? "clinician" : "patient",
+          body: m.body,
+          at: m.sentAt,
+          attachments: (m.attachments ?? []).map((a) => ({
+            name: a.name,
+            size: a.size,
+            mimeType: a.mimeType,
+            kind: a.mimeType.startsWith("image/") ? "image" : "file",
+            dataUrl: a.dataUrl,
+          })),
+        }));
+        setActiveMessages(msgs);
+        // Decrement the unread badge locally; the server already stamped readAt.
+        setThreads((curr) => curr.map((t) => (t.id === activeId ? { ...t, unread: 0 } : t)));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeId]);
+
+  // Poll every 10s so inbound messages appear without manual refresh.
+  useEffect(() => {
+    const tick = setInterval(() => {
+      void reloadThreads();
+      if (activeId) {
+        fetch(`/api/messages?withUserId=${activeId}`, { cache: "no-store" })
+          .then((r) => r.json())
+          .then((data) => {
+            if (!data?.ok) return;
+            const msgs: ClinicianMessage[] = (data.messages as ApiMessage[]).map((m) => ({
+              id: m.id,
+              from: m.senderRole === "clinician" ? "clinician" : "patient",
+              body: m.body,
+              at: m.sentAt,
+              attachments: (m.attachments ?? []).map((a) => ({
+                name: a.name,
+                size: a.size,
+                mimeType: a.mimeType,
+                kind: a.mimeType.startsWith("image/") ? "image" : "file",
+                dataUrl: a.dataUrl,
+              })),
+            }));
+            setActiveMessages(msgs);
+          })
+          .catch(() => {});
+      }
+    }, 10_000);
+    return () => clearInterval(tick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, panelById.size]);
 
   const unreadTotal = threads.filter((t) => t.unread > 0).length;
 
@@ -135,12 +326,11 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
       if (tab === "pinned" && !t.pinned) return false;
       if (unreadOnly && t.unread === 0) return false;
       if (!q) return true;
-      const last = t.messages[t.messages.length - 1]?.body ?? "";
       return (
         t.patient.toLowerCase().includes(q) ||
         t.mrn.toLowerCase().includes(q) ||
         t.role.toLowerCase().includes(q) ||
-        last.toLowerCase().includes(q)
+        t.preview.toLowerCase().includes(q)
       );
     });
   }, [threads, tab, searchQuery, unreadOnly]);
@@ -149,35 +339,46 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
 
   function openThread(id: string) {
     setActiveId(id);
-    markRead(id);
-  }
-
-  function markRead(id: string) {
-    setThreads((curr) =>
-      curr.map((t) => (t.id === id ? { ...t, unread: 0, read: true } : t)),
-    );
   }
 
   function togglePin(id: string) {
-    let pinnedNow = false;
+    setPinnedIds((curr) => {
+      const next = new Set(curr);
+      const pinnedNow = !next.has(id);
+      if (pinnedNow) next.add(id);
+      else next.delete(id);
+      toast.info(pinnedNow ? "Conversation pinned" : "Conversation unpinned");
+      return next;
+    });
     setThreads((curr) =>
-      curr.map((t) => {
-        if (t.id !== id) return t;
-        pinnedNow = !t.pinned;
-        return { ...t, pinned: pinnedNow };
-      }),
+      curr.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)),
     );
-    toast.info(pinnedNow ? "Conversation pinned" : "Conversation unpinned");
   }
 
   function noteAttachment(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (f) {
+      if (f.size > 5 * 1024 * 1024) {
+        toast.error(`${f.name} is over 5 MB — pick a smaller file.`);
+        e.target.value = "";
+        return;
+      }
       const kind: MsgAttachment["kind"] = e.target === imageRef.current ? "image" : "file";
-      setPendingAttachments((curr) => [...curr, { name: f.name, size: f.size, kind }]);
-      toast.success("Attachment ready", {
-        description: `${f.name} · scanned · clean · will send with your next message`,
-      });
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        if (!dataUrl.startsWith("data:")) {
+          toast.error("Could not read the file.");
+          return;
+        }
+        setPendingAttachments((curr) => [
+          ...curr,
+          { name: f.name, size: f.size, kind, mimeType: f.type || "application/octet-stream", dataUrl },
+        ]);
+        toast.success("Attachment ready", { description: `${f.name} · sends with your next message` });
+      };
+      reader.onerror = () => toast.error("Could not read the file.");
+      reader.readAsDataURL(f);
     }
     e.target.value = "";
   }
@@ -186,61 +387,69 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
     setPendingAttachments((curr) => curr.filter((a) => a.name !== name));
   }
 
-  function send() {
+  async function send() {
     if (!active) return;
     const body = draft.trim();
-    const hasAtt = pendingAttachments.length > 0;
-    if (!body && !hasAtt) return;
-    const now = new Date().toISOString();
-    const msg: ClinicianMessage = {
-      id: `m-${Date.now()}`,
-      from: "clinician",
-      body,
-      at: now,
-      attachments: hasAtt ? pendingAttachments : undefined,
-    };
-    setThreads((curr) =>
-      curr.map((t) =>
-        t.id === active.id
-          ? { ...t, messages: [...t.messages, msg], lastActivity: now, sentByMe: true, read: true }
-          : t,
-      ),
-    );
+    const atts = pendingAttachments;
+    if (!body && atts.length === 0) return;
+    const savedBody = draft;
+    const savedAtts = atts;
     setDraft("");
     setPendingAttachments([]);
     setEmojiOpen(false);
-    toast.success("Message sent", { description: `${active.patient} · audit-logged` });
+    try {
+      const r = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toUserId: active.id,
+          body,
+          attachments: atts.map((a) => ({ name: a.name, mimeType: a.mimeType, size: a.size, dataUrl: a.dataUrl })),
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not send message.");
+        setDraft(savedBody);
+        setPendingAttachments(savedAtts);
+        return;
+      }
+      toast.success("Message sent", { description: `${active.patient} · audit-logged` });
+      const optimistic: ClinicianMessage = {
+        id: data.message.id,
+        from: "clinician",
+        body,
+        at: data.message.sentAt,
+        attachments: atts,
+      };
+      setActiveMessages((curr) => [...curr, optimistic]);
+      await reloadThreads();
+    } catch {
+      toast.error("Network error.");
+      setDraft(savedBody);
+      setPendingAttachments(savedAtts);
+    }
   }
 
-  function startThread(recipient: (typeof PATIENT_PANEL)[number], message: string) {
+  async function startThread(recipient: PanelPatient, message: string) {
     const body = message.trim() || "Hello";
-    const now = new Date().toISOString();
-    const id = `t-new-${Date.now()}`;
-    const thread: ClinicianThread = {
-      id,
-      patient: recipient.name,
-      initials: recipient.initials,
-      mrn: recipient.mrn,
-      role: recipient.role,
-      preview: body,
-      time: "Just now",
-      unread: 0,
-      sentByMe: true,
-      read: true,
-      lastActivity: now,
-      messages: [
-        {
-          id: `m-${Date.now()}`,
-          from: "clinician",
-          body,
-          at: now,
-        },
-      ],
-    };
-    setThreads((curr) => [thread, ...curr]);
-    setActiveId(id);
-    setComposeOpen(false);
-    toast.success("Conversation started", { description: `${recipient.name} · audit-logged` });
+    try {
+      const r = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toUserId: recipient.id, body }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not start conversation.");
+        return;
+      }
+      toast.success("Conversation started", { description: `${recipient.name} · audit-logged` });
+      setComposeOpen(false);
+      await reloadThreads(recipient.id);
+    } catch {
+      toast.error("Network error.");
+    }
   }
 
   return (
@@ -251,7 +460,7 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
           <div className="border-b border-[var(--color-border)] p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-base font-semibold">Messages</h2>
-    <Button size="icon-sm" variant="outline" aria-label="New message" onClick={() => setComposeOpen(true)}>
+              <Button size="icon-sm" variant="outline" aria-label="New message" onClick={() => setComposeOpen(true)}>
                 <Plus />
               </Button>
             </div>
@@ -320,13 +529,13 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
           <ul className="flex-1 overflow-y-auto p-2">
             {visible.length === 0 && (
               <li className="px-3 py-8 text-center text-xs text-[var(--color-muted-foreground)]">
-                No conversations match.
+                {threads.length === 0
+                  ? "No conversations yet. Click + to message a patient on your panel."
+                  : "No conversations match."}
               </li>
             )}
             {visible.map((t) => {
-              const last = t.messages[t.messages.length - 1];
               const isActive = t.id === active?.id;
-              const flagMeta = t.flag ? FLAG_META[t.flag] : null;
               return (
                 <li key={t.id}>
                   <button
@@ -337,9 +546,18 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
                         : "hover:bg-[var(--color-muted)]/50"
                     }`}
                   >
-                    <Avatar className="size-10 shrink-0">
-                      <AvatarFallback>{t.initials}</AvatarFallback>
-                    </Avatar>
+                    <div className="relative shrink-0">
+                      <Avatar className="size-10">
+                        <AvatarFallback>{t.initials}</AvatarFallback>
+                      </Avatar>
+                      {t.online && (
+                        <span
+                          className="absolute bottom-0 right-0 block size-2.5 rounded-full bg-[var(--color-success)] ring-2 ring-[var(--color-card)]"
+                          aria-label="Online"
+                          title="Online"
+                        />
+                      )}
+                    </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
                         <p
@@ -356,19 +574,16 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
                           {relativeTime(t.lastActivity)}
                         </span>
                       </div>
-                      <p className="flex items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
-                        <span className="font-mono">{t.mrn}</span>
-                        {flagMeta && (
-                          <Badge variant={flagMeta.variant} size="sm" dot>
-                            {flagMeta.label}
-                          </Badge>
-                        )}
-                      </p>
+                      {t.mrn && (
+                        <p className="flex items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
+                          <span className="font-mono">{t.mrn}</span>
+                        </p>
+                      )}
                       <p className="mt-1 line-clamp-2 text-xs text-[var(--color-muted-foreground)]">
                         {t.sentByMe && (
                           <span className="mr-1 text-[var(--color-primary-700)]">You:</span>
                         )}
-                        {last?.body ?? "No messages yet"}
+                        {t.preview}
                       </p>
                     </div>
                     {t.unread > 0 && (
@@ -387,6 +602,7 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
         {active ? (
           <ThreadPane
             active={active}
+            messages={activeMessages}
             draft={draft}
             setDraft={setDraft}
             onSend={send}
@@ -404,14 +620,19 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
             <div className="text-center">
               <MessagesSquare className="mx-auto size-8 text-[var(--color-muted-foreground)]" />
               <p className="mt-3 text-sm text-[var(--color-muted-foreground)]">
-                Pick a conversation from the list.
+                Pick a conversation from the list, or compose a new one.
               </p>
             </div>
           </section>
         )}
       </div>
 
-      <ComposeDialog open={composeOpen} onOpenChange={setComposeOpen} onStart={startThread} />
+      <ComposeDialog
+        open={composeOpen}
+        onOpenChange={setComposeOpen}
+        panel={panel}
+        onStart={startThread}
+      />
     </div>
   );
 }
@@ -419,18 +640,25 @@ export function ClinicianMessagesView({ initialThreadId }: { initialThreadId?: s
 function ComposeDialog({
   open,
   onOpenChange,
+  panel,
   onStart,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  onStart: (recipient: (typeof PATIENT_PANEL)[number], message: string) => void;
+  panel: PanelPatient[];
+  onStart: (recipient: PanelPatient, message: string) => void;
 }) {
   const [recipientIdx, setRecipientIdx] = useState(0);
   const [message, setMessage] = useState("");
 
+  useEffect(() => {
+    if (recipientIdx >= panel.length) setRecipientIdx(0);
+  }, [panel.length, recipientIdx]);
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    onStart(PATIENT_PANEL[recipientIdx], message);
+    if (panel.length === 0) return;
+    onStart(panel[recipientIdx], message);
     setMessage("");
     setRecipientIdx(0);
   }
@@ -448,18 +676,24 @@ function ComposeDialog({
         <form className="space-y-4 py-2" onSubmit={submit}>
           <div className="space-y-1.5">
             <Label htmlFor="compose-recipient">Recipient</Label>
-            <select
-              id="compose-recipient"
-              value={recipientIdx}
-              onChange={(e) => setRecipientIdx(Number(e.target.value))}
-              className="h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
-            >
-              {PATIENT_PANEL.map((p, i) => (
-                <option key={p.mrn} value={i}>
-                  {p.name} · {p.mrn}
-                </option>
-              ))}
-            </select>
+            {panel.length === 0 ? (
+              <p className="text-xs text-[var(--color-muted-foreground)]">
+                No patients on your panel yet. Ask your Org Admin to assign patients to you.
+              </p>
+            ) : (
+              <select
+                id="compose-recipient"
+                value={recipientIdx}
+                onChange={(e) => setRecipientIdx(Number(e.target.value))}
+                className="h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
+              >
+                {panel.map((p, i) => (
+                  <option key={p.id} value={i}>
+                    {p.name} · {p.mrn}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -478,7 +712,7 @@ function ComposeDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!message.trim()}>
+            <Button type="submit" disabled={!message.trim() || panel.length === 0}>
               <Send /> Start conversation
             </Button>
           </DialogFooter>
@@ -490,6 +724,7 @@ function ComposeDialog({
 
 function ThreadPane({
   active,
+  messages,
   draft,
   setDraft,
   onSend,
@@ -503,6 +738,7 @@ function ThreadPane({
   onRemoveAttachment,
 }: {
   active: ClinicianThread;
+  messages: ClinicianMessage[];
   draft: string;
   setDraft: (v: string) => void;
   onSend: () => void;
@@ -515,27 +751,43 @@ function ThreadPane({
   pendingAttachments: MsgAttachment[];
   onRemoveAttachment: (name: string) => void;
 }) {
-  const messages = active.messages;
-  const flagMeta = active.flag ? FLAG_META[active.flag] : null;
-
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Auto-scroll to bottom whenever the conversation or message count changes.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [active.id, messages.length]);
   return (
-    <section className="flex min-w-0 flex-col bg-[var(--color-background)]">
+    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--color-background)]">
       <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-card)]/80 px-5 py-3 backdrop-blur">
-        <Avatar className="size-9">
-          <AvatarFallback>{active.initials}</AvatarFallback>
-        </Avatar>
+        <div className="relative">
+          <Avatar className="size-9">
+            <AvatarFallback>{active.initials}</AvatarFallback>
+          </Avatar>
+          {active.online && (
+            <span
+              className="absolute bottom-0 right-0 block size-2.5 rounded-full bg-[var(--color-success)] ring-2 ring-[var(--color-card)]"
+              aria-label="Online"
+              title="Online"
+            />
+          )}
+        </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold">{active.patient}</p>
-            <span className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{active.mrn}</span>
-            {flagMeta && (
-              <Badge variant={flagMeta.variant} size="sm" dot>
-                {flagMeta.label}
-              </Badge>
+            {active.mrn && (
+              <span className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{active.mrn}</span>
             )}
           </div>
           <p className="text-[11px] text-[var(--color-muted-foreground)]">
-            {active.role} · last active {relativeTime(active.lastActivity)}
+            {active.role} ·{" "}
+            {active.online ? (
+              <span className="font-medium text-[var(--color-success)]">online</span>
+            ) : active.lastActiveAt ? (
+              <>last active {relativeTime(active.lastActiveAt)}</>
+            ) : (
+              <>offline</>
+            )}
           </p>
         </div>
         <SecurityBadge variant="encrypted" className="hidden sm:inline-flex" />
@@ -554,7 +806,7 @@ function ThreadPane({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         <div className="mb-4 flex items-center justify-center gap-3">
           <span className="h-px flex-1 bg-[var(--color-border)]" />
           <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)]">
@@ -569,8 +821,20 @@ function ThreadPane({
           </p>
         ) : (
           <div className="space-y-3">
-            {messages.map((m) => (
-              <div key={m.id} className={`flex gap-2.5 ${m.from === "clinician" ? "justify-end" : ""}`}>
+            {messages.map((m, i) => {
+              const prevKey = i > 0 ? dayKey(messages[i - 1].at) : null;
+              const thisKey = dayKey(m.at);
+              const showDate = prevKey !== thisKey;
+              return (
+              <div key={m.id}>
+              {showDate && (
+                <div className="my-3 flex items-center justify-center">
+                  <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)] shadow-[var(--shadow-soft)]">
+                    {dayLabel(m.at)}
+                  </span>
+                </div>
+              )}
+              <div className={`flex gap-2.5 ${m.from === "clinician" ? "justify-end" : ""}`}>
                 {m.from === "patient" && (
                   <Avatar className="size-7 shrink-0">
                     <AvatarFallback>{active.initials}</AvatarFallback>
@@ -593,13 +857,33 @@ function ThreadPane({
                       {m.attachments.map((a) => {
                         const isMine = m.from === "clinician";
                         const Icon = a.kind === "image" ? ImageIcon : Paperclip;
+                        if (a.kind === "image" && a.dataUrl) {
+                          return (
+                            <a
+                              key={a.name}
+                              href={a.dataUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download={a.name}
+                              className="block overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-soft)] hover:opacity-90"
+                              title={`${a.name} · ${formatSize(a.size)}`}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={a.dataUrl} alt={a.name} className="max-h-56 max-w-[260px] object-contain" />
+                            </a>
+                          );
+                        }
                         return (
-                          <span
+                          <a
                             key={a.name}
-                            className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium shadow-[var(--shadow-soft)] ${
+                            href={a.dataUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            download={a.name}
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium shadow-[var(--shadow-soft)] transition-colors ${
                               isMine
-                                ? "border-[var(--color-primary)]/30 bg-[var(--color-primary)]/15 text-[var(--color-primary-700)]"
-                                : "border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-foreground)]"
+                                ? "border-[var(--color-primary)]/30 bg-[var(--color-primary)]/15 text-[var(--color-primary-700)] hover:bg-[var(--color-primary)]/25"
+                                : "border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-foreground)] hover:bg-[var(--color-muted)]/40"
                             }`}
                           >
                             <Icon className="size-3.5" />
@@ -607,7 +891,7 @@ function ThreadPane({
                             <span className="font-mono text-[10px] text-[var(--color-muted-foreground)]">
                               {formatSize(a.size)}
                             </span>
-                          </span>
+                          </a>
                         );
                       })}
                     </div>
@@ -624,7 +908,9 @@ function ThreadPane({
                   </div>
                 </div>
               </div>
-            ))}
+              </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -720,3 +1006,8 @@ function ThreadPane({
     </section>
   );
 }
+
+// Used by the dynamic-recipient enrichment map.
+// (Badge/Paperclip/X imports kept for the attachment UI even though
+// no attachments are persisted yet.)
+void Badge;

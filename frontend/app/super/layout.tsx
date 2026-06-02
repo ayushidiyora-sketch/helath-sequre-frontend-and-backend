@@ -16,6 +16,11 @@ import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/ro
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
 
+interface MeResponse {
+  ok: boolean;
+  user?: { uid: string; name: string; email: string; role: string; org: string | null; initials: string };
+}
+
 const UTILITY: NavItem[] = [
   { href: "/super/notifications", label: "Notifications", icon: Bell },
   { href: "/super/settings", label: "Settings", icon: Settings },
@@ -23,6 +28,7 @@ const UTILITY: NavItem[] = [
 
 export default function SuperLayout({ children }: { children: React.ReactNode }) {
   const [tenantCount, setTenantCount] = useState<number | undefined>(undefined);
+  const [me, setMe] = useState<MeResponse["user"] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,6 +40,12 @@ export default function SuperLayout({ children }: { children: React.ReactNode })
       .catch(() => {
         /* leave count undefined; sidebar omits the badge */
       });
+    fetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: MeResponse | null) => {
+        if (!cancelled && data?.ok) setMe(data.user ?? null);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -68,7 +80,16 @@ export default function SuperLayout({ children }: { children: React.ReactNode })
       <RoleSidebar groups={groups} utility={UTILITY} />
       <div className="flex min-w-0 flex-1 flex-col">
         <RoleHeader
-          user={{ name: "Ayushi Diyora", subtitle: "Super Admin · Sensussoft", initials: "AD", email: "ayushi.diyora@sensussoft.com" }}
+          user={
+            me
+              ? {
+                  name: me.name,
+                  subtitle: me.org ? `${me.role} · ${me.org}` : me.role,
+                  initials: me.initials,
+                  email: me.email,
+                }
+              : { name: "Loading…", subtitle: "Super Admin", initials: "··", email: "" }
+          }
           sessionMins={9}
           searchPlaceholder="Search tenants, incidents, security events…"
           settingsHref="/super/settings"

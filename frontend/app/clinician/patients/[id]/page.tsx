@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Stethoscope,
   Calendar,
+  CalendarPlus,
   Phone,
   Mail,
   Beaker,
@@ -33,6 +34,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Input, Label, Textarea } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ConsentDeniedCard } from "@/components/shared/consent-denied-card";
 import {
@@ -117,6 +127,45 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
     void reloadRxs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // DB-backed appointments for this patient — feeds the EncounterCard today /
+  // and is refetched after Add-appointment + status-mark actions.
+  interface DbAppt {
+    id: string;
+    startsAt: string;
+    date: string;        // YYYY-MM-DD local
+    time: string;        // "9:30 AM"
+    durationMinutes: number;
+    status: string;
+    mode: "in-person" | "telehealth";
+    notes: string | null;
+  }
+  const [dbAppts, setDbAppts] = useState<DbAppt[]>([]);
+  const [bookOpen, setBookOpen] = useState(false);
+  const reloadAppts = async () => {
+    const r = await fetch(`/api/clinician/appointments`, { cache: "no-store" });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data?.ok || !Array.isArray(data.appointments)) return;
+    setDbAppts(
+      (data.appointments as Array<DbAppt & { patientEmail: string | null }>)
+        .filter((a) => a.patientEmail && apiPatientEmailMatch(a.patientEmail))
+        .map(({ patientEmail: _drop, ...rest }) => { void _drop; return rest; }),
+    );
+  };
+  function apiPatientEmailMatch(email: string): boolean {
+    // Patient identity comes from the chart's local store OR /api/clinician/patients/[id].
+    // We compare by email since appointments are stored with patientEmail, not patientId.
+    const candidates = [
+      state.assignedPatients.find((p) => p.id === id)?.email,
+      apiPatient?.email,
+    ].filter(Boolean) as string[];
+    return candidates.some((e) => e.toLowerCase() === email.toLowerCase());
+  }
+  useEffect(() => {
+    void reloadAppts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, state.assignedPatients.length, apiPatient]);
 
   // Poll DB for this clinician's consent-request decisions on this patient.
   // When the patient approves on /patient/consents, the next tick reconciles
@@ -207,7 +256,37 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
   if (!patient) return <PatientNotFound id={id} />;
 
   const myAppointments = state.appointments.filter((a) => a.patientId === patient.id);
-  const todayAppointment = myAppointments.find((a) => a.date === new Date().toISOString().slice(0, 10) && a.status !== "completed" && a.status !== "cancelled");
+  // Local Y-M-D — toISOString() compares against UTC and misidentifies "today"
+  // for any timezone east of UTC after local midnight but before UTC midnight.
+  const _now = new Date();
+  const _todayIso = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}-${String(_now.getDate()).padStart(2, "0")}`;
+  // Prefer DB-backed today's appointment if one exists for this patient; fall
+  // back to the local-store version for demo/dev paths.
+  const dbToday = dbAppts.find(
+    (a) => a.date === _todayIso && a.status !== "completed" && a.status !== "cancelled" && a.status !== "no_show",
+  );
+  const todayAppointmentDb: ClinicianAppointment | undefined = dbToday
+    ? {
+        id: dbToday.id,
+        patientId: patient.id,
+        date: dbToday.date,
+        time: dbToday.time,
+        durationMinutes: dbToday.durationMinutes,
+        mode: dbToday.mode,
+        status:
+          dbToday.status === "completed"
+            ? "completed"
+            : dbToday.status === "no_show"
+              ? "no-show"
+              : dbToday.status === "cancelled"
+                ? "cancelled"
+                : "confirmed",
+        reason: dbToday.notes ?? "Visit",
+      }
+    : undefined;
+  const todayAppointment =
+    todayAppointmentDb ??
+    myAppointments.find((a) => a.date === _todayIso && a.status !== "completed" && a.status !== "cancelled");
   const myNotes = state.notes.filter((n) => n.patientId === patient.id);
   const myDocs = state.documents.filter((d) => d.patientId === patient.id);
 
@@ -260,6 +339,9 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => setBookOpen(true)}>
+              <CalendarPlus /> Add appointment
+            </Button>
             <Button asChild size="sm">
               <Link href={`/clinician/notes/new?patient=${patient.id}`}><Plus /> SOAP note</Link>
             </Button>
@@ -279,12 +361,46 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
       {todayAppointment && (
         <EncounterCard
           appt={todayAppointment}
-          onStatus={(status) => {
+          onStatus={async (status) => {
+            // If the encounter is the DB-backed one, persist to Postgres so
+            // marks survive refresh + reflect across roles.
+            if (todayAppointmentDb && todayAppointment.id === todayAppointmentDb.id) {
+              try {
+                const r = await fetch(`/api/clinician/appointments/${todayAppointment.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status }),
+                });
+                const data = await r.json();
+                if (!r.ok || !data?.ok) {
+                  toast.error(data?.error ?? "Could not update appointment.");
+                  return;
+                }
+                toast.success(`Marked ${status.replace("-", " ")}`, {
+                  description: `${patient.name} · ${todayAppointment.time}${data.persisted ? " · audit-logged" : " · UI-only"}`,
+                });
+                if (data.persisted) await reloadAppts();
+              } catch {
+                toast.error("Network error.");
+              }
+              return;
+            }
+            // Local-store appointment — keep the legacy demo path.
             setAppointmentStatus(todayAppointment.id, status);
             toast.success(`Marked ${status.replace("-", " ")}`, { description: `${patient.name} · ${todayAppointment.time}` });
           }}
         />
       )}
+
+      <AddAppointmentDialog
+        open={bookOpen}
+        onOpenChange={setBookOpen}
+        patientId={id}
+        patientName={patient.name}
+        onCreated={async () => {
+          await reloadAppts();
+        }}
+      />
 
       {pending && <PendingRequestBanner request={pending} />}
 
@@ -924,6 +1040,158 @@ function PatientNotFound({ id }: { id: string }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add-appointment dialog — clinician books for an assigned patient.
+// ---------------------------------------------------------------------------
+
+function todayLocalIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function AddAppointmentDialog({
+  open,
+  onOpenChange,
+  patientId,
+  patientName,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  patientId: string;
+  patientName: string;
+  onCreated: () => void | Promise<void>;
+}) {
+  const [date, setDate] = useState<string>(todayLocalIso());
+  const [time, setTime] = useState<string>("10:00");
+  const [duration, setDuration] = useState<number>(30);
+  const [mode, setMode] = useState<"in-person" | "telehealth">("in-person");
+  const [notes, setNotes] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setDate(todayLocalIso());
+    setTime("10:00");
+    setDuration(30);
+    setMode("in-person");
+    setNotes("");
+  }, [open]);
+
+  async function submit() {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/clinician/appointments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientId, date, time, durationMinutes: duration, mode, notes }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not create appointment.");
+        return;
+      }
+      toast.success("Appointment booked", { description: `${patientName} · ${date} ${time}` });
+      onOpenChange(false);
+      await onCreated();
+    } catch {
+      toast.error("Network error.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="inline-flex items-center gap-2">
+            <CalendarPlus className="size-5 text-[var(--color-primary-700)]" /> Add appointment · {patientName}
+          </DialogTitle>
+          <DialogDescription>
+            Book a visit. The patient will see it on their /patient/appointments page.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-date">Date</Label>
+              <Input id="appt-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} min={todayLocalIso()} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-time">Time (24h)</Label>
+              <Input id="appt-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} step={300} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-duration">Duration · min</Label>
+              <Input
+                id="appt-duration"
+                type="number"
+                min={5}
+                max={240}
+                value={duration}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (!Number.isFinite(v)) return;
+                  setDuration(Math.min(240, Math.max(5, Math.round(v))));
+                }}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Mode</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mode === "in-person" ? "default" : "outline"}
+                  className="flex-1"
+                  onClick={() => setMode("in-person")}
+                >
+                  In-person
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mode === "telehealth" ? "default" : "outline"}
+                  className="flex-1"
+                  onClick={() => setMode("telehealth")}
+                >
+                  Telehealth
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="appt-notes">Notes (optional)</Label>
+            <Textarea
+              id="appt-notes"
+              rows={2}
+              placeholder="Reason for visit / pre-visit instructions"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? "Booking…" : "Book appointment"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

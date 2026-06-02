@@ -1,13 +1,16 @@
-import { Suspense, use } from "react";
+import { Suspense } from "react";
 import { MessagesView } from "../messages-view";
 
-/** Deep-link entry — picks the thread named by the URL param and renders the
- *  same inbox view, so users can bookmark a conversation. */
-export default function MessageThreadPage({ params }: { params: Promise<{ threadId: string }> }) {
-  const { threadId } = use(params);
+/**
+ * Deep-link entry — opens the inbox. The legacy `threadId` route param is
+ * currently ignored; the DB-backed view auto-selects the most-recent thread,
+ * and `/patient/messages?thread=<otherUserId>` can target a specific
+ * conversation when needed.
+ */
+export default function MessageThreadPage() {
   return (
     <Suspense fallback={null}>
-      <MessagesView initialThreadId={threadId} />
+      <MessagesView />
     </Suspense>
   );
 }

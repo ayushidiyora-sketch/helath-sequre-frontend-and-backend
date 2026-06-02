@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
@@ -32,45 +32,26 @@ import {
 
 interface AuditEvent {
   id: string;
-  t: string;
+  ts: string;
+  time: string;
   actor: string;
   role: string;
   action: string;
   resource: string;
   status: "success" | "denied" | "failure";
   ip: string;
-  reason?: string;
-  flag?: string;
+  flag?: "anomaly";
   sessionId: string;
 }
 
-/** Base event templates — cycled to build a realistic, paginatable ledger. */
-const BASE: Omit<AuditEvent, "id" | "t">[] = [
-  { actor: "priya.shah@citygeneral", role: "Clinician", action: "records.read", resource: "rec-lp-0518", status: "success", ip: "10.0.0.42", sessionId: "sess_4f12a3" },
-  { actor: "priya.shah@citygeneral", role: "Clinician", action: "records.read", resource: "rec-img-0501", status: "denied", ip: "10.0.0.42", reason: "consent_revoked", sessionId: "sess_4f12a3" },
-  { actor: "riya.mehta@portal", role: "Patient", action: "consent.revoke", resource: "cns_8a90c", status: "success", ip: "203.0.113.42", sessionId: "sess_a7b4d2" },
-  { actor: "compliance@citygeneral", role: "Compliance", action: "report.export", resource: "rpt_access_q2", status: "success", ip: "10.0.0.50", sessionId: "sess_compl_01" },
-  { actor: "aarav.mehta@portal", role: "Patient", action: "records.download", resource: "rec-lp-0518", status: "success", ip: "203.0.113.42", sessionId: "sess_a7b4d2" },
-  { actor: "auditor@regulator", role: "Auditor", action: "audit.view", resource: "window_24h", status: "success", ip: "203.0.113.99", sessionId: "sess_aud_12" },
-  { actor: "maya.iyer@citygeneral", role: "Org Admin", action: "user.invite", resource: "usr_x12", status: "success", ip: "10.0.0.21", sessionId: "sess_admin_44" },
-  { actor: "k.patel@citygeneral", role: "Clinician", action: "documents.download_bulk", resource: "32 docs", status: "success", ip: "198.51.100.7", flag: "anomaly", sessionId: "sess_kpatel_99" },
-  { actor: "auditor@regulator", role: "Auditor", action: "auth.mfa_failure", resource: "—", status: "failure", ip: "203.0.113.99", flag: "anomaly", sessionId: "sess_aud_12" },
-  { actor: "system", role: "System", action: "notification.send", resource: "reminder_T-24h", status: "success", ip: "—", sessionId: "sess_system" },
-];
+interface Stats {
+  events24h: number;
+  denied: number;
+  failures: number;
+  anomalies: number;
+}
 
-const TOTAL = 200;
 const PAGE_SIZE = 10;
-
-/** Build a descending-timestamp ledger of TOTAL synthetic events. */
-const EVENTS: AuditEvent[] = Array.from({ length: TOTAL }, (_, i) => {
-  const base = BASE[i % BASE.length];
-  const startSec = 12 * 3600 + 4 * 60 + 18; // 12:04:18
-  const sec = ((startSec - i * 47) % 86400 + 86400) % 86400;
-  const hh = String(Math.floor(sec / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
-  const ss = String(sec % 60).padStart(2, "0");
-  return { ...base, id: `evt_${(35000 - i).toString(16)}`, t: `${hh}:${mm}:${ss}` };
-});
 
 type AuditStatus = "success" | "denied" | "failure";
 
@@ -87,11 +68,26 @@ function AuditLogsPageInner() {
   const router = useRouter();
   const sessionFilter = params.get("session");
 
+  const [events, setEvents] = useState<AuditEvent[] | null>(null);
+  const [stats, setStats] = useState<Stats>({ events24h: 0, denied: 0, failures: 0, anomalies: 0 });
   const [query, setQuery] = useState("");
   const [actionFilter, setActionFilter] = useState("All actions");
   const [statusFilters, setStatusFilters] = useState<AuditStatus[]>([]);
   const [anomalyOnly, setAnomalyOnly] = useState(false);
   const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/compliance/audit-logs", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        if (Array.isArray(data.events)) setEvents(data.events as AuditEvent[]);
+        if (data.stats) setStats(data.stats as Stats);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   function clearSession() {
     router.push("/compliance/audit-logs");
@@ -108,7 +104,8 @@ function AuditLogsPageInner() {
   }
 
   const q = query.trim().toLowerCase();
-  const filtered = EVENTS.filter((e) => {
+  const all = events ?? [];
+  const filtered = all.filter((e) => {
     if (sessionFilter && e.sessionId !== sessionFilter) return false;
     if (actionFilter !== "All actions" && !e.action.startsWith(actionFilter.replace(".*", "")))
       return false;
@@ -137,7 +134,7 @@ function AuditLogsPageInner() {
       <PageHeader
         eyebrow="Audit ledger"
         title="All events · append-only"
-        description="Append-only ledger with rolling cryptographic checksums. Filterable by actor, action, resource, IP, and time window."
+        description="Append-only ledger derived from real consent decisions, appointments, prescriptions, notes, messages, document uploads, MFA failures, and session creations in your tenant."
         actions={
           <>
             <DropdownMenu>
@@ -188,10 +185,10 @@ function AuditLogsPageInner() {
 
       <div className="grid gap-3 sm:grid-cols-4">
         {[
-          { label: "Events / 24h", value: "12,489", icon: ScrollText },
-          { label: "Denied access", value: 38, icon: XCircle, danger: true },
-          { label: "Failures", value: 14, icon: AlertCircle, warn: true },
-          { label: "Anomalies flagged", value: 4, icon: AlertCircle, warn: true },
+          { label: "Events / 24h", value: stats.events24h.toLocaleString(), icon: ScrollText },
+          { label: "Denied access", value: stats.denied, icon: XCircle, danger: true },
+          { label: "Failures", value: stats.failures, icon: AlertCircle, warn: true },
+          { label: "Anomalies flagged", value: stats.anomalies, icon: AlertCircle, warn: true },
         ].map((s) => {
           const Icon = s.icon;
           return (
@@ -219,23 +216,25 @@ function AuditLogsPageInner() {
           onChange={(e) => { setActionFilter(e.target.value); setPage(0); }}
         >
           <option>All actions</option>
-          <option>records.*</option>
           <option>consent.*</option>
-          <option>auth.*</option>
+          <option>appointment.*</option>
+          <option>prescription.*</option>
+          <option>note.*</option>
+          <option>message.*</option>
           <option>documents.*</option>
+          <option>auth.*</option>
         </select>
-        <select className="h-10 rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm">
+        <select className="h-10 rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm" defaultValue="Last 30 days">
           <option>Last 24 hours</option>
           <option>Last 7 days</option>
           <option>Last 30 days</option>
-          <option>Custom…</option>
         </select>
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
         <div className="flex items-center justify-between border-b border-[var(--color-border)] px-5 py-3">
           <span className="inline-flex items-center gap-2 text-xs font-medium text-[var(--color-muted-foreground)]">
-            <Sparkles className="size-3.5 text-[var(--color-primary)]" /> Streaming · 12 events in the last 60 s
+            <Sparkles className="size-3.5 text-[var(--color-primary)]" /> Live · {filtered.length} events
           </span>
           <SecurityBadge variant="audited" label="Append-only" />
         </div>
@@ -252,16 +251,25 @@ function AuditLogsPageInner() {
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--color-border)]">
-            {visible.length === 0 && (
+            {events === null && (
               <tr>
                 <td colSpan={6} className="px-4 py-10 text-center font-sans text-sm text-[var(--color-muted-foreground)]">
-                  No audit events match your search.
+                  Loading audit events…
+                </td>
+              </tr>
+            )}
+            {events !== null && visible.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-4 py-10 text-center font-sans text-sm text-[var(--color-muted-foreground)]">
+                  {all.length === 0
+                    ? "No audit events in this tenant yet — events appear here as consent decisions, appointments, prescriptions, messages, and uploads land in the system."
+                    : "No audit events match your search."}
                 </td>
               </tr>
             )}
             {visible.map((e) => (
               <tr key={e.id} className="text-xs hover:bg-[var(--color-muted)]/30">
-                <td className="px-4 py-3 text-[var(--color-muted-foreground)]">{e.t}</td>
+                <td className="px-4 py-3 text-[var(--color-muted-foreground)]">{e.time}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 font-sans">
                     <span className="truncate font-medium">{e.actor}</span>
@@ -278,7 +286,7 @@ function AuditLogsPageInner() {
                 <td className="px-4 py-3 text-right">
                   <div className="inline-flex items-center gap-1.5 font-sans">
                     {e.status === "success" && <Badge variant="success" size="sm" dot>ok</Badge>}
-                    {e.status === "denied" && <Badge variant="danger" size="sm" title={e.reason}>denied</Badge>}
+                    {e.status === "denied" && <Badge variant="danger" size="sm">denied</Badge>}
                     {e.status === "failure" && <Badge variant="warning" size="sm">failure</Badge>}
                     {e.flag === "anomaly" && <Badge variant="warning" size="sm" dot>anomaly</Badge>}
                     <Link href={`/compliance/audit-logs/${e.id}`} className="rounded-md p-1 hover:bg-[var(--color-muted)]">

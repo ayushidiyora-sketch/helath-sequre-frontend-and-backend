@@ -16,6 +16,7 @@ import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/ro
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
 import { ClinicianStoreProvider } from "@/lib/clinician-store";
+import { useMessagesUnread } from "@/lib/use-messages-unread";
 
 interface MeResponse {
   ok: boolean;
@@ -43,6 +44,7 @@ const UTILITY: NavItem[] = [
 export default function ClinicianLayout({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<MeResponse["user"] | null>(null);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const unreadMessages = useMessagesUnread();
 
   useEffect(() => {
     let cancelled = false;
@@ -92,11 +94,17 @@ export default function ClinicianLayout({ children }: { children: React.ReactNod
           },
           { href: "/clinician/tasks", label: "Pending tasks", icon: ClipboardList },
           { href: "/clinician/notes", label: "Notes editor", icon: FileEdit },
-          { href: "/clinician/messages", label: "Messages", icon: MessageSquare },
+          {
+            href: "/clinician/messages",
+            label: "Messages",
+            icon: MessageSquare,
+            badge: unreadMessages > 0 ? String(unreadMessages) : undefined,
+            badgeTone: "danger" as const,
+          },
         ],
       },
     ],
-    [summary],
+    [summary, unreadMessages],
   );
 
   const subtitle = (() => {

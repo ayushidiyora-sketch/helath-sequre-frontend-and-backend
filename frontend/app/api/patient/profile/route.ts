@@ -1,25 +1,30 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { RoleKind } from "@prisma/client";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 
-function shape(me: {
-  id: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  phone: string | null;
-  gender: string | null;
-  dateOfBirth: Date | null;
-  profilePhotoUrl: string | null;
-  createdAt: Date;
-  mfaEnrolledAt: Date | null;
-  mfaRequired: boolean;
-  organization: { name: string } | null;
-}) {
+function shape(
+  me: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string | null;
+    gender: string | null;
+    dateOfBirth: Date | null;
+    profilePhotoUrl: string | null;
+    createdAt: Date;
+    mfaEnrolledAt: Date | null;
+    mfaRequired: boolean;
+    organization: { name: string } | null;
+  },
+  /** Fallback tenant name when the patient has no own organizationId yet
+   *  (e.g. self-registered, later assigned to a clinician at a tenant). */
+  fallbackTenantName: string | null,
+) {
   return {
     id: me.id,
     firstName: me.firstName,
@@ -31,7 +36,7 @@ function shape(me: {
     gender: me.gender,
     dateOfBirth: me.dateOfBirth ? me.dateOfBirth.toISOString().slice(0, 10) : null,
     profilePhotoUrl: me.profilePhotoUrl,
-    tenantName: me.organization?.name ?? null,
+    tenantName: me.organization?.name ?? fallbackTenantName,
     mfaEnrolled: !!me.mfaEnrolledAt,
     mfaRequired: me.mfaRequired,
     enrolledAt: me.createdAt.toISOString(),
@@ -48,6 +53,8 @@ async function guard(): Promise<
   if (!claims) return { error: NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 }) };
   if (claims.role !== "Patient")
     return { error: NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 }) };
+  if (!isDbUid(claims.uid))
+    return { error: NextResponse.json({ ok: false, error: "Demo session — profile requires a real account." }, { status: 400 }) };
   return { uid: claims.uid };
 }
 
@@ -87,14 +94,20 @@ export async function GET() {
           designation: true,
           department: true,
           profilePhotoUrl: true,
+          organization: { select: { name: true } },
         },
       },
     },
   });
 
+  // Patient may have no own organizationId (self-registered). Fall back to the
+  // first care-team clinician's tenant so the Profile tab's Clinic/Tenant
+  // field isn't blank for patients assigned via the Org Admin flow.
+  const fallbackTenant = careTeam.find((c) => c.clinician.organization?.name)?.clinician.organization?.name ?? null;
+
   return NextResponse.json({
     ok: true,
-    profile: shape(me),
+    profile: shape(me, fallbackTenant),
     careTeam: careTeam.map((c) => ({
       assignmentId: c.id,
       role: c.role,
@@ -164,6 +177,12 @@ export async function PATCH(req: Request) {
   }
   if (body.profilePhotoUrl !== undefined) {
     const v = body.profilePhotoUrl?.trim();
+    if (v && v.length > 3_000_000) {
+      return NextResponse.json({ ok: false, error: "Photo too large (max ~2 MB)." }, { status: 400 });
+    }
+    if (v && !(v.startsWith("data:image/") || v.startsWith("http"))) {
+      return NextResponse.json({ ok: false, error: "Photo must be a data:image/ URL or http(s) link." }, { status: 400 });
+    }
     data.profilePhotoUrl = v ? v : null;
   }
 
@@ -186,5 +205,17 @@ export async function PATCH(req: Request) {
     },
   });
 
-  return NextResponse.json({ ok: true, profile: shape(me) });
+  // Same tenant fallback as GET — query the care team for an org name if the
+  // patient's own row has none.
+  let fallbackTenant: string | null = null;
+  if (!me.organization?.name) {
+    const ct = await prisma.patientAssignment.findFirst({
+      where: { patientId: g.uid, endedAt: null },
+      orderBy: { startedAt: "desc" },
+      include: { clinician: { select: { organization: { select: { name: true } } } } },
+    });
+    fallbackTenant = ct?.clinician.organization?.name ?? null;
+  }
+
+  return NextResponse.json({ ok: true, profile: shape(me, fallbackTenant) });
 }

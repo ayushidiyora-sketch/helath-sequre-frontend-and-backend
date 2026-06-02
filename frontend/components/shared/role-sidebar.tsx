@@ -11,6 +11,8 @@ export type NavItem = {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: string;
+  /** Visual tone for the badge. "danger" → red pill (unread message count). */
+  badgeTone?: "default" | "danger";
   count?: string | number;
 };
 
@@ -65,7 +67,9 @@ export function RoleSidebar({
                     {item.badge && (
                       <span className={cn(
                         "flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold",
-                        active ? "bg-[var(--color-primary)] text-white" : "bg-[var(--color-muted)] text-[var(--color-muted-foreground)] group-hover:bg-[var(--color-card)]",
+                        item.badgeTone === "danger"
+                          ? "bg-[var(--color-danger)] text-white"
+                          : active ? "bg-[var(--color-primary)] text-white" : "bg-[var(--color-muted)] text-[var(--color-muted-foreground)] group-hover:bg-[var(--color-card)]",
                       )}>
                         {item.badge}
                       </span>

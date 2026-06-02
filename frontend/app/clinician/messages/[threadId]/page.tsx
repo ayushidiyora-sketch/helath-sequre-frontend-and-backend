@@ -1,21 +1,16 @@
-import { Suspense, use } from "react";
+import { Suspense } from "react";
 import { ClinicianMessagesView } from "../clinician-messages-view";
-import { THREADS } from "../clinician-messages-data";
 
-export function generateStaticParams() {
-  return THREADS.map((t) => ({ threadId: t.id }));
-}
-
-/** Deep-link entry — opens the side-by-side messages view with this thread active. */
-export default function ClinicianThreadPage({
-  params,
-}: {
-  params: Promise<{ threadId: string }>;
-}) {
-  const { threadId } = use(params);
+/**
+ * Deep-link entry — opens the side-by-side messages view. The legacy threadId
+ * route param is currently ignored: the new DB-backed view auto-selects the
+ * most-recent thread on mount, and external links can use
+ * `/clinician/messages?thread=<otherUserId>` to target a specific conversation.
+ */
+export default function ClinicianThreadPage() {
   return (
     <Suspense fallback={null}>
-      <ClinicianMessagesView initialThreadId={threadId} />
+      <ClinicianMessagesView />
     </Suspense>
   );
 }

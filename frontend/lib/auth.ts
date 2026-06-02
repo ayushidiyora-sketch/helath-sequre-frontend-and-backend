@@ -10,6 +10,17 @@ import { SignJWT, jwtVerify } from "jose";
 export const SESSION_COOKIE = "hs_session";
 const SESSION_TTL_HOURS = 12;
 
+/**
+ * True when `uid` looks like a Postgres UUID. Demo users (lib/demo-users.ts)
+ * carry `uid` like "u_clinician_priya" — passing those into a Prisma query
+ * against a `uuid` column throws P2023, so DB routes should short-circuit to
+ * an empty payload for non-UUID sessions.
+ */
+const _UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isDbUid(uid: string | undefined | null): boolean {
+  return !!uid && _UUID_RE.test(uid);
+}
+
 /** Claims embedded in the signed session cookie. */
 export interface SessionClaims {
   uid: string; // user id

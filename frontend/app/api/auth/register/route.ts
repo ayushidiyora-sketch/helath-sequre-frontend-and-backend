@@ -10,6 +10,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { mailerConfigured, otpEmail, sendMail } from "@/lib/mail";
 import { lookupUserByEmail } from "@/lib/user-lookup";
+import { issueSession } from "@/lib/session-store";
 
 export const runtime = "nodejs";
 
@@ -130,14 +131,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // Issue the session immediately — no OTP step for self-registration.
-  const session = await signSession({
-    uid: created.id,
-    sid: `s_${created.id}_${Date.now().toString(36)}`,
-    role: "Patient",
-    org: null,
-    name: `${firstName} ${lastName}`,
-    email: created.email,
-  });
+  const { jwt: session } = await issueSession(
+    {
+      uid: created.id,
+      role: "Patient",
+      org: null,
+      name: `${firstName} ${lastName}`,
+      email: created.email,
+    },
+    { req },
+  );
   // Brand-new patient → 2FA enrollment. mfa-setup will sign them through
   // to /patient/dashboard after they confirm a TOTP code.
   const dashboard = roleHome("Patient");

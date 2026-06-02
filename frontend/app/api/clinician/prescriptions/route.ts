@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -30,6 +30,8 @@ async function guardClinician() {
   if (!claims) return { error: NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 }) } as const;
   if (claims.role !== "Clinician")
     return { error: NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 }) } as const;
+  if (!isDbUid(claims.uid))
+    return { error: NextResponse.json({ ok: true, prescriptions: [] }) } as const;
   return { claims } as const;
 }
 

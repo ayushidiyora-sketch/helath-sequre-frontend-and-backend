@@ -29,10 +29,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SecurityBadge } from "@/components/shared/security-badge";
-import { ActionButton } from "@/components/shared/action-button";
-import { ConsentRequestDialog, CancelAppointmentDialog, RescheduleDialog } from "@/components/shared/form-dialogs";
+import { CancelAppointmentDialog, RescheduleDialog } from "@/components/shared/form-dialogs";
 import { CompleteProfileCard } from "./complete-profile-card";
 import { usePatientStore, type Appointment, type MessageThread } from "@/lib/patient-store";
+import { useMessagesUnread } from "@/lib/use-messages-unread";
 
 function initials(name: string): string {
   return name
@@ -82,6 +82,7 @@ interface ApiDashboard {
 
 export default function PatientDashboard() {
   const { state } = usePatientStore();
+  const liveUnread = useMessagesUnread();
   const [api, setApi] = useState<ApiDashboard | null>(null);
   const [apiLoading, setApiLoading] = useState(true);
 
@@ -111,7 +112,9 @@ export default function PatientDashboard() {
     .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   const next = upcoming[0];
   const pendingConsents = 0; // pending consent requests are demo-only, not in the store
-  const unreadThreads = state.threads.filter((t) => t.unread).length;
+  // Prefer the live DB-backed unread count (sum of unread per thread from
+  // /api/messages/threads); fall back to the local store for offline cases.
+  const unreadThreads = liveUnread || state.threads.filter((t) => t.unread).length;
 
   // Real-data overlays: prefer API values where available.
   const greetingFirstName = api?.profile.firstName ?? state.profile.firstName;
@@ -130,13 +133,16 @@ export default function PatientDashboard() {
       }
     : undefined;
   const heroNext = apiNext ?? next;
-  const stats = api?.stats ?? {
+  const baseStats = api?.stats ?? {
     upcomingCount: upcoming.length,
     careTeamSize: 0,
     documents: state.documents.length,
     activeConsents: state.consents.filter((c) => c.status === "active").length,
     unreadMessages: unreadThreads,
   };
+  // Always overlay the live DB-backed unread count — the /api/patient/dashboard
+  // stats payload uses the legacy local-store count.
+  const stats = { ...baseStats, unreadMessages: unreadThreads };
 
   return (
     <>
@@ -161,6 +167,29 @@ export default function PatientDashboard() {
       </div>
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// DB-backed helpers used by the cards below.
+// ---------------------------------------------------------------------------
+
+const RECORD_ICON = { Lab: Beaker, Prescription: Pill, Imaging: FileImage, Discharge: ClipboardList, Clinical: FileText } as const;
+const RECORD_COLOR: Record<string, string> = {
+  "Lab Report":   "from-[oklch(0.65_0.13_195)] to-[oklch(0.5_0.12_205)]",
+  Prescription:   "from-[oklch(0.7_0.13_320)] to-[oklch(0.55_0.13_330)]",
+  Imaging:        "from-[oklch(0.62_0.14_235)] to-[oklch(0.48_0.13_245)]",
+  Discharge:      "from-[oklch(0.68_0.14_158)] to-[oklch(0.52_0.12_160)]",
+  "Clinical Note":"from-[oklch(0.6_0.06_250)] to-[oklch(0.42_0.04_250)]",
+};
+function iconForCategory(c: string) {
+  if (c === "Lab Report") return Beaker;
+  if (c === "Prescription") return Pill;
+  if (c === "Imaging") return FileImage;
+  if (c === "Discharge") return ClipboardList;
+  return FileText;
+}
+function shortDate(iso: string): string {
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 function GreetingHero({ firstName, next, unread, pending }: { firstName: string; next?: Appointment; unread: number; pending: number }) {
@@ -366,25 +395,44 @@ function UpcomingAppointments({ appts }: { appts: Appointment[] }) {
   );
 }
 
-function RecentRecords() {
-  // Records data lives in app/patient/records/records-data.ts (already-built
-  // surface). This snapshot is a static highlight; the full filterable list
-  // is on /patient/records.
-  const records = [
-    { id: "rec-lp-0518", title: "Lipid panel", category: "Lab Report", clinician: "Dr. Priya Shah", date: "May 18, 2026", icon: Beaker, status: "verified" as const, color: "from-[oklch(0.65_0.13_195)] to-[oklch(0.5_0.12_205)]" },
-    { id: "rec-rx-0512", title: "Atorvastatin 20mg", category: "Prescription", clinician: "Dr. Priya Shah", date: "May 12, 2026", icon: Pill, status: "encrypted" as const, color: "from-[oklch(0.7_0.13_320)] to-[oklch(0.55_0.13_330)]" },
-    { id: "rec-img-0501", title: "Chest X-ray", category: "Imaging", clinician: "Radiology Dept.", date: "May 1, 2026", icon: FileImage, status: "consent-bound" as const, color: "from-[oklch(0.62_0.14_235)] to-[oklch(0.48_0.13_245)]" },
-    { id: "rec-ds-0420", title: "Discharge summary", category: "Discharge", clinician: "Dr. Rohan Iyer", date: "Apr 20, 2026", icon: ClipboardList, status: "verified" as const, color: "from-[oklch(0.68_0.14_158)] to-[oklch(0.52_0.12_160)]" },
-  ];
+interface DbRecord {
+  id: string;
+  title: string;
+  category: string;
+  clinician: string;
+  date: string; // YYYY-MM-DD
+}
 
-  function downloadRecordPdf(r: (typeof records)[number]) {
+function RecentRecords() {
+  const [records, setRecords] = useState<DbRecord[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/records", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        const list: DbRecord[] = Array.isArray(data.records)
+          ? data.records.slice(0, 4).map((r: { id: string; title: string; category: string; clinician: string; date: string }) => ({
+              id: r.id, title: r.title, category: r.category, clinician: r.clinician, date: r.date,
+            }))
+          : [];
+        setRecords(list);
+      })
+      .catch(() => {
+        if (!cancelled) setRecords([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  function downloadRecordPdf(r: DbRecord) {
     const doc = new jsPDF();
     doc.setFontSize(16);
     doc.text(r.title, 14, 22);
     doc.setFontSize(11);
     doc.setTextColor(110);
     doc.text(`${r.category} · ${r.clinician}`, 14, 30);
-    doc.text(`Authored: ${r.date}`, 14, 37);
+    doc.text(`Authored: ${shortDate(r.date)}`, 14, 37);
     doc.text(`Record ID: ${r.id}`, 14, 44);
     doc.setTextColor(20);
     doc.setFontSize(11);
@@ -408,98 +456,178 @@ function RecentRecords() {
           <Link href="/patient/records">Browse <ArrowRight /></Link>
         </Button>
       </div>
-      <ul className="divide-y divide-[var(--color-border)]">
-        {records.map((r) => {
-          const Icon = r.icon;
-          return (
-            <li key={r.id} className="group flex items-center gap-4 p-5 transition-colors hover:bg-[var(--color-muted)]/40">
-              <span className={`flex size-10 items-center justify-center rounded-xl bg-gradient-to-br ${r.color} text-white shadow-[var(--shadow-soft)]`}>
-                <Icon className="size-4.5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-semibold">{r.title}</p>
-                  <Badge variant="muted" size="sm">{r.category}</Badge>
+      {records === null ? (
+        <p className="p-8 text-center text-xs text-[var(--color-muted-foreground)]">Loading records…</p>
+      ) : records.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 p-8 text-center">
+          <FileText className="size-6 text-[var(--color-muted-foreground)]" />
+          <p className="text-xs text-[var(--color-muted-foreground)]">No records yet — your clinicians' finalized notes and prescriptions will appear here.</p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-[var(--color-border)]">
+          {records.map((r) => {
+            const Icon = iconForCategory(r.category);
+            const color = RECORD_COLOR[r.category] ?? "from-[oklch(0.6_0.06_250)] to-[oklch(0.42_0.04_250)]";
+            return (
+              <li key={r.id} className="group flex items-center gap-4 p-5 transition-colors hover:bg-[var(--color-muted)]/40">
+                <span className={`flex size-10 items-center justify-center rounded-xl bg-gradient-to-br ${color} text-white shadow-[var(--shadow-soft)]`}>
+                  <Icon className="size-4.5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-semibold">{r.title}</p>
+                    <Badge variant="muted" size="sm">{r.category}</Badge>
+                  </div>
+                  <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
+                    {r.clinician} · {shortDate(r.date)}
+                  </p>
                 </div>
-                <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
-                  {r.clinician} · {r.date} · <span className="font-mono">{r.id}</span>
-                </p>
-              </div>
-              <SecurityBadge variant={r.status} className="hidden sm:inline-flex" />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Download ${r.title}`}
-                onClick={() => downloadRecordPdf(r)}
-              >
-                <DownloadCloud />
-              </Button>
-            </li>
-          );
-        })}
-      </ul>
+                <SecurityBadge variant="verified" className="hidden sm:inline-flex" />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Download ${r.title}`}
+                  onClick={() => downloadRecordPdf(r)}
+                >
+                  <DownloadCloud />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
 
+// Silence unused-import after switching off the static color literal.
+void RECORD_ICON;
+
+interface ApiConsentRequest {
+  id: string;
+  clinicianName: string;
+  clinicianDepartment: string | null;
+  scopes: string[];
+  durationHours: number;
+  reason: string;
+  status: string;
+}
+
+const SCOPE_LABEL: Record<string, string> = {
+  insurance: "Insurance",
+  id_proof: "ID Proof",
+  lab: "Lab Report",
+  imaging: "Imaging",
+  prescriptions: "Prescriptions",
+  notes: "Clinical Notes",
+  mental_health: "Mental Health",
+  other: "Other",
+};
+
 function PendingConsents() {
-  const { addConsent, addNotification } = usePatientStore();
+  const [pending, setPending] = useState<ApiConsentRequest[] | null>(null);
+  const [acting, setActing] = useState<string | null>(null);
+
+  async function load() {
+    const r = await fetch("/api/patient/consent-requests", { cache: "no-store" });
+    const data = await r.json();
+    if (!data?.ok) return setPending([]);
+    const list: ApiConsentRequest[] = Array.isArray(data.requests)
+      ? data.requests.filter((req: { status: string }) => req.status === "pending")
+      : [];
+    setPending(list);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    load().catch(() => { if (!cancelled) setPending([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function decide(id: string, decision: "approved" | "declined") {
+    setActing(id);
+    try {
+      const r = await fetch("/api/patient/consent-requests", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, decision }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not update request.");
+        return;
+      }
+      toast.success(decision === "approved" ? "Consent granted · audit-logged" : "Request declined");
+      await load();
+    } catch {
+      toast.error("Network error.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  function initialsFor(name: string): string {
+    return name.replace(/^Dr\.?\s*/, "").split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase();
+  }
+  function fmtScopes(scopes: string[]): string {
+    const labels = scopes.map((s) => SCOPE_LABEL[s] ?? s);
+    if (labels.length <= 2) return labels.join(" & ");
+    return `${labels[0]} +${labels.length - 1} more`;
+  }
+
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
       <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
         <h2 className="text-sm font-semibold">Pending consent</h2>
-        <Badge variant="warning" size="sm" dot>1 request</Badge>
+        {pending && pending.length > 0 ? (
+          <Badge variant="warning" size="sm" dot>{pending.length} request{pending.length === 1 ? "" : "s"}</Badge>
+        ) : (
+          <Badge variant="muted" size="sm">None pending</Badge>
+        )}
       </div>
       <div className="space-y-4 p-5">
-        <div className="rounded-xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 p-4">
-          <div className="flex items-start gap-3">
-            <Avatar className="size-9">
-              <AvatarFallback>NK</AvatarFallback>
-            </Avatar>
-            <div className="flex-1">
-              <p className="text-sm font-semibold">Dr. Neha Kapoor</p>
-              <p className="text-xs text-[var(--color-muted-foreground)]">
-                Requested access to <em>Imaging</em> records.
-              </p>
+        {pending === null ? (
+          <p className="py-2 text-center text-xs text-[var(--color-muted-foreground)]">Loading…</p>
+        ) : pending.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/30 p-4 text-center text-xs text-[var(--color-muted-foreground)]">
+            No clinicians have requested access right now.
+          </p>
+        ) : (
+          pending.map((req) => (
+            <div key={req.id} className="rounded-xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 p-4">
+              <div className="flex items-start gap-3">
+                <Avatar className="size-9">
+                  <AvatarFallback>{initialsFor(req.clinicianName)}</AvatarFallback>
+                </Avatar>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold">{req.clinicianName}</p>
+                  <p className="text-xs text-[var(--color-muted-foreground)]">
+                    Requested access to <em>{fmtScopes(req.scopes)}</em> for {req.durationHours}h.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  disabled={acting === req.id}
+                  onClick={() => decide(req.id, "approved")}
+                >
+                  {acting === req.id ? "Approving…" : "Approve"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  disabled={acting === req.id}
+                  onClick={() => decide(req.id, "declined")}
+                >
+                  Decline
+                </Button>
+              </div>
             </div>
-          </div>
-          <div className="mt-3 flex gap-2">
-            <ConsentRequestDialog
-              requester="Dr. Neha Kapoor"
-              scope="Imaging"
-              triggerLabel="Approve"
-              triggerProps={{
-                size: "sm",
-                className: "flex-1",
-                onClick: () => {
-                  const con = addConsent({
-                    clinician: "Dr. Neha Kapoor",
-                    department: "Dermatology",
-                    scopes: ["imaging"],
-                    policyVersion: "v2.4",
-                    expiresAt: null,
-                  });
-                  addNotification({
-                    title: "Consent granted",
-                    body: "Dr. Neha Kapoor · Imaging",
-                    type: "consent",
-                    href: `/patient/consents/${con.id}`,
-                  });
-                },
-              }}
-            />
-            <ActionButton
-              variant="outline"
-              size="sm"
-              className="flex-1"
-              toastMessage="Request declined"
-              toastDescription="Dr. Neha Kapoor will be notified"
-              toastVariant="info"
-            >
-              Decline
-            </ActionButton>
-          </div>
-        </div>
+          ))
+        )}
 
         <Button asChild variant="ghost" size="sm" className="w-full">
           <Link href="/patient/consents">Manage all consents <ArrowRight /></Link>

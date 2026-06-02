@@ -62,11 +62,22 @@ function dateOnlyToLabel(dob: string): string {
 }
 
 export function FamilyManager() {
-  const { state, addFamilyMember, updateFamilyMember, removeFamilyMember } = usePatientStore();
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<FamilyMember | null>(null);
+  const [family, setFamily] = React.useState<FamilyMember[] | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
 
-  if (!state.hydrated) {
+  const reload = React.useCallback(async () => {
+    const r = await fetch("/api/patient/family", { cache: "no-store" });
+    const data = await r.json();
+    if (data?.ok && Array.isArray(data.members)) setFamily(data.members);
+  }, []);
+
+  React.useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  if (family === null) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…
@@ -74,7 +85,6 @@ export function FamilyManager() {
     );
   }
 
-  const family = state.family;
   const minors = family.filter((m) => m.isMinor).length;
   const caregivers = family.filter((m) => m.canManageAccount).length;
   const lastAdded = family
@@ -88,6 +98,55 @@ export function FamilyManager() {
   function openEdit(member: FamilyMember) {
     setEditing(member);
     setOpen(true);
+  }
+
+  async function handleSubmit(values: Omit<FamilyMember, "id" | "addedAt">) {
+    setSubmitting(true);
+    try {
+      if (editing) {
+        const r = await fetch("/api/patient/family", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: editing.id, ...values }),
+        });
+        const data = await r.json();
+        if (!r.ok || !data?.ok) {
+          toast.error(data?.error ?? "Could not update family member.");
+          return;
+        }
+        toast.success("Family member updated", { description: `${values.name} · audit-logged` });
+      } else {
+        const r = await fetch("/api/patient/family", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values),
+        });
+        const data = await r.json();
+        if (!r.ok || !data?.ok) {
+          toast.error(data?.error ?? "Could not add family member.");
+          return;
+        }
+        toast.success("Family member added", { description: `${values.name} · audit-logged` });
+      }
+      setOpen(false);
+      await reload();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleRemove(member: FamilyMember) {
+    try {
+      const r = await fetch(`/api/patient/family?id=${member.id}`, { method: "DELETE" });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not remove family member.");
+        return;
+      }
+      await reload();
+    } catch {
+      toast.error("Network error.");
+    }
   }
 
   return (
@@ -173,7 +232,7 @@ export function FamilyManager() {
                       }}
                       toastMessage="Family member removed"
                       toastDescription={`${m.name} · audit-logged`}
-                      onClick={() => removeFamilyMember(m.id)}
+                      onClick={() => void handleRemove(m)}
                     >
                       <Trash2 /> Remove
                     </ActionButton>
@@ -195,16 +254,8 @@ export function FamilyManager() {
         open={open}
         onOpenChange={setOpen}
         editing={editing}
-        onSubmit={(values) => {
-          if (editing) {
-            updateFamilyMember(editing.id, values);
-            toast.success("Family member updated", { description: `${values.name} · audit-logged` });
-          } else {
-            addFamilyMember(values);
-            toast.success("Family member added", { description: `${values.name} · audit-logged` });
-          }
-          setOpen(false);
-        }}
+        submitting={submitting}
+        onSubmit={(values) => void handleSubmit(values)}
       />
     </div>
   );
@@ -225,11 +276,13 @@ function FamilyDialog({
   open,
   onOpenChange,
   editing,
+  submitting,
   onSubmit,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   editing: FamilyMember | null;
+  submitting?: boolean;
   onSubmit: (values: FormValues) => void;
 }) {
   const [name, setName] = React.useState("");
@@ -368,8 +421,8 @@ function FamilyDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={!valid}>
-            {editing ? "Save changes" : "Add member"}
+          <Button onClick={submit} disabled={!valid || !!submitting}>
+            {submitting ? "Saving…" : editing ? "Save changes" : "Add member"}
           </Button>
         </DialogFooter>
       </DialogContent>

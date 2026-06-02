@@ -108,20 +108,48 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
   const tpl = readTemplate(rows[0].scheduleTemplate);
 
+  // Pull the clinician's already-booked appointments for the next ~10 days so
+  // we can subtract those times from the slot grid — a booked slot must NOT
+  // appear as available to the next patient. We bucket by local YYYY-MM-DD so
+  // the comparison matches the day-tile keys generated below.
+  const now = new Date();
+  const windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 11);
+  const booked = await prisma.$queryRaw<{ startsAt: Date }[]>`
+    SELECT "startsAt"
+    FROM appointments
+    WHERE "clinicianId" = ${id}::uuid
+      AND "deletedAt" IS NULL
+      AND "status"::text NOT IN ('cancelled', 'no_show')
+      AND "startsAt" >= ${now}
+      AND "startsAt" <  ${windowEnd}
+  `;
+  // Map: "YYYY-MM-DD" → Set of taken "H:MM AM/PM" labels (local time).
+  const takenByDay = new Map<string, Set<string>>();
+  for (const row of booked) {
+    const d = row.startsAt;
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const time = fmt12(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`);
+    if (!takenByDay.has(key)) takenByDay.set(key, new Set());
+    takenByDay.get(key)!.add(time);
+  }
+
   // Generate the next 4 weekdays (skipping the clinician's `off` days).
   // Look up to 10 calendar days ahead to find 4 working days. Each entry
   // carries its own `slotMinutes` so the UI can render a per-day "15-min slots"
   // / "30-min slots" badge — the cadence is allowed to differ across days
   // (e.g. Wed 30-min, rest 15-min).
   const out: { day: string; times: string[]; slotMinutes: number }[] = [];
-  const today = new Date();
   for (let i = 0; i < 10 && out.length < 4; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
     const dow = d.getDay();
     const label: WeekdayLabel = WEEKDAY_LABELS[dow];
     const day = tpl[label];
     if (!day || day.off) continue;
-    const times = buildSlotsForDay(day);
+    const allTimes = buildSlotsForDay(day);
+    if (allTimes.length === 0) continue;
+    const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const taken = takenByDay.get(dayKey);
+    const times = taken ? allTimes.filter((t) => !taken.has(t)) : allTimes;
     if (times.length === 0) continue;
     out.push({ day: dayLabel(d), times, slotMinutes: day.slotMinutes });
   }

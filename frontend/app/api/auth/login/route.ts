@@ -11,6 +11,7 @@ import {
   signSession,
 } from "@/lib/auth";
 import { DEMO_PASSWORD, type LoginScope } from "@/lib/demo-users";
+import { issueSession } from "@/lib/session-store";
 import { mailerConfigured, otpEmail, sendMail } from "@/lib/mail";
 import { checkPassword } from "@/lib/password-store";
 import { lookupUserByEmail } from "@/lib/user-lookup";
@@ -88,14 +89,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Fast-path: DB users with mfaRequired=false (typically patients) skip OTP
   // and get a session cookie immediately.
   if (user.source === "database" && !user.mfaRequired) {
-    const session = await signSession({
-      uid: user.uid,
-      sid: `s_${user.uid}_${Date.now().toString(36)}`,
-      role: user.role,
-      org: user.org,
-      name: user.name,
-      email: user.email,
-    });
+    const { jwt: session } = await issueSession(
+      {
+        uid: user.uid,
+        role: user.role,
+        org: user.org,
+        name: user.name,
+        email: user.email,
+      },
+      { req },
+    );
     // Stamp last login + clear lockout counters.
     await prisma.user
       .update({

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -47,6 +47,10 @@ async function guard(): Promise<
   if (!claims) return { error: NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 }) };
   if (claims.role !== "Clinician")
     return { error: NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 }) };
+  // Demo-user session — return an empty template so the schedule UI renders
+  // without P2023'ing on a non-UUID id in the `::uuid` cast.
+  if (!isDbUid(claims.uid))
+    return { error: NextResponse.json({ ok: true, template: {}, slotIntervalMinutes: 15 }) };
   return { uid: claims.uid };
 }
 

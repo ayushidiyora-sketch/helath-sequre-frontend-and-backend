@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { RoleKind, UserStatus } from "@prisma/client";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -30,6 +30,7 @@ export async function GET() {
   if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
   if (claims.role !== "Patient")
     return NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 });
+  if (!isDbUid(claims.uid)) return NextResponse.json({ ok: true, clinicians: [] });
 
   const me = await prisma.user.findUnique({
     where: { id: claims.uid },

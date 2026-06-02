@@ -51,6 +51,17 @@ export function RoleHeader({
     else root.classList.remove("dark");
   }, [dark]);
 
+  // Heartbeat — bumps the signed-in user's `lastActiveAt` every 60s so the
+  // messaging surface can show an "online" green dot on participants whose
+  // tab is open. Fires once on mount and then on a fixed interval. Silent on
+  // failure (best-effort presence signal).
+  useEffect(() => {
+    const ping = () => void fetch("/api/me/heartbeat", { method: "POST", cache: "no-store" }).catch(() => {});
+    ping();
+    const tick = window.setInterval(ping, 60_000);
+    return () => window.clearInterval(tick);
+  }, []);
+
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
       <RoleMobileNav groups={navGroups} utility={navUtility} />

@@ -28,11 +28,19 @@ import {
 const BLOOD_GROUPS: BloodGroup[] = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Unknown"];
 
 export function EmergencyManager() {
-  const { state, updateEmergencyContact } = usePatientStore();
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<EmergencyContact | null>(null);
+  const [ec, setEc] = React.useState<EmergencyContact | null>(null);
+  const [saving, setSaving] = React.useState(false);
 
-  if (!state.hydrated) {
+  const reload = React.useCallback(async () => {
+    const r = await fetch("/api/patient/emergency", { cache: "no-store" });
+    const data = await r.json();
+    if (data?.ok && data.emergency) setEc(data.emergency as EmergencyContact);
+  }, []);
+  React.useEffect(() => { void reload(); }, [reload]);
+
+  if (!ec) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…
@@ -40,11 +48,10 @@ export function EmergencyManager() {
     );
   }
 
-  const ec = state.emergencyContact;
   const view = editing && draft ? draft : ec;
 
   function startEdit() {
-    setDraft({ ...ec });
+    setDraft({ ...ec! });
     setEditing(true);
   }
 
@@ -53,14 +60,27 @@ export function EmergencyManager() {
     setEditing(false);
   }
 
-  function save() {
+  async function save() {
     if (!draft) return;
-    updateEmergencyContact(draft);
-    toast.success("Emergency information saved", {
-      description: "Visible to ER teams · audit-logged",
-    });
-    setEditing(false);
-    setDraft(null);
+    setSaving(true);
+    try {
+      const r = await fetch("/api/patient/emergency", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not save.");
+        return;
+      }
+      toast.success("Emergency information saved", { description: "Visible to ER teams · audit-logged" });
+      setEditing(false);
+      setDraft(null);
+      await reload();
+    } finally {
+      setSaving(false);
+    }
   }
 
   function patchDraft(patch: Partial<EmergencyContact>) {
@@ -73,7 +93,9 @@ export function EmergencyManager() {
         {editing ? (
           <>
             <Button size="sm" variant="outline" onClick={cancelEdit}>Cancel</Button>
-            <Button size="sm" onClick={save}><Save /> Save changes</Button>
+            <Button size="sm" onClick={() => void save()} disabled={saving}>
+              <Save /> {saving ? "Saving…" : "Save changes"}
+            </Button>
           </>
         ) : (
           <Button size="sm" onClick={startEdit}><Pencil /> Edit</Button>

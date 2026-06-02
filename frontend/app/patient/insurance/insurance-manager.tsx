@@ -79,18 +79,62 @@ function preAuthIcon(s: PreAuthStatus) {
 }
 
 export function InsuranceManager() {
-  const {
-    state,
-    addInsurancePlan,
-    updateInsurancePlan,
-    removeInsurancePlan,
-    markPrimaryInsurance,
-  } = usePatientStore();
-
+  const [plans, setPlans] = React.useState<InsurancePlan[] | null>(null);
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<InsurancePlan | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
 
-  if (!state.hydrated) {
+  const reload = React.useCallback(async () => {
+    const r = await fetch("/api/patient/insurance", { cache: "no-store" });
+    const data = await r.json();
+    if (data?.ok && Array.isArray(data.plans)) setPlans(data.plans as InsurancePlan[]);
+  }, []);
+  React.useEffect(() => { void reload(); }, [reload]);
+
+  async function addInsurancePlan(values: Omit<InsurancePlan, "id" | "addedAt">) {
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/patient/insurance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not add plan.");
+      await reload();
+    } finally { setSubmitting(false); }
+  }
+  async function updateInsurancePlan(id: string, values: Omit<InsurancePlan, "id" | "addedAt">) {
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/patient/insurance", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...values }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not update plan.");
+      await reload();
+    } finally { setSubmitting(false); }
+  }
+  async function removeInsurancePlan(id: string) {
+    const r = await fetch(`/api/patient/insurance?id=${id}`, { method: "DELETE" });
+    const data = await r.json();
+    if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not remove plan.");
+    await reload();
+  }
+  async function markPrimaryInsurance(id: string) {
+    const r = await fetch("/api/patient/insurance", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, setPrimary: true }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data?.ok) toast.error(data?.error ?? "Could not set primary.");
+    await reload();
+  }
+
+  if (plans === null) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…
@@ -98,7 +142,6 @@ export function InsuranceManager() {
     );
   }
 
-  const plans = state.insurance;
   const primary = plans.find((p) => p.isPrimary);
 
   // Find soonest renewal across plans (any plan ending within 90 days).
@@ -215,8 +258,9 @@ export function InsuranceManager() {
                       size="sm"
                       variant="outline"
                       onClick={() => {
-                        markPrimaryInsurance(p.id);
-                        toast.success("Primary plan updated", { description: `${p.provider} · audit-logged` });
+                        void markPrimaryInsurance(p.id).then(() =>
+                          toast.success("Primary plan updated", { description: `${p.provider} · audit-logged` }),
+                        );
                       }}
                     >
                       <Star /> Mark as primary
@@ -237,7 +281,7 @@ export function InsuranceManager() {
                     }}
                     toastMessage="Insurance plan removed"
                     toastDescription={`${p.provider} · audit-logged`}
-                    onClick={() => removeInsurancePlan(p.id)}
+                    onClick={() => void removeInsurancePlan(p.id)}
                   >
                     <Trash2 /> Remove
                   </ActionButton>
@@ -259,13 +303,14 @@ export function InsuranceManager() {
         onOpenChange={setOpen}
         editing={editing}
         existingHasPrimary={plans.some((p) => p.isPrimary)}
-        onSubmit={(values) => {
+        submitting={submitting}
+        onSubmit={async (values) => {
           if (editing) {
-            updateInsurancePlan(editing.id, values);
+            await updateInsurancePlan(editing.id, values);
             toast.success("Insurance plan updated", { description: `${values.provider} · audit-logged` });
-            if (values.isPrimary && !editing.isPrimary) markPrimaryInsurance(editing.id);
+            if (values.isPrimary && !editing.isPrimary) await markPrimaryInsurance(editing.id);
           } else {
-            addInsurancePlan(values);
+            await addInsurancePlan(values);
             toast.success("Insurance plan added", { description: `${values.provider} · audit-logged` });
           }
           setOpen(false);
@@ -296,13 +341,15 @@ function InsuranceDialog({
   onOpenChange,
   editing,
   existingHasPrimary,
+  submitting,
   onSubmit,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   editing: InsurancePlan | null;
   existingHasPrimary: boolean;
-  onSubmit: (values: FormValues) => void;
+  submitting?: boolean;
+  onSubmit: (values: FormValues) => void | Promise<void>;
 }) {
   const [provider, setProvider] = React.useState("");
   const [planName, setPlanName] = React.useState("");
@@ -498,7 +545,9 @@ function InsuranceDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={!valid}>{editing ? "Save changes" : "Add plan"}</Button>
+          <Button onClick={submit} disabled={!valid || !!submitting}>
+            {submitting ? "Saving…" : editing ? "Save changes" : "Add plan"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { AppointmentStatus, RoleKind } from "@prisma/client";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -12,6 +12,17 @@ export async function GET() {
   if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
   if (claims.role !== "Clinician")
     return NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 });
+  // Demo-user session (uid like "u_clinician_priya") — no Postgres row exists.
+  // Return an empty dashboard payload so the page renders without 500.
+  if (!isDbUid(claims.uid)) {
+    return NextResponse.json({
+      ok: true,
+      me: { id: claims.uid, name: claims.name, email: claims.email, designation: null, department: null, profilePhotoUrl: null, organization: null },
+      today: { appointments: [], patientsSeen: 0, prescriptionsWritten: 0, notesSigned: 0 },
+      upcoming: [],
+      pendingTasks: [],
+    });
+  }
 
   const me = await prisma.user.findUnique({
     where: { id: claims.uid },

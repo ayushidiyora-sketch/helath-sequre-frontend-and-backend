@@ -17,6 +17,7 @@ import {
 import { Logo } from "@/components/shared/logo";
 import { LogoutButton } from "@/components/shared/logout-button";
 import { cn } from "@/lib/utils";
+import { useMessagesUnread } from "@/lib/use-messages-unread";
 
 // Sidebar counts/badges are intentionally omitted — the patient slices
 // (records, prescriptions, appointments, consents, messages) are not yet
@@ -40,6 +41,7 @@ const utility = [
 
 export function PatientSidebar() {
   const pathname = usePathname();
+  const unreadMessages = useMessagesUnread();
 
   return (
     <aside className="hidden h-screen w-64 shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-card)]/60 backdrop-blur lg:flex">
@@ -72,9 +74,11 @@ export function PatientSidebar() {
               )}
               <Icon className={cn("size-4 shrink-0", active && "text-[var(--color-primary)]")} />
               <span className="flex-1">{item.label}</span>
-              {/* Badge/count slots removed — populate from real data once the
-                  patient slices (records, prescriptions, messages, ...) are
-                  DB-backed. */}
+              {item.href === "/patient/messages" && unreadMessages > 0 && (
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--color-danger)] px-1.5 text-[10px] font-semibold text-white">
+                  {unreadMessages}
+                </span>
+              )}
             </Link>
           );
         })}

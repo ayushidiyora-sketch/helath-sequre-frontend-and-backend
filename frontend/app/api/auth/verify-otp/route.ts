@@ -14,6 +14,7 @@ import {
 import { roleHome } from "@/lib/auth";
 import { lookupUserByUid } from "@/lib/user-lookup";
 import { prisma } from "@/lib/prisma";
+import { issueSession } from "@/lib/session-store";
 import { UserStatus } from "@prisma/client";
 import { verifyToken as verifyTotp } from "@/lib/mfa";
 
@@ -122,14 +123,16 @@ export async function POST(req: Request): Promise<NextResponse> {
       });
   }
 
-  const session = await signSession({
-    uid: user.uid,
-    sid: `s_${user.uid}_${Date.now().toString(36)}`,
-    role: user.role,
-    org: user.org,
-    name: user.name,
-    email: user.email,
-  });
+  const { jwt: session } = await issueSession(
+    {
+      uid: user.uid,
+      role: user.role,
+      org: user.org,
+      name: user.name,
+      email: user.email,
+    },
+    { req },
+  );
   // Patients get a one-time "want to set up an authenticator app?" prompt
   // after sign-in. Staff roles already have MFA mandated by /mfa-setup at
   // invite time, so they skip the prompt and land on their role home.

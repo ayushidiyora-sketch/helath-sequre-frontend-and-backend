@@ -30,10 +30,15 @@ import { usePatientStore, type DocumentCategory } from "@/lib/patient-store";
 
 /** "Mon, May 25" → "2026-05-25" (assumes current year if month/day already past). */
 function slotDayToIso(label: string): string {
+  // Format from LOCAL Y/M/D — toISOString() shifts to UTC and silently
+  // pushes the date back a day east of UTC (e.g. midnight IST Jun 2 → May 31
+  // 18:30 UTC → "2026-06-01"), which would book the slot on the wrong day.
+  const toLocalIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const parsed = new Date(`${label}, ${new Date().getFullYear()}`);
-  if (isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10);
+  if (isNaN(parsed.getTime())) return toLocalIso(new Date());
   if (parsed.getTime() < Date.now() - 86_400_000) parsed.setFullYear(parsed.getFullYear() + 1);
-  return parsed.toISOString().slice(0, 10);
+  return toLocalIso(parsed);
 }
 
 function categoryFromName(name: string): DocumentCategory {

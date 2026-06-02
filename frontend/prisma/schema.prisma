@@ -276,6 +276,152 @@ model ConsentRequest {
   @@map("consent_requests")
 }
 
+// Patient → family / dependants / caregivers. One row per relationship.
+model FamilyMember {
+  id                String   @id @default(uuid()) @db.Uuid
+  patientId         String   @db.Uuid
+  name              String
+  /// "Spouse" | "Child" | "Parent" | "Sibling" | "Guardian" | "Other"
+  relationship      String
+  dob               DateTime? @db.Date
+  isMinor           Boolean  @default(false)
+  canManageAccount  Boolean  @default(false)
+  phone             String?
+  email             String?
+  notes             String?
+  addedAt           DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([patientId])
+  @@map("family_members")
+}
+
+// One row per patient — emergency contact + critical-care data. Singleton on
+// patientId (the API upserts on PATCH).
+model PatientEmergency {
+  id                    String   @id @default(uuid()) @db.Uuid
+  patientId             String   @unique @db.Uuid
+  primaryName           String   @default("")
+  primaryRelationship   String   @default("")
+  primaryPhone          String   @default("")
+  secondaryName         String?
+  secondaryRelationship String?
+  secondaryPhone        String?
+  /// "A+" | "A-" | "B+" | "B-" | "AB+" | "AB-" | "O+" | "O-" | "Unknown"
+  bloodGroup            String   @default("Unknown")
+  /// JSON arrays so the patient can free-form add multiple entries.
+  allergies             Json     @default("[]")
+  criticalMedications   Json     @default("[]")
+  medicalIds            Json     @default("[]")
+  organDonor            Boolean  @default(false)
+  preferredHospital     String?
+  updatedAt             DateTime @updatedAt
+  createdAt             DateTime @default(now())
+
+  @@map("patient_emergency")
+}
+
+model InsurancePlan {
+  id                     String   @id @default(uuid()) @db.Uuid
+  patientId              String   @db.Uuid
+  provider               String
+  planName               String
+  policyNumberMasked     String
+  groupNumber            String?
+  memberId               String?
+  /// "Self" | "Family" | "Spouse" | "Children"
+  coverageType           String   @default("Self")
+  startDate              DateTime @db.Date
+  endDate                DateTime? @db.Date
+  isPrimary              Boolean  @default(false)
+  cardFrontFileName      String?
+  cardBackFileName       String?
+  /// "none" | "pending" | "approved" | "denied"
+  preAuthorizationStatus String   @default("none")
+  notes                  String?
+  addedAt                DateTime @default(now())
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([patientId, isPrimary])
+  @@map("insurance_plans")
+}
+
+model VaccinationRecord {
+  id                  String   @id @default(uuid()) @db.Uuid
+  patientId           String   @db.Uuid
+  vaccine             String
+  manufacturer        String?
+  doseNumber          Int      @default(1)
+  totalDoses          Int?
+  administeredOn      DateTime @db.Date
+  administeredBy      String?
+  lotNumber           String?
+  nextDoseDue         DateTime? @db.Date
+  certificateFileName String?
+  forTravel           Boolean  @default(false)
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([patientId, administeredOn])
+  @@map("vaccination_records")
+}
+
+// Direct secure messages between a clinician and a patient. A "thread" is the
+// implicit (clinicianId, patientId) pair — DISTINCT on that pair yields the
+// thread list, ORDER BY sentAt DESC within a pair yields the conversation.
+model Message {
+  id              String   @id @default(uuid()) @db.Uuid
+  clinicianId     String   @db.Uuid
+  patientId       String   @db.Uuid
+  organizationId  String   @db.Uuid
+  /// "clinician" | "patient" — who authored this message.
+  senderRole      String
+  body            String
+  /// JSON array of `{name, mimeType, size, dataUrl}` — embedded data URLs
+  /// keep messaging self-contained without a separate blob store.
+  attachments     Json     @default("[]")
+  sentAt          DateTime @default(now())
+  /// Stamped when the recipient opens the thread.
+  readAt          DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([clinicianId, patientId, sentAt])
+  @@index([patientId, readAt])
+  @@index([clinicianId, readAt])
+  @@map("messages")
+}
+
+// Super-Admin operational incidents. Manual rows created via the "Open
+// incident" dialog; auto-derived rows (locked accounts, MFA exhaustion,
+// infected uploads, suspended tenants) are computed at read-time and unioned
+// into the Active/Closed lists — no separate row stored for those.
+model Incident {
+  id             String   @id @default(uuid()) @db.Uuid
+  /// Auto-incrementing display number — rendered as "INC-NNNN".
+  number         Int      @default(autoincrement())
+  title          String
+  /// "high" | "medium" | "minor"
+  severity       String   @default("minor")
+  /// "open" | "investigating" | "mitigating" | "monitoring" | "resolved"
+  status         String   @default("open")
+  /// e.g. "tenant:greenleaf" or "platform"
+  scope          String?
+  /// Null when opened by a demo Super Admin (no DB user row to FK against).
+  openedBy       String?  @db.Uuid
+  openedAt       DateTime @default(now())
+  resolvedAt     DateTime?
+  resolutionNote String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status, openedAt])
+  @@map("incidents")
+}
+
 // ---------------------------------------------------------------------------
 // Users & auth
 // ---------------------------------------------------------------------------
@@ -353,6 +499,9 @@ model User {
 
   status          UserStatus   @default(active)
   lastLoginAt     DateTime?
+  /// Bumped on every authenticated heartbeat; used to compute "online"
+  /// (heartbeat within last 2 minutes) on the messaging surface.
+  lastActiveAt    DateTime?
   failedLoginCount Int         @default(0)
   lockedUntil     DateTime?
 

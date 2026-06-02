@@ -87,6 +87,16 @@ export function PatientHeader() {
     else root.classList.remove("dark");
   }, [dark]);
 
+  // Presence heartbeat — bumps lastActiveAt every 60s while the tab is open
+  // so the clinician's messages page shows a green-dot online indicator next
+  // to this patient.
+  useEffect(() => {
+    const ping = () => void fetch("/api/me/heartbeat", { method: "POST", cache: "no-store" }).catch(() => {});
+    ping();
+    const tick = window.setInterval(ping, 60_000);
+    return () => window.clearInterval(tick);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     fetch("/api/patient/dashboard", { cache: "no-store" })

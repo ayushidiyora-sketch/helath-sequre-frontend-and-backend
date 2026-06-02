@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   ScrollText,
@@ -16,6 +17,11 @@ import {
 import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/role-sidebar";
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
+
+interface MeResponse {
+  ok: boolean;
+  user?: { uid: string; name: string; email: string; role: string; org: string | null; initials: string };
+}
 
 const GROUPS: NavGroup[] = [
   {
@@ -46,13 +52,37 @@ const UTILITY: NavItem[] = [
 ];
 
 export default function ComplianceLayout({ children }: { children: React.ReactNode }) {
+  const [me, setMe] = useState<MeResponse["user"] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: MeResponse | null) => {
+        if (!cancelled && data?.ok) setMe(data.user ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const user = me
+    ? {
+        name: me.name,
+        subtitle: me.org ? `${me.role} · ${me.org}` : me.role,
+        initials: me.initials,
+        email: me.email,
+      }
+    : { name: "Loading…", subtitle: "Compliance Manager", initials: "··", email: "" };
+
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--color-background)]">
       <IdleTimeout />
       <RoleSidebar groups={GROUPS} utility={UTILITY} />
       <div className="flex min-w-0 flex-1 flex-col">
         <RoleHeader
-          user={{ name: "Sai Compliance", subtitle: "Compliance Manager · City General", initials: "SC", email: "compliance@citygeneral.health" }}
+          user={user}
           sessionMins={14}
           searchPlaceholder="Search audit events, policies, consents…"
           settingsHref="/compliance/settings"

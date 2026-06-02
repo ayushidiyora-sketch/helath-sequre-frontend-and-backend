@@ -133,6 +133,10 @@ function ProfileTab() {
   const [api, setApi] = useState<ApiProfile | null>(null);
   const [careTeam, setCareTeam] = useState<ApiCareTeamMember[]>([]);
   const [saving, setSaving] = useState(false);
+  // Gender / profile photo aren't in the localStorage Profile shape (DB-only)
+  // so we keep them as separate state hydrated from the API.
+  const [gender, setGender] = useState<string>("");
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   // First load: pull profile + care team from the API. Address fields stay in
   // the local store since there are no DB columns for them yet.
@@ -153,6 +157,8 @@ function ProfileTab() {
           phone: p.phone ?? "",
           dob: p.dateOfBirth ?? "",
         }));
+        setGender(p.gender ?? "");
+        setPhotoUrl(p.profilePhotoUrl ?? null);
       })
       .catch(() => {});
     return () => {
@@ -186,6 +192,7 @@ function ProfileTab() {
           lastName: draft.lastName,
           phone: draft.phone,
           dateOfBirth: draft.dob || null,
+          gender: gender || null,
         }),
       });
       const data = await r.json();
@@ -218,10 +225,34 @@ function ProfileTab() {
         phone: api.phone ?? "",
         dob: api.dateOfBirth ?? "",
       }));
+      setGender(api.gender ?? "");
+      setPhotoUrl(api.profilePhotoUrl ?? null);
     } else {
       setDraft(state.profile);
     }
     toast.info("Changes discarded");
+  }
+
+  async function handlePickPhoto(dataUrl: string, name: string) {
+    // PATCH the profile with the new photo immediately — independent of the
+    // Save Changes button so the avatar reflects the upload right away.
+    try {
+      const r = await fetch("/api/patient/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profilePhotoUrl: dataUrl }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        toast.error(data.error ?? "Could not update photo.");
+        return;
+      }
+      setApi(data.profile as ApiProfile);
+      setPhotoUrl(data.profile.profilePhotoUrl ?? null);
+      toast.success("Profile photo updated", { description: `${name} · audit-logged` });
+    } catch {
+      toast.error("Network error — could not save photo.");
+    }
   }
 
   const displayName =
@@ -243,6 +274,22 @@ function ProfileTab() {
             <Field id="email" label="Email" value={draft.email} leadingIcon={<Mail />} readOnly />
             <Field id="phone" label="Phone" value={draft.phone} onChange={(v) => update("phone", v)} leadingIcon={<Phone />} />
             <Field id="dob" label="Date of birth" value={draft.dob} onChange={(v) => update("dob", v)} leadingIcon={<CalendarDays />} />
+            <div className="space-y-1.5">
+              <label htmlFor="gender" className="text-xs font-medium text-[var(--color-muted-foreground)]">Gender</label>
+              <select
+                id="gender"
+                value={gender}
+                onChange={(e) => setGender(e.target.value)}
+                className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
+              >
+                <option value="">— Select —</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+                <option value="Prefer not to say">Prefer not to say</option>
+              </select>
+            </div>
+            <Field id="tenant" label="Clinic / Tenant" value={api?.tenantName ?? "—"} readOnly />
             <Field id="mrn" label="MRN" value={api?.mrn ?? "—"} mono readOnly />
           </div>
         </Section>
@@ -274,14 +321,21 @@ function ProfileTab() {
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
           <div className="flex items-center gap-3">
             <Avatar className="size-14">
+              {photoUrl && (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={photoUrl} alt={displayName} className="size-full rounded-full object-cover" />
+              )}
               <AvatarFallback>{displayInitials}</AvatarFallback>
             </Avatar>
             <div>
               <p className="text-sm font-semibold">{displayName}</p>
               <p className="text-xs text-[var(--color-muted-foreground)]">{enrolledLabel}</p>
+              {api?.tenantName && (
+                <p className="text-[11px] text-[var(--color-muted-foreground)]">{api.tenantName}</p>
+              )}
             </div>
           </div>
-          <ChangePhotoButton />
+          <ChangePhotoButton onPicked={handlePickPhoto} />
         </div>
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
           <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Care team</p>
@@ -359,6 +413,31 @@ function SecurityTab() {
   });
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
+
+  async function handleChangePassword() {
+    if (pwSaving) return;
+    setPwSaving(true);
+    try {
+      const r = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: currentPw, newPassword: newPw }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not update password.");
+        return;
+      }
+      toast.success("Password updated", { description: "Use it on your next sign-in · audit-logged" });
+      setCurrentPw("");
+      setNewPw("");
+    } catch {
+      toast.error("Network error — try again.");
+    } finally {
+      setPwSaving(false);
+    }
+  }
 
   // Real DB-backed TOTP state, populated on mount. We keep the local store in
   // sync so any other view that reads `state.security.mfaEnabled` stays right.
@@ -436,18 +515,13 @@ function SecurityTab() {
             <Field id="curpw" label="Current password" type="password" value={currentPw} onChange={setCurrentPw} />
             <Field id="newpw" label="New password" type="password" value={newPw} onChange={setNewPw} />
           </div>
-          <ActionButton
+          <Button
             className="mt-1"
-            confirm={{
-              title: "Update password?",
-              description: "All active sessions and devices will be revoked. You'll need to sign in again.",
-              confirmLabel: "Update & sign out everywhere",
-            }}
-            toastMessage="Password updated"
-            toastDescription="All other sessions revoked · audit-logged"
+            onClick={() => void handleChangePassword()}
+            disabled={pwSaving || !currentPw || newPw.length < 12}
           >
-            Update password
-          </ActionButton>
+            {pwSaving ? "Updating…" : "Update password"}
+          </Button>
         </Section>
 
         <Section title="Two-factor authentication" desc="Optional for patients · strongly recommended.">
@@ -738,58 +812,89 @@ function relativeLastSeen(iso: string): string {
   return `${day}d ago`;
 }
 
+interface ApiSession {
+  id: string;
+  device: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  issuedAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  isCurrent: boolean;
+}
+
 function SessionsTab() {
-  const { state, revokeSession } = usePatientStore();
-  const sessions = state.security.sessions;
+  const [sessions, setSessions] = useState<ApiSession[] | null>(null);
+
+  const reload = async () => {
+    const r = await fetch("/api/me/sessions", { cache: "no-store" });
+    const data = await r.json();
+    if (data?.ok && Array.isArray(data.sessions)) setSessions(data.sessions as ApiSession[]);
+  };
+  useEffect(() => {
+    void reload();
+  }, []);
+
+  async function revokeOne(id: string, device: string) {
+    const r = await fetch(`/api/me/sessions?id=${id}`, { method: "DELETE" });
+    const data = await r.json();
+    if (!r.ok || !data?.ok) {
+      toast.error(data?.error ?? "Could not revoke session.");
+      return;
+    }
+    toast.warning("Session revoked", { description: `${device} signed out · audit-logged` });
+    await reload();
+  }
+  async function revokeOthers() {
+    const r = await fetch("/api/me/sessions?scope=others", { method: "DELETE" });
+    const data = await r.json();
+    if (!r.ok || !data?.ok) {
+      toast.error(data?.error ?? "Could not revoke other sessions.");
+      return;
+    }
+    toast.warning("Other sessions revoked");
+    await reload();
+  }
+
   return (
     <Section title="Active sessions & devices" desc="Revoke any session that doesn't look like you. Revocation takes effect on the next API call.">
-      {sessions.length === 0 ? (
+      {sessions === null ? (
+        <p className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-6 text-center text-sm text-[var(--color-muted-foreground)]">
+          Loading…
+        </p>
+      ) : sessions.length === 0 ? (
         <p className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-6 text-center text-sm text-[var(--color-muted-foreground)]">
           No active sessions.
         </p>
       ) : (
         <ul className="space-y-2">
-          {sessions.map((s: Session) => {
+          {sessions.map((s) => {
             const Icon = pickDeviceIcon(s.device);
-            const untrusted = s.trusted === false;
             return (
               <li
                 key={s.id}
-                className={`flex items-center gap-4 rounded-xl border p-4 ${
-                  untrusted
-                    ? "border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/20"
-                    : "border-[var(--color-border)] bg-[var(--color-card)]"
-                }`}
+                className="flex items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4"
               >
-                <span
-                  className={`flex size-10 items-center justify-center rounded-xl ${
-                    untrusted
-                      ? "bg-[var(--color-warning-soft)] text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]"
-                      : "bg-[var(--color-muted)] text-[var(--color-foreground)]"
-                  }`}
-                >
+                <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--color-muted)] text-[var(--color-foreground)]">
                   <Icon className="size-4.5" />
                 </span>
                 <div className="flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold">{s.device}</p>
-                    {s.current && <Badge variant="success" size="sm" dot>This device</Badge>}
-                    {s.trusted === false && (
-                      <Badge variant="warning" size="sm" dot>Unrecognized location</Badge>
-                    )}
+                    {s.isCurrent && <Badge variant="success" size="sm" dot>This device</Badge>}
                   </div>
                   <p className="text-xs text-[var(--color-muted-foreground)]">
-                    <span className="inline-flex items-center gap-1"><Globe className="size-3" /> {s.location}</span>
-                    {s.ip && (
+                    {s.ipAddress && (
                       <>
+                        <Globe className="mr-1 inline size-3" />
+                        <span className="font-mono text-[11px]">{s.ipAddress}</span>
                         <span className="mx-1.5">·</span>
-                        <span className="font-mono text-[11px]">{s.ip}</span>
                       </>
                     )}
-                    <span className="mx-1.5">·</span> {relativeLastSeen(s.lastSeen)}
+                    Last active {relativeLastSeen(s.lastSeenAt)}
                   </p>
                 </div>
-                {!s.current && (
+                {!s.isCurrent && (
                   <ActionButton
                     variant="ghost"
                     size="sm"
@@ -800,10 +905,7 @@ function SessionsTab() {
                       confirmLabel: "Revoke session",
                       variant: "destructive",
                     }}
-                    toastMessage="Session revoked"
-                    toastDescription={`${s.device} signed out · audit-logged`}
-                    toastVariant="warning"
-                    onClick={() => revokeSession(s.id)}
+                    onClick={() => void revokeOne(s.id, s.device)}
                   >
                     <LogOut /> Revoke
                   </ActionButton>
@@ -822,11 +924,8 @@ function SessionsTab() {
           confirmLabel: "Sign out everywhere else",
           variant: "destructive",
         }}
-        toastMessage="Other sessions revoked"
-        toastVariant="warning"
-        onClick={() => {
-          for (const s of sessions) if (!s.current) revokeSession(s.id);
-        }}
+        onClick={() => void revokeOthers()}
+        disabled={!sessions || sessions.filter((s) => !s.isCurrent).length === 0}
       >
         Sign out of all other sessions
       </ActionButton>

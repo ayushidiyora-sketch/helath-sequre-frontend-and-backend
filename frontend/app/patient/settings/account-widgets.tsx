@@ -15,9 +15,14 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 
-/** "Change photo" — opens a real image picker. */
-export function ChangePhotoButton() {
+/**
+ * "Change photo" — opens a real image picker and PATCHes the profile with the
+ * picked image as a data URL. The parent supplies `onPicked(dataUrl, name)`
+ * which decides where to send the upload (PATCH /api/patient/profile here).
+ */
+export function ChangePhotoButton({ onPicked }: { onPicked?: (dataUrl: string, name: string) => void | Promise<void> }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
   return (
     <>
       <input
@@ -27,12 +32,38 @@ export function ChangePhotoButton() {
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) toast.success("Profile photo updated", { description: `${f.name} · audit-logged` });
           e.target.value = "";
+          if (!f) return;
+          if (f.size > 2 * 1024 * 1024) {
+            toast.error("Photo must be 2 MB or smaller.");
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const dataUrl = String(reader.result ?? "");
+            if (!dataUrl.startsWith("data:image/")) {
+              toast.error("Could not read the image.");
+              return;
+            }
+            setBusy(true);
+            try {
+              await onPicked?.(dataUrl, f.name);
+            } finally {
+              setBusy(false);
+            }
+          };
+          reader.onerror = () => toast.error("Could not read the image.");
+          reader.readAsDataURL(f);
         }}
       />
-      <Button variant="outline" size="sm" className="mt-4 w-full" onClick={() => inputRef.current?.click()}>
-        Change photo
+      <Button
+        variant="outline"
+        size="sm"
+        className="mt-4 w-full"
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+      >
+        {busy ? "Uploading…" : "Change photo"}
       </Button>
     </>
   );

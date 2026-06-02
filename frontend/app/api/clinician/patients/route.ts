@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -20,6 +20,9 @@ export async function GET() {
   if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
   if (claims.role !== "Clinician")
     return NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 });
+  // Demo-user session — no DB assignments; return an empty roster so the
+  // page renders instead of P2023'ing on the non-UUID id.
+  if (!isDbUid(claims.uid)) return NextResponse.json({ ok: true, patients: [] });
 
   const assignments = await prisma.patientAssignment.findMany({
     where: { clinicianId: claims.uid, endedAt: null },

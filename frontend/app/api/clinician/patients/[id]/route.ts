@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -23,6 +23,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
   if (claims.role !== "Clinician")
     return NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 });
+  // Demo-user clinician — no DB assignment exists; let the page fall back to
+  // its local-store lookup instead of 500'ing on a non-UUID `clinicianId`.
+  if (!isDbUid(claims.uid))
+    return NextResponse.json({ ok: false, error: "Not assigned." }, { status: 404 });
   if (!UUID_RE.test(id))
     return NextResponse.json({ ok: false, error: "Invalid patient id." }, { status: 400 });
 
