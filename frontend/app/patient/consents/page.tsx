@@ -22,6 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { RevokeConsentDialog, ConsentRequestDialog } from "@/components/shared/form-dialogs";
 import { ActionButton } from "@/components/shared/action-button";
+import { ReConsentBanner } from "@/components/patient/re-consent-banner";
 import {
   usePatientStore,
   CONSENT_SCOPE_LABEL,
@@ -140,6 +141,8 @@ export default function ConsentsPage() {
         }
       />
 
+      <ReConsentBanner />
+
       {/* Pending requests — populated by clinician POSTs to
           /api/clinician/consent-requests. Each row gets its own
           Decline / Review & approve buttons. */}
@@ -206,7 +209,7 @@ export default function ConsentsPage() {
                 <ConsentCard
                   key={c.id}
                   c={c}
-                  onRevoke={() => {
+                  onRevoke={async () => {
                     revokeConsent(c.id);
                     addNotification({
                       title: "Consent revoked",
@@ -214,6 +217,17 @@ export default function ConsentsPage() {
                       type: "consent",
                     });
                     toast.warning("Consent revoked", { description: `${c.clinician} · effective on next API call` });
+                    // Mirror the revoke to the server so the Compliance feed
+                    // flips this row from "active" to "revoked". Best-effort
+                    // — the local-store call above keeps the UI consistent
+                    // even if the network mirror fails.
+                    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(c.id)) {
+                      try {
+                        await fetch(`/api/patient/consents?id=${encodeURIComponent(c.id)}`, { method: "DELETE" });
+                      } catch (err) {
+                        console.error("[consents] revoke mirror failed:", err);
+                      }
+                    }
                   }}
                 />
               ))}

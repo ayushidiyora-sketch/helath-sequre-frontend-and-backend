@@ -32,6 +32,7 @@ import {
   type DayTemplate,
   type BlockedSlot,
 } from "@/lib/clinician-store";
+import { RescheduleAppointmentDialog } from "@/components/shared/reschedule-appointment-dialog";
 
 const WEEKDAYS: Weekday[] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -146,11 +147,13 @@ export default function ClinicianSchedulePage() {
     date: string;
     time: string;
     durationMinutes: number;
-    status: "confirmed" | "no_show" | "blocked" | "cancelled" | "completed";
+    status: "requested" | "reschedule_requested" | "confirmed" | "arrived" | "in_progress" | "no_show" | "blocked" | "cancelled" | "completed";
     mode: "in-person" | "telehealth";
     notes: string | null;
   };
   const [apiAppointments, setApiAppointments] = useState<ApiAppt[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
+  const refetchAppointments = () => setReloadKey((k) => k + 1);
   useEffect(() => {
     let cancelled = false;
     // Fetch the week containing selectedDate (Sun..Sat). Cheap query and
@@ -166,20 +169,30 @@ export default function ClinicianSchedulePage() {
       weekStart.getMonth(),
       weekStart.getDate() + 6,
     );
-    fetch(
-      `/api/clinician/appointments?from=${toLocalIso(weekStart)}&to=${toLocalIso(weekEnd)}`,
-      { cache: "no-store" },
-    )
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((data) => {
+    async function pull() {
+      try {
+        const r = await fetch(
+          `/api/clinician/appointments?from=${toLocalIso(weekStart)}&to=${toLocalIso(weekEnd)}`,
+          { cache: "no-store" },
+        );
+        if (!r.ok) return;
+        const data = await r.json();
         if (cancelled || !data?.ok) return;
         setApiAppointments(data.appointments as ApiAppt[]);
-      })
-      .catch(() => {});
+      } catch { /* ignore — keep last good state */ }
+    }
+    void pull();
+    // Auto-refresh so lifecycle changes (Mark arrived / Start consultation /
+    // Complete) propagate from the patient chart without a manual reload.
+    const tick = setInterval(pull, 15000);
+    function onFocus() { void pull(); }
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
+      clearInterval(tick);
+      window.removeEventListener("focus", onFocus);
     };
-  }, [selectedDate]);
+  }, [selectedDate, reloadKey]);
 
   const dayAppointments = useMemo(
     () => apiAppointments.filter((a) => a.date === selectedDateIso),
@@ -198,9 +211,12 @@ export default function ClinicianSchedulePage() {
   type SlotRow = {
     time: string;
     patient: string;
-    status: "completed" | "next" | "upcoming" | "blocked" | "available";
+    status: "completed" | "next" | "upcoming" | "arrived" | "in-progress" | "no-show" | "cancelled" | "blocked" | "available" | "requested" | "reschedule-requested";
     mode: "office" | "telehealth";
     sortKey: string;
+    /** Set when this row maps to a real DB appointment (vs a block / open slot). */
+    appointmentId?: string;
+    startsAtIso?: string;
   };
   const slots: SlotRow[] = useMemo(() => {
     const out: SlotRow[] = [];
@@ -210,7 +226,12 @@ export default function ClinicianSchedulePage() {
         : a.patientName ?? "Patient";
       let status: SlotRow["status"];
       if (a.status === "completed") status = "completed";
-      else if (a.status === "no_show" || a.status === "cancelled") status = "upcoming";
+      else if (a.status === "arrived") status = "arrived";
+      else if (a.status === "in_progress") status = "in-progress";
+      else if (a.status === "no_show") status = "no-show";
+      else if (a.status === "cancelled") status = "cancelled";
+      else if (a.status === "requested") status = "requested";
+      else if (a.status === "reschedule_requested") status = "reschedule-requested";
       else status = "upcoming";
       out.push({
         time: a.time,
@@ -218,6 +239,8 @@ export default function ClinicianSchedulePage() {
         status,
         mode: a.mode === "telehealth" ? "telehealth" : "office",
         sortKey: a.time,
+        appointmentId: a.id,
+        startsAtIso: a.startsAt,
       });
     }
     for (const b of dayBlocks) {
@@ -298,6 +321,9 @@ export default function ClinicianSchedulePage() {
             <ul className="divide-y divide-[var(--color-border)]">
               {slots.map((s, i) => {
                 const ModeIcon = s.mode === "office" ? MapPin : Video;
+                const canReschedule = !!s.appointmentId && !!s.startsAtIso &&
+                  (s.status === "requested" || s.status === "upcoming" || s.status === "next" ||
+                   s.status === "reschedule-requested");
                 return (
                   <li
                     key={i}
@@ -322,12 +348,26 @@ export default function ClinicianSchedulePage() {
                     <div className="hidden md:col-span-1 md:flex justify-center text-[var(--color-muted-foreground)]">
                       <ModeIcon className="size-4" />
                     </div>
-                    <div className="flex justify-start md:col-span-2 md:justify-end">
+                    <div className="flex items-center justify-start gap-2 md:col-span-2 md:justify-end">
                       {s.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
+                      {s.status === "arrived" && <Badge variant="warning" size="sm" dot>Arrived</Badge>}
+                      {s.status === "in-progress" && <Badge variant="info" size="sm" dot>In progress</Badge>}
+                      {s.status === "no-show" && <Badge variant="danger" size="sm" dot>No-show</Badge>}
+                      {s.status === "cancelled" && <Badge variant="muted" size="sm">Cancelled</Badge>}
+                      {s.status === "requested" && <Badge variant="warning" size="sm" dot>Requested</Badge>}
+                      {s.status === "reschedule-requested" && <Badge variant="warning" size="sm" dot>Reschedule</Badge>}
                       {s.status === "next" && <Badge variant="info" size="sm" dot>Next</Badge>}
                       {s.status === "upcoming" && <Badge variant="muted" size="sm">Upcoming</Badge>}
                       {s.status === "blocked" && <Badge variant="warning" size="sm" dot>Blocked</Badge>}
                       {s.status === "available" && <Badge variant="outline" size="sm">Available</Badge>}
+                      {canReschedule && (
+                        <RescheduleRowButton
+                          appointmentId={s.appointmentId!}
+                          startsAtIso={s.startsAtIso!}
+                          label={`${s.time} · ${s.patient}`}
+                          onDone={refetchAppointments}
+                        />
+                      )}
                     </div>
                   </li>
                 );
@@ -942,3 +982,60 @@ function EditTemplateForm({
     </>
   );
 }
+
+
+function RescheduleRowButton({
+  appointmentId,
+  startsAtIso,
+  label,
+  onDone,
+}: {
+  appointmentId: string;
+  startsAtIso: string;
+  label: string;
+  onDone: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-[11px] text-[var(--color-primary-700)] hover:bg-[var(--color-primary-50)]"
+        onClick={() => setOpen(true)}
+      >
+        <Clock3 className="size-3.5" /> Reschedule
+      </Button>
+      <RescheduleAppointmentDialog
+        open={open}
+        onOpenChange={setOpen}
+        currentStartsAt={startsAtIso}
+        currentLabel={label}
+        mode="clinician_propose"
+        onSubmit={async ({ startsAt, note }) => {
+          try {
+            const r = await fetch(`/api/clinician/appointments/${appointmentId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "request_reschedule", proposedStartsAt: startsAt, proposedNote: note }),
+            });
+            const j = await r.json();
+            if (!r.ok || !j?.ok) {
+              toast.error(j?.error ?? "Could not propose reschedule");
+              return { ok: false, error: j?.error };
+            }
+            toast.success("Reschedule proposed", {
+              description: `Patient will see the new slot on their portal.`,
+            });
+            onDone();
+            return { ok: true };
+          } catch {
+            toast.error("Network error");
+            return { ok: false };
+          }
+        }}
+      />
+    </>
+  );
+}
+

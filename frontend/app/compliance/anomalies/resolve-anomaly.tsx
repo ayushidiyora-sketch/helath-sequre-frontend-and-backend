@@ -8,6 +8,9 @@ import {
   AlertTriangle,
   ShieldAlert,
   Lightbulb,
+  Loader2,
+  Search as SearchIcon,
+  XCircle,
 } from "lucide-react";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
@@ -21,31 +24,41 @@ import {
 } from "@/components/ui/dialog";
 
 type Outcome = "legitimate" | "policy_update" | "incident";
+type DecisionStatus = "investigating" | "resolved" | "dismissed";
 
-const OUTCOMES: Array<{ key: Outcome; label: string; helper: string; icon: React.ComponentType<{ className?: string }> }> = [
+const OUTCOMES: Array<{
+  key: Outcome;
+  label: string;
+  helper: string;
+  icon: React.ComponentType<{ className?: string }>;
+  status: DecisionStatus;
+}> = [
   {
     key: "legitimate",
     label: "Investigated — legitimate",
     helper: "Activity verified out-of-band. Dismissed with a recorded justification.",
     icon: CheckCircle2,
+    status: "dismissed",
   },
   {
     key: "policy_update",
     label: "Tune detection rule",
     helper: "Pattern is acceptable; update the engine to stop flagging this signature.",
     icon: Lightbulb,
+    status: "resolved",
   },
   {
     key: "incident",
     label: "Escalate — open incident",
     helper: "Likely real abuse. Page super admin, revoke session, file an incident record.",
     icon: ShieldAlert,
+    status: "resolved",
   },
 ];
 
 /**
  * Resolution dialog for an anomaly. Captures the outcome category and a
- * required written justification, both of which land in the audit ledger.
+ * required written justification, both of which land in `anomaly_decisions`.
  * Replaces the bare "Dismiss" / "Open incident" buttons so every closure
  * carries its reason.
  */
@@ -55,42 +68,101 @@ export function ResolveAnomalyButton({
   size = "sm",
   label = "Resolve…",
   className,
+  onDone,
 }: {
   anomalyId: string;
   variant?: ButtonProps["variant"];
   size?: ButtonProps["size"];
   label?: string;
   className?: string;
+  onDone?: () => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>("legitimate");
   const [coordinatedWith, setCoordinatedWith] = useState("");
   const [justification, setJustification] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function submit() {
+  async function submitDecision(targetStatus: DecisionStatus, outcomeKey: Outcome | null) {
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/compliance/anomalies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          signature: anomalyId,
+          status: targetStatus,
+          outcome: outcomeKey,
+          coordinatedWith: coordinatedWith.trim() || null,
+          justification: justification.trim() || null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        toast.error(json?.error ?? "Failed to save decision");
+        return false;
+      }
+      return true;
+    } catch {
+      toast.error("Network error — please retry.");
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submit() {
     if (!justification.trim()) {
       toast.warning("Justification required", {
         description: "Compliance closures must record a written reason.",
       });
       return;
     }
-
     const meta = OUTCOMES.find((o) => o.key === outcome)!;
+    const ok = await submitDecision(meta.status, outcome);
+    if (!ok) return;
     if (outcome === "incident") {
       toast.error("Incident opened", {
-        description: `${anomalyId} · super admin paged · session revoked · audit-logged`,
+        description: `${anomalyId.slice(0, 24)}${anomalyId.length > 24 ? "…" : ""} · audit-logged`,
       });
     } else {
       toast.success(`Resolved · ${meta.label.toLowerCase()}`, {
-        description: `${anomalyId} · ${coordinatedWith ? "coordinated with " + coordinatedWith + " · " : ""}audit-logged`,
+        description: `${coordinatedWith ? "coordinated with " + coordinatedWith + " · " : ""}audit-logged`,
       });
     }
     setOpen(false);
     setJustification("");
     setCoordinatedWith("");
     setOutcome("legitimate");
-    router.push("/compliance/anomalies");
+    onDone?.();
+    router.refresh();
+  }
+
+  async function quickInvestigate() {
+    const ok = await submitDecision("investigating", null);
+    if (!ok) return;
+    toast.info("Marked as investigating", { description: "Status updated on the anomaly." });
+    onDone?.();
+    router.refresh();
+  }
+
+  async function quickDismiss() {
+    if (!justification.trim()) {
+      toast.warning("Justification required", {
+        description: "Dismissing an anomaly still needs a written reason.",
+      });
+      return;
+    }
+    const ok = await submitDecision("dismissed", "legitimate");
+    if (!ok) return;
+    toast.success("Anomaly dismissed", { description: "audit-logged" });
+    setOpen(false);
+    setJustification("");
+    setCoordinatedWith("");
+    setOutcome("legitimate");
+    onDone?.();
+    router.refresh();
   }
 
   return (
@@ -163,15 +235,27 @@ export function ResolveAnomalyButton({
             </div>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button
-              variant={outcome === "incident" ? "destructive" : "default"}
-              onClick={submit}
-            >
-              {outcome === "incident" ? <ShieldAlert /> : <CheckCircle2 />}
-              {outcome === "incident" ? "Open incident" : "Resolve"}
-            </Button>
+          <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={quickInvestigate} disabled={submitting}>
+                {submitting ? <Loader2 className="size-4 animate-spin" /> : <SearchIcon className="size-4" />}
+                Mark investigating
+              </Button>
+              <Button variant="outline" onClick={quickDismiss} disabled={submitting}>
+                <XCircle className="size-4" /> Dismiss
+              </Button>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setOpen(false)} disabled={submitting}>Cancel</Button>
+              <Button
+                variant={outcome === "incident" ? "destructive" : "default"}
+                onClick={submit}
+                disabled={submitting}
+              >
+                {submitting ? <Loader2 className="size-4 animate-spin" /> : outcome === "incident" ? <ShieldAlert /> : <CheckCircle2 />}
+                {outcome === "incident" ? "Open incident" : "Resolve"}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

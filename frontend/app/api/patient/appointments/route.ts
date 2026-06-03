@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { AppointmentStatus, RoleKind } from "@prisma/client";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth";
+import { RoleKind } from "@prisma/client";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { writeAudit } from "@/lib/appointment-lifecycle";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,84 @@ function parseTime12(label: string): number | null {
  * `Appointment` row tagged with the patient's name + email so it shows up on
  * the clinician's schedule and on the patient's appointment list.
  */
+/**
+ * Returns the patient's own DB-backed appointments — the chart on
+ * /patient/appointments uses this so DB-resident bookings (including those
+ * created by the clinician via /api/clinician/appointments) show up alongside
+ * any legacy local-store entries. Demo sessions short-circuit to an empty
+ * list to avoid hitting Postgres with a non-UUID id.
+ */
+export async function GET() {
+  const jar = await cookies();
+  const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
+  if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
+  if (claims.role !== "Patient")
+    return NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 });
+  if (!isDbUid(claims.uid)) return NextResponse.json({ ok: true, appointments: [] });
+
+  // Patient's email is the join key on the appointments table (patientEmail is
+  // captured at booking time; we also fall back to patientId match for safety).
+  const me = await prisma.user.findUnique({
+    where: { id: claims.uid },
+    select: { email: true },
+  });
+  if (!me) return NextResponse.json({ ok: true, appointments: [] });
+
+  const rows = await prisma.$queryRaw<{
+    id: string;
+    startsAt: Date;
+    durationMinutes: number;
+    status: string;
+    room: string | null;
+    notes: string | null;
+    proposedStartsAt: Date | null;
+    proposedNote: string | null;
+    clinicianId: string;
+    clinicianFirstName: string | null;
+    clinicianLastName: string | null;
+    clinicianDepartment: string | null;
+    clinicianDesignation: string | null;
+  }[]>`
+    SELECT a.id, a."startsAt", a."durationMinutes", a.status::text AS status,
+           a.room, a.notes,
+           a."proposedStartsAt", a."proposedNote",
+           a."clinicianId",
+           u."firstName"   AS "clinicianFirstName",
+           u."lastName"    AS "clinicianLastName",
+           u.department    AS "clinicianDepartment",
+           u.designation   AS "clinicianDesignation"
+    FROM appointments a
+    JOIN users u ON u.id = a."clinicianId"
+    WHERE a."patientEmail" = ${me.email}
+      AND a."deletedAt" IS NULL
+    ORDER BY a."startsAt" DESC
+    LIMIT 200
+  `;
+
+  return NextResponse.json({
+    ok: true,
+    appointments: rows.map((r) => {
+      const d = r.startsAt;
+      return {
+        id: r.id,
+        clinicianId: r.clinicianId,
+        clinicianName: `Dr. ${[r.clinicianFirstName, r.clinicianLastName].filter(Boolean).join(" ").trim()}`.trim(),
+        clinicianDepartment: r.clinicianDepartment ?? r.clinicianDesignation ?? "Care team",
+        startsAt: d.toISOString(),
+        date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+        time: d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
+        durationMinutes: r.durationMinutes,
+        room: r.room,
+        notes: r.notes,
+        proposedStartsAt: r.proposedStartsAt ? r.proposedStartsAt.toISOString() : null,
+        proposedNote: r.proposedNote,
+        status: r.status,
+        mode: r.room === "Telehealth" ? "telehealth" : "in-person",
+      };
+    }),
+  });
+}
+
 export async function POST(req: Request) {
   const jar = await cookies();
   const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
@@ -94,44 +173,54 @@ export async function POST(req: Request) {
   if (!me)
     return NextResponse.json({ ok: false, error: "Patient not found." }, { status: 404 });
 
-  // Reject double-booking the same exact slot for this clinician.
-  const conflict = await prisma.appointment.findFirst({
-    where: {
-      clinicianId,
-      startsAt,
-      deletedAt: null,
-      status: { notIn: [AppointmentStatus.cancelled, AppointmentStatus.no_show] },
-    },
-    select: { id: true },
-  });
-  if (conflict)
+  // Reject double-booking the same exact slot for this clinician — raw SQL
+  // because the generated client doesn't know the new enum values.
+  const conflict = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM appointments
+    WHERE "clinicianId" = ${clinicianId}::uuid
+      AND "startsAt" = ${startsAt}
+      AND "deletedAt" IS NULL
+      AND status NOT IN ('cancelled','no_show')
+    LIMIT 1
+  `;
+  if (conflict[0])
     return NextResponse.json(
       { ok: false, error: "That slot was just taken. Please pick a different time." },
       { status: 409 },
     );
 
   const notes = [body.reason?.trim(), body.notes?.trim()].filter(Boolean).join(" — ") || null;
+  const patientName = `${me.firstName} ${me.lastName}`.trim() || me.email;
+  const room = body.mode === "telehealth" ? "Telehealth" : null;
 
-  const created = await prisma.appointment.create({
-    data: {
-      organizationId: clinician.organizationId,
-      clinicianId,
-      patientName: `${me.firstName} ${me.lastName}`.trim() || me.email,
-      patientEmail: me.email,
-      startsAt,
-      durationMinutes,
-      status: AppointmentStatus.confirmed,
-      room: body.mode === "telehealth" ? "Telehealth" : null,
-      notes,
-    },
-    select: {
-      id: true,
-      startsAt: true,
-      durationMinutes: true,
-      status: true,
-      room: true,
-      notes: true,
-    },
+  // Patient-initiated booking lands as `requested` so the clinician has to
+  // confirm before it counts as scheduled. Raw SQL because the generated
+  // Prisma client doesn't yet know the `requested` enum value.
+  const inserted = await prisma.$queryRaw<{
+    id: string; startsAt: Date; durationMinutes: number; status: string;
+    room: string | null; notes: string | null;
+  }[]>`
+    INSERT INTO appointments
+      (id, "organizationId", "clinicianId", "patientName", "patientEmail",
+       "startsAt", "durationMinutes", status, room, notes, "createdAt", "updatedAt")
+    VALUES
+      (gen_random_uuid(), ${clinician.organizationId}::uuid, ${clinicianId}::uuid,
+       ${patientName}, ${me.email},
+       ${startsAt}, ${durationMinutes}, 'requested'::"AppointmentStatus",
+       ${room}, ${notes}, NOW(), NOW())
+    RETURNING id, "startsAt", "durationMinutes", status::text AS status, room, notes
+  `;
+  const created = inserted[0];
+
+  // First audit entry — records who booked the request.
+  await writeAudit({
+    appointmentId: created.id,
+    organizationId: clinician.organizationId,
+    previousStatus: null,
+    newStatus: "requested",
+    actor: { uid: claims.uid, email: me.email, role: "Patient" },
+    reason: "Patient-initiated booking",
+    metadata: { startsAt: startsAt.toISOString(), durationMinutes, mode: body.mode ?? "in-person" },
   });
 
   // Auto-establish the care relationship so the patient appears on the
@@ -169,4 +258,168 @@ export async function POST(req: Request) {
     },
     { status: 201 },
   );
+}
+
+interface PatchBody {
+  action?: "accept_reschedule" | "decline_reschedule" | "patient_reschedule" | "cancel";
+  appointmentId?: string;
+  reason?: string;
+  /** ISO timestamp of the slot the patient wants to move to (patient_reschedule only). */
+  proposedStartsAt?: string;
+}
+
+/**
+ * Patient-side appointment actions:
+ *  - accept_reschedule: clinician proposed a new slot; patient confirms it,
+ *    appointments.startsAt is moved to proposedStartsAt + status flips to confirmed.
+ *  - cancel: patient cancels their own appointment (requested or confirmed).
+ */
+export async function PATCH(req: Request) {
+  const jar = await cookies();
+  const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
+  if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
+  if (claims.role !== "Patient")
+    return NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 });
+  if (!isDbUid(claims.uid))
+    return NextResponse.json({ ok: false, error: "Demo session." }, { status: 400 });
+
+  let body: PatchBody;
+  try { body = await req.json() as PatchBody; }
+  catch { return NextResponse.json({ ok: false, error: "Invalid body" }, { status: 400 }); }
+
+  const id = (body.appointmentId ?? "").trim();
+  if (!UUID_RE.test(id))
+    return NextResponse.json({ ok: false, error: "Invalid appointmentId." }, { status: 400 });
+
+  // Ownership + lookup via raw SQL (handles new enum values).
+  const rows = await prisma.$queryRaw<{
+    id: string; status: string; organizationId: string;
+    patientEmail: string | null; proposedStartsAt: Date | null;
+  }[]>`
+    SELECT id, status::text AS status, "organizationId"::text AS "organizationId",
+           "patientEmail", "proposedStartsAt"
+    FROM appointments WHERE id = ${id}::uuid AND "deletedAt" IS NULL LIMIT 1
+  `;
+  const appt = rows[0];
+  if (!appt) return NextResponse.json({ ok: false, error: "Appointment not found." }, { status: 404 });
+
+  const me = await prisma.user.findUnique({ where: { id: claims.uid }, select: { email: true } });
+  if (!me || appt.patientEmail?.toLowerCase() !== me.email.toLowerCase())
+    return NextResponse.json({ ok: false, error: "Not your appointment." }, { status: 403 });
+
+  const { transitionStatus, scheduleReminders, cancelReminders } = await import("@/lib/appointment-lifecycle");
+
+  if (body.action === "accept_reschedule") {
+    if (appt.status !== "reschedule_requested" || !appt.proposedStartsAt)
+      return NextResponse.json({ ok: false, error: "No active reschedule proposal on this appointment." }, { status: 409 });
+    await prisma.$executeRaw`
+      UPDATE appointments SET
+        "startsAt"          = "proposedStartsAt",
+        "proposedStartsAt"  = NULL,
+        "proposedNote"      = NULL,
+        "updatedAt"         = NOW()
+      WHERE id = ${id}::uuid
+    `;
+    const result = await transitionStatus({
+      appointmentId: id,
+      organizationId: appt.organizationId,
+      newStatus: "confirmed",
+      actor: { uid: claims.uid, email: me.email, role: "Patient" },
+      reason: "Patient accepted reschedule",
+      metadata: { acceptedStartsAt: appt.proposedStartsAt.toISOString() },
+    });
+    if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
+    await scheduleReminders({ appointmentId: id, organizationId: appt.organizationId, startsAt: appt.proposedStartsAt });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (body.action === "decline_reschedule") {
+    if (appt.status !== "reschedule_requested")
+      return NextResponse.json({ ok: false, error: "No active reschedule proposal on this appointment." }, { status: 409 });
+    // Drop the proposal, leave the original slot intact, and move the
+    // appointment back to `requested` so the clinician knows to handle it
+    // again (the patient implicitly rejected the suggested slot).
+    await prisma.$executeRaw`
+      UPDATE appointments SET
+        "proposedStartsAt"  = NULL,
+        "proposedNote"      = NULL,
+        "updatedAt"         = NOW()
+      WHERE id = ${id}::uuid
+    `;
+    const result = await transitionStatus({
+      appointmentId: id,
+      organizationId: appt.organizationId,
+      newStatus: "requested",
+      actor: { uid: claims.uid, email: me.email, role: "Patient" },
+      reason: body.reason?.toString().trim() || "Patient declined the proposed reschedule",
+    });
+    if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
+    return NextResponse.json({ ok: true });
+  }
+
+  if (body.action === "patient_reschedule") {
+    // Only allowed before the clinician has done anything irreversible —
+    // requested, reschedule_requested, and confirmed are all editable by the
+    // patient. Once the lifecycle hits arrived/in_progress/completed/no_show
+    // the patient can't change the time anymore (they'd cancel + rebook).
+    if (
+      appt.status !== "requested" &&
+      appt.status !== "reschedule_requested" &&
+      appt.status !== "confirmed"
+    ) {
+      return NextResponse.json(
+        { ok: false, error: `Cannot reschedule a ${appt.status} appointment.` },
+        { status: 409 },
+      );
+    }
+    const proposedIso = (body.proposedStartsAt ?? "").trim();
+    const newStart = new Date(proposedIso);
+    if (!proposedIso || Number.isNaN(newStart.getTime()))
+      return NextResponse.json({ ok: false, error: "Valid proposedStartsAt (ISO) required." }, { status: 400 });
+    if (newStart.getTime() <= Date.now())
+      return NextResponse.json({ ok: false, error: "Pick a slot in the future." }, { status: 400 });
+
+    // Move the appointment to the new time AND flip status back to requested
+    // so the clinician re-confirms. Pass the timestamp as a tz-naive UTC
+    // string + cast so it round-trips without timezone bleed (see clinician
+    // route for the same trick).
+    const newStartSql = newStart.toISOString().replace("T", " ").replace("Z", "");
+    await prisma.$executeRaw`
+      UPDATE appointments SET
+        "startsAt"          = ${newStartSql}::timestamp,
+        "proposedStartsAt"  = NULL,
+        "proposedNote"      = ${body.reason?.toString().trim() || null},
+        "updatedAt"         = NOW()
+      WHERE id = ${id}::uuid
+    `;
+    const result = await transitionStatus({
+      appointmentId: id,
+      organizationId: appt.organizationId,
+      newStatus: "requested",
+      actor: { uid: claims.uid, email: me.email, role: "Patient" },
+      reason: body.reason?.toString().trim() || "Patient rescheduled",
+      metadata: { newStartsAt: newStart.toISOString() },
+      initial: true,
+    });
+    if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
+    await cancelReminders(id);
+    return NextResponse.json({ ok: true });
+  }
+
+  if (body.action === "cancel") {
+    if (appt.status === "completed" || appt.status === "cancelled" || appt.status === "no_show")
+      return NextResponse.json({ ok: false, error: `Cannot cancel a ${appt.status} appointment.` }, { status: 409 });
+    const result = await transitionStatus({
+      appointmentId: id,
+      organizationId: appt.organizationId,
+      newStatus: "cancelled",
+      actor: { uid: claims.uid, email: me.email, role: "Patient" },
+      reason: body.reason?.toString().trim() || "Patient cancellation",
+    });
+    if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
+    await cancelReminders(id);
+    return NextResponse.json({ ok: true });
+  }
+
+  return NextResponse.json({ ok: false, error: "Unknown action." }, { status: 400 });
 }

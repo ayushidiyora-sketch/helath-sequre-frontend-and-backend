@@ -58,6 +58,7 @@ import {
   type ConsentScope,
 } from "@/lib/clinician-store";
 import { RequestAccessDialog } from "./request-access-dialog";
+import { RescheduleAppointmentDialog } from "@/components/shared/reschedule-appointment-dialog";
 
 function dateLabel(iso: string): string {
   return new Date(iso + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
@@ -280,7 +281,15 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
               ? "no-show"
               : dbToday.status === "cancelled"
                 ? "cancelled"
-                : "confirmed",
+                : dbToday.status === "arrived"
+                  ? "arrived"
+                  : dbToday.status === "in_progress"
+                    ? "in-progress"
+                    : dbToday.status === "requested"
+                      ? "requested"
+                      : dbToday.status === "reschedule_requested"
+                        ? "reschedule-requested"
+                        : "confirmed",
         reason: dbToday.notes ?? "Visit",
       }
     : undefined;
@@ -361,6 +370,28 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
       {todayAppointment && (
         <EncounterCard
           appt={todayAppointment}
+          onPropose={todayAppointmentDb && todayAppointment.id === todayAppointmentDb.id
+            ? async ({ startsAt, note }) => {
+                try {
+                  const r = await fetch(`/api/clinician/appointments/${todayAppointment.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "request_reschedule", proposedStartsAt: startsAt, proposedNote: note }),
+                  });
+                  const j = await r.json();
+                  if (!r.ok || !j?.ok) {
+                    toast.error(j?.error ?? "Could not propose reschedule");
+                    return { ok: false, error: j?.error };
+                  }
+                  toast.success("Reschedule proposed", { description: `${patient.name} will be notified` });
+                  await reloadAppts();
+                  return { ok: true };
+                } catch {
+                  toast.error("Network error");
+                  return { ok: false };
+                }
+              }
+            : undefined}
           onStatus={async (status) => {
             // If the encounter is the DB-backed one, persist to Postgres so
             // marks survive refresh + reflect across roles.
@@ -623,7 +654,23 @@ function ApprovedAccessBanner({ request }: { request: AccessRequest }) {
 // Encounter lifecycle card
 // ---------------------------------------------------------------------------
 
-function EncounterCard({ appt, onStatus }: { appt: ClinicianAppointment; onStatus: (s: AppointmentStatus) => void }) {
+function EncounterCard({
+  appt,
+  onStatus,
+  onPropose,
+}: {
+  appt: ClinicianAppointment;
+  onStatus: (s: AppointmentStatus) => void;
+  onPropose?: (params: { startsAt: string; note: string }) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const needsConfirm = appt.status === "requested" || appt.status === "reschedule-requested";
+  const badgeVariant: "info" | "warning" | "success" | "muted" | "default" =
+    appt.status === "confirmed" ? "info"
+    : appt.status === "arrived" ? "warning"
+    : appt.status === "in-progress" ? "success"
+    : appt.status === "requested" || appt.status === "reschedule-requested" ? "warning"
+    : "muted";
   return (
     <div className="rounded-2xl border border-[var(--color-primary)]/30 bg-[var(--color-primary-50)]/40 p-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -634,7 +681,7 @@ function EncounterCard({ appt, onStatus }: { appt: ClinicianAppointment; onStatu
           <p className="text-sm font-semibold">Today&apos;s encounter · {appt.time} · {appt.durationMinutes} min</p>
           <p className="text-xs text-[var(--color-muted-foreground)]">{appt.reason} · {appt.mode === "telehealth" ? "Telehealth" : "In-person"}</p>
         </div>
-        <Badge variant={appt.status === "confirmed" ? "info" : appt.status === "arrived" ? "warning" : appt.status === "in-progress" ? "success" : "muted"} size="sm" dot>
+        <Badge variant={badgeVariant} size="sm" dot>
           {appt.status.replace("-", " ")}
         </Badge>
         <Button asChild size="sm" variant="ghost">
@@ -643,6 +690,15 @@ function EncounterCard({ appt, onStatus }: { appt: ClinicianAppointment; onStatu
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
+        {needsConfirm && (
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => onStatus("confirmed")}
+          >
+            <CheckCheck /> Confirm appointment
+          </Button>
+        )}
         <Button
           variant={appt.status === "confirmed" ? "default" : "outline"}
           size="sm"
@@ -667,12 +723,27 @@ function EncounterCard({ appt, onStatus }: { appt: ClinicianAppointment; onStatu
         >
           <CheckCheck /> Complete
         </Button>
+        {onPropose && (appt.status === "requested" || appt.status === "confirmed") && (
+          <>
+            <Button variant="outline" size="sm" onClick={() => setRescheduleOpen(true)}>
+              <Clock /> Reschedule
+            </Button>
+            <RescheduleAppointmentDialog
+              open={rescheduleOpen}
+              onOpenChange={setRescheduleOpen}
+              currentStartsAt={new Date(`${appt.date}T00:00:00`).toISOString()}
+              currentLabel={`${appt.date} · ${appt.time}`}
+              mode="clinician_propose"
+              onSubmit={onPropose}
+            />
+          </>
+        )}
         <Button
           variant="ghost"
           size="sm"
           className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
           onClick={() => onStatus("no-show")}
-          disabled={appt.status === "completed" || appt.status === "cancelled"}
+          disabled={appt.status === "completed" || appt.status === "cancelled" || appt.status === "requested" || appt.status === "reschedule-requested"}
         >
           No-show
         </Button>

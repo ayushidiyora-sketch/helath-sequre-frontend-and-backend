@@ -70,10 +70,10 @@ function AuditLogsPageInner() {
 
   const [events, setEvents] = useState<AuditEvent[] | null>(null);
   const [stats, setStats] = useState<Stats>({ events24h: 0, denied: 0, failures: 0, anomalies: 0 });
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => params.get("q") ?? "");
   const [actionFilter, setActionFilter] = useState("All actions");
   const [statusFilters, setStatusFilters] = useState<AuditStatus[]>([]);
-  const [anomalyOnly, setAnomalyOnly] = useState(false);
+  const [anomalyOnly, setAnomalyOnly] = useState(() => params.get("anomaly") === "1");
   const [page, setPage] = useState(0);
 
   useEffect(() => {

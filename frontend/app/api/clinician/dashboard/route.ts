@@ -46,25 +46,30 @@ export async function GET() {
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
   const dayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
+  // Raw SQL for the appointments query so we tolerate the new `arrived` /
+  // `in_progress` enum values the generated Prisma client doesn't yet know
+  // (Windows DLL lock prevents `prisma generate`).
+  interface TodayAppt {
+    id: string;
+    patientName: string | null;
+    patientEmail: string | null;
+    startsAt: Date;
+    durationMinutes: number;
+    room: string | null;
+    status: string;
+    notes: string | null;
+  }
   const [todayAppointments, panelAssignments, totalActiveAssignments] = await Promise.all([
-    prisma.appointment.findMany({
-      where: {
-        clinicianId: me.id,
-        deletedAt: null,
-        startsAt: { gte: dayStart, lte: dayEnd },
-      },
-      orderBy: { startsAt: "asc" },
-      select: {
-        id: true,
-        patientName: true,
-        patientEmail: true,
-        startsAt: true,
-        durationMinutes: true,
-        room: true,
-        status: true,
-        notes: true,
-      },
-    }),
+    prisma.$queryRaw<TodayAppt[]>`
+      SELECT id, "patientName", "patientEmail", "startsAt",
+             "durationMinutes", room, status::text AS status, notes
+      FROM appointments
+      WHERE "clinicianId" = ${me.id}::uuid
+        AND "deletedAt" IS NULL
+        AND "startsAt" >= ${dayStart}
+        AND "startsAt" <= ${dayEnd}
+      ORDER BY "startsAt" ASC
+    `,
     prisma.patientAssignment.findMany({
       where: { clinicianId: me.id, endedAt: null },
       orderBy: { startedAt: "desc" },
@@ -89,15 +94,13 @@ export async function GET() {
     }),
   ]);
 
-  const completedToday = todayAppointments.filter(
-    (a) => a.status === AppointmentStatus.completed,
-  ).length;
+  const completedToday = todayAppointments.filter((a) => a.status === "completed").length;
   const nextUp = todayAppointments.find(
     (a) =>
-      a.status !== AppointmentStatus.completed &&
-      a.status !== AppointmentStatus.cancelled &&
-      a.status !== AppointmentStatus.no_show &&
-      a.status !== AppointmentStatus.blocked,
+      a.status !== "completed" &&
+      a.status !== "cancelled" &&
+      a.status !== "no_show" &&
+      a.status !== "blocked",
   );
 
   return NextResponse.json({

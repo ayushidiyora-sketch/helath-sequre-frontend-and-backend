@@ -49,7 +49,7 @@ interface DashboardAppointment {
   time: string;
   durationMinutes: number;
   room: string | null;
-  status: "confirmed" | "no_show" | "blocked" | "cancelled" | "completed";
+  status: "requested" | "reschedule_requested" | "confirmed" | "arrived" | "in_progress" | "no_show" | "blocked" | "cancelled" | "completed";
   notes: string | null;
 }
 
@@ -337,6 +337,10 @@ function TodayQueue({ appointments }: { appointments: DashboardAppointment[] }) 
                     <div className="flex items-center gap-2">
                       <p className="truncate text-sm font-semibold">{a.patientName ?? "—"}</p>
                       {a.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
+                      {a.status === "arrived" && <Badge variant="warning" size="sm" dot>Arrived</Badge>}
+                      {a.status === "in_progress" && <Badge variant="info" size="sm" dot>In progress</Badge>}
+                      {a.status === "requested" && <Badge variant="warning" size="sm" dot>Requested</Badge>}
+                      {a.status === "reschedule_requested" && <Badge variant="warning" size="sm" dot>Reschedule requested</Badge>}
                       {a.status === "no_show" && <Badge variant="danger" size="sm" dot>No-show</Badge>}
                       {a.status === "cancelled" && <Badge variant="muted" size="sm" dot>Cancelled</Badge>}
                       {a.status === "blocked" && <Badge variant="muted" size="sm" dot>Blocked</Badge>}

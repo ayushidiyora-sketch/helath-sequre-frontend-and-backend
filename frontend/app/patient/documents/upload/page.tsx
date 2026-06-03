@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { usePatientStore, type DocumentCategory } from "@/lib/patient-store";
+import { scanFile } from "@/lib/document-scanner";
 
 const MAX_MB = 25;
 
@@ -110,38 +111,93 @@ export default function UploadPage() {
   async function startUpload() {
     if (files.length === 0) return;
     setUploading(true);
-    // Persist each file into the patient store INCLUDING its bytes (base64
-    // data URL) and mime type so the documents page can render a real preview
-    // in a new tab and download the real file. The store auto-flips
-    // scanStatus from pending_scan → clean after ~1.5s to simulate ClamAV.
+    // Per-file: scan first (lib/document-scanner — magic-byte verify, EICAR
+    // signature, suspicious-extension and PDF-tag checks); if clean, POST
+    // to /api/patient/documents to persist the row in Postgres. Local store
+    // is mirrored after a successful API write so the documents page (which
+    // still reads from the store) shows the row immediately.
+    let accepted = 0;
+    let rejected = 0;
+    let netFailed = 0;
     for (const f of files) {
+      const scan = await scanFile(f);
+      if (scan.status === "infected") {
+        rejected++;
+        toast.error(`Blocked: ${f.name}`, {
+          description: scan.reason ?? "Virus scan flagged this file.",
+        });
+        continue;
+      }
       let dataUrl = "";
       try {
         dataUrl = await readAsDataUrl(f);
       } catch {
-        // If FileReader fails for some reason we still persist the metadata —
-        // the row will show but the preview/download will be a placeholder.
+        // FileReader can fail on huge / unreadable files — skip the dataUrl
+        // but still try to register metadata.
       }
       // If the user explicitly picked a category, apply it to every file.
       // Otherwise each file gets its own auto-detected category — uploading
       // an insurance card + a lab report at once tags them correctly.
       const perFileCategory = categoryEdited ? category : guessCategory(f);
+      const displayName = files.length === 1 && title.trim() ? title.trim() : f.name;
+
+      // POST to the DB-backed endpoint. This is the network call that shows
+      // in DevTools → Network and creates the Postgres row.
+      try {
+        const r = await fetch("/api/patient/documents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: displayName,
+            category: perFileCategory,
+            mimeType: f.type || null,
+            sizeBytes: f.size,
+            dataUrl,
+            scanStatus: "clean",
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok || !data?.ok) {
+          netFailed++;
+          toast.error(`Could not save: ${f.name}`, {
+            description: data?.error ?? `HTTP ${r.status}`,
+          });
+          continue;
+        }
+      } catch {
+        netFailed++;
+        toast.error(`Network error: ${f.name}`, { description: "Could not reach the server." });
+        continue;
+      }
+
+      // Mirror into local store so the existing /patient/documents page
+      // (currently store-backed) shows the row immediately without waiting
+      // for a refetch. The DB row is the canonical source.
       addDocument({
-        name: files.length === 1 && title.trim() ? title.trim() : f.name,
+        name: displayName,
         category: perFileCategory,
         sizeBytes: f.size,
         uploadedBy: "patient",
         uploaderName: undefined,
         dataUrl,
         mimeType: f.type || undefined,
+        scanStatus: "clean",
       });
+      accepted++;
     }
-    setTimeout(() => {
-      toast.success(`${files.length} file${files.length > 1 ? "s" : ""} uploaded`, {
-        description: "Virus scan queued · encrypted at rest · audit-logged",
-      });
+    setUploading(false);
+    if (accepted > 0) {
+      const tail: string[] = [];
+      if (rejected > 0) tail.push(`${rejected} blocked`);
+      if (netFailed > 0) tail.push(`${netFailed} failed to save`);
+      tail.push(`${accepted} clean`);
+      tail.push("audit-logged");
+      toast.success(`${accepted} file${accepted > 1 ? "s" : ""} uploaded`, { description: tail.join(" · ") });
       router.push("/patient/documents");
-    }, 600);
+    } else if (rejected + netFailed > 0) {
+      // Every file was rejected or failed — stay on the page so the user can retry.
+      setFiles([]);
+    }
   }
 
   return (

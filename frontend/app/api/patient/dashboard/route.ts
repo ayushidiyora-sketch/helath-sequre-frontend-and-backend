@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { AppointmentStatus, RoleKind } from "@prisma/client";
+import { RoleKind } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -51,22 +51,38 @@ export async function GET() {
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
 
   // Appointments today/future for this patient (booked against their email).
+  // Raw SQL so we tolerate the new `arrived` / `in_progress` enum values — the
+  // generated Prisma client doesn't know them yet (Windows DLL lock prevents
+  // `prisma generate`), so any include/select that pulls status would throw.
+  interface UpcomingRow {
+    id: string;
+    startsAt: Date;
+    durationMinutes: number;
+    room: string | null;
+    status: string;
+    notes: string | null;
+    clinicianFirstName: string | null;
+    clinicianLastName: string | null;
+    clinicianDesignation: string | null;
+    clinicianDepartment: string | null;
+  }
   const [upcoming, past, careTeam] = await Promise.all([
-    prisma.appointment.findMany({
-      where: {
-        patientEmail: me.email,
-        deletedAt: null,
-        startsAt: { gte: dayStart },
-        status: { notIn: [AppointmentStatus.cancelled, AppointmentStatus.no_show] },
-      },
-      orderBy: { startsAt: "asc" },
-      take: 10,
-      include: {
-        clinician: {
-          select: { firstName: true, lastName: true, designation: true, department: true },
-        },
-      },
-    }),
+    prisma.$queryRaw<UpcomingRow[]>`
+      SELECT a.id, a."startsAt", a."durationMinutes", a.room,
+             a.status::text AS status, a.notes,
+             u."firstName"   AS "clinicianFirstName",
+             u."lastName"    AS "clinicianLastName",
+             u.designation   AS "clinicianDesignation",
+             u.department    AS "clinicianDepartment"
+      FROM appointments a
+      JOIN users u ON u.id = a."clinicianId"
+      WHERE a."patientEmail" = ${me.email}
+        AND a."deletedAt" IS NULL
+        AND a."startsAt" >= ${dayStart}
+        AND a.status NOT IN ('cancelled','no_show')
+      ORDER BY a."startsAt" ASC
+      LIMIT 10
+    `,
     prisma.appointment.count({
       where: {
         patientEmail: me.email,
@@ -139,9 +155,9 @@ export async function GET() {
           room: next.room,
           status: next.status,
           notes: next.notes,
-          clinician: `Dr. ${next.clinician.firstName} ${next.clinician.lastName}`.trim(),
-          clinicianDepartment: next.clinician.department,
-          clinicianDesignation: next.clinician.designation,
+          clinician: `Dr. ${[next.clinicianFirstName, next.clinicianLastName].filter(Boolean).join(" ")}`.trim(),
+          clinicianDepartment: next.clinicianDepartment,
+          clinicianDesignation: next.clinicianDesignation,
         }
       : null,
     upcoming: upcoming.map((a) => ({
@@ -157,8 +173,8 @@ export async function GET() {
       room: a.room,
       status: a.status,
       notes: a.notes,
-      clinician: `Dr. ${a.clinician.firstName} ${a.clinician.lastName}`.trim(),
-      clinicianDepartment: a.clinician.department,
+      clinician: `Dr. ${[a.clinicianFirstName, a.clinicianLastName].filter(Boolean).join(" ")}`.trim(),
+      clinicianDepartment: a.clinicianDepartment,
     })),
     careTeam: careTeam.map((c) => ({
       assignmentId: c.id,

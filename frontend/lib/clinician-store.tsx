@@ -58,6 +58,7 @@ export interface AssignedPatient {
 
 export type AppointmentStatus =
   | "requested"
+  | "reschedule-requested"
   | "confirmed"
   | "arrived"
   | "in-progress"

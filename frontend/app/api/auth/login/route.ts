@@ -12,6 +12,7 @@ import {
 } from "@/lib/auth";
 import { DEMO_PASSWORD, type LoginScope } from "@/lib/demo-users";
 import { issueSession } from "@/lib/session-store";
+import { recordChallengeIssued } from "@/lib/mfa-challenge-store";
 import { mailerConfigured, otpEmail, sendMail } from "@/lib/mail";
 import { checkPassword } from "@/lib/password-store";
 import { lookupUserByEmail } from "@/lib/user-lookup";
@@ -165,11 +166,23 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const otp = devOtp();
+  const otpHash = sha256(otp);
   const pending = await signPending({
     uid: user.uid,
-    otpHash: sha256(otp),
+    otpHash,
     attempts: 0,
     mode: "email",
+  });
+
+  // Mirror the challenge into mfa_challenges for the compliance audit + Failed
+  // MFA anomaly detector. Demo users (non-UUID uid) short-circuit inside the
+  // helper, so this is a no-op for them.
+  await recordChallengeIssued({
+    uid: user.uid,
+    otpHash,
+    expiresAt: new Date(Date.now() + OTP_TTL_SECONDS * 1000),
+    ipAddress: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null,
+    userAgent: req.headers.get("user-agent") || null,
   });
 
   let mailSent = false;

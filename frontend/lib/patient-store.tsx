@@ -19,7 +19,10 @@ import * as React from "react";
 export type AppointmentMode = "in-person" | "telehealth";
 export type AppointmentStatus =
   | "requested"
+  | "reschedule-requested"
   | "confirmed"
+  | "arrived"
+  | "in-progress"
   | "completed"
   | "cancelled"
   | "no-show";
@@ -345,7 +348,7 @@ interface StoreActions {
   cancelAppointment(id: string): void;
   completeAppointment(id: string): void;
   // documents
-  addDocument(d: Omit<PatientDocument, "id" | "uploadedAt" | "scanStatus" | "uploadedBy"> & { uploadedBy?: PatientDocument["uploadedBy"] }): PatientDocument;
+  addDocument(d: Omit<PatientDocument, "id" | "uploadedAt" | "uploadedBy" | "scanStatus"> & { uploadedBy?: PatientDocument["uploadedBy"]; scanStatus?: DocumentScanStatus }): PatientDocument;
   deleteDocument(id: string): void;
   setDocumentScan(id: string, scan: DocumentScanStatus): void;
   // consents
@@ -448,23 +451,23 @@ export function PatientStoreProvider({ children }: { children: React.ReactNode }
       },
 
       addDocument(d) {
+        // Caller may supply an explicit scanStatus from the real client-side
+        // scanner (lib/document-scanner.ts). When omitted, the row enters as
+        // `pending_scan` and the upload caller is expected to flip it to
+        // clean/infected as soon as its scan settles — we no longer auto-
+        // promote to "clean" after a 1.5s timer, because that ignored the
+        // actual file bytes and showed Clean on infected uploads too.
         const doc: PatientDocument = {
           id: newId("doc"),
           uploadedAt: new Date().toISOString(),
-          scanStatus: "pending_scan",
           uploadedBy: d.uploadedBy ?? "patient",
           ...d,
+          // Must come AFTER the spread so an explicit scanStatus on `d`
+          // (passed by the upload caller after running document-scanner)
+          // wins, but undefined falls back to pending_scan.
+          scanStatus: d.scanStatus ?? "pending_scan",
         };
         mutate((prev) => ({ ...prev, documents: [doc, ...prev.documents] }));
-        // Simulate ClamAV pipeline.
-        setTimeout(() => {
-          mutate((prev) => ({
-            ...prev,
-            documents: prev.documents.map((x) =>
-              x.id === doc.id ? { ...x, scanStatus: "clean" } : x,
-            ),
-          }));
-        }, 1500);
         return doc;
       },
       deleteDocument(id) {

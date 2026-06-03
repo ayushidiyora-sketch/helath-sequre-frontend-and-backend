@@ -8,6 +8,7 @@ import {
   verifyPending,
 } from "@/lib/auth";
 import { lookupUserByUid } from "@/lib/user-lookup";
+import { recordChallengeIssued } from "@/lib/mfa-challenge-store";
 import { mailerConfigured, otpEmail, sendMail } from "@/lib/mail";
 
 export const runtime = "nodejs";
@@ -25,7 +26,7 @@ function devOtp(): string {
  * and the 10-minute clock by re-signing the `hs_pending` cookie with a new
  * hash. Returns the dev OTP so the client can display it inline.
  */
-export async function POST(): Promise<NextResponse> {
+export async function POST(req: Request): Promise<NextResponse> {
   const jar = await cookies();
   const pending = await verifyPending(jar.get(PENDING_COOKIE)?.value);
   if (!pending) {
@@ -38,10 +39,21 @@ export async function POST(): Promise<NextResponse> {
   }
 
   const otp = devOtp();
+  const otpHash = sha256(otp);
   const updated = await signPending({
     uid: pending.uid,
-    otpHash: sha256(otp),
+    otpHash,
     attempts: 0,
+  });
+
+  // Mirror the fresh challenge into mfa_challenges (revokes any prior unused
+  // row inside the helper, then inserts the new one with attemptsLeft=5).
+  await recordChallengeIssued({
+    uid: pending.uid,
+    otpHash,
+    expiresAt: new Date(Date.now() + OTP_TTL_SECONDS * 1000),
+    ipAddress: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null,
+    userAgent: req.headers.get("user-agent") || null,
   });
 
   let mailSent = false;

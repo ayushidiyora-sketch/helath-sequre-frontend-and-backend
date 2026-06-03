@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Search, Filter, Check, Download } from "lucide-react";
+import { Search, Filter, Check, Download, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -19,27 +19,60 @@ import {
 
 type ConsentStatus = "active" | "revoked" | "expired";
 
-const consents = [
-  { id: "cns_8a90c", patient: "Aarav Mehta", clinician: "Dr. Priya Shah", scope: "Lab + Rx + Notes", status: "active" as ConsentStatus, version: "v2.4", date: "May 10" },
-  { id: "cns_7b12f", patient: "Aarav Mehta", clinician: "Dr. Rohan Iyer", scope: "Lab + Discharge", status: "active" as ConsentStatus, version: "v2.3", date: "Apr 18" },
-  { id: "cns_4119z", patient: "Riya Mehta", clinician: "Dr. Neha Kapoor", scope: "Imaging", status: "revoked" as ConsentStatus, version: "v2.3", date: "Apr 30" },
-  { id: "cns_3a91x", patient: "Vikram Rao", clinician: "DiagX Lab", scope: "Lab", status: "expired" as ConsentStatus, version: "v2.2", date: "Mar 1" },
-  { id: "cns_2d77a", patient: "Saanvi Sen", clinician: "Dr. Neha Kapoor", scope: "Dermatology imaging", status: "active" as ConsentStatus, version: "v2.4", date: "Feb 1" },
-];
+interface Consent {
+  id: string;
+  patient: string;
+  clinician: string;
+  scope: string;
+  scopes: string[];
+  status: ConsentStatus;
+  version: string;
+  date: string;
+}
 
-const POLICY_VERSIONS = Array.from(new Set(consents.map((c) => c.version))).sort().reverse();
+interface Stats {
+  active: number;
+  revoked: number;
+  expired: number;
+  onStalePolicy: number;
+  stalePolicyLabel: string;
+}
 
 function csvCell(value: string): string {
-  // Escape quotes and wrap if needed.
   const needsQuote = /[",\n]/.test(value);
   const escaped = value.replace(/"/g, '""');
   return needsQuote ? `"${escaped}"` : escaped;
 }
 
 export default function ComplianceConsents() {
+  const [consents, setConsents] = useState<Consent[]>([]);
+  const [stats, setStats] = useState<Stats>({ active: 0, revoked: 0, expired: 0, onStalePolicy: 0, stalePolicyLabel: "v2.4" });
+  const [policyVersions, setPolicyVersions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
   const [query, setQuery] = useState("");
   const [statusFilters, setStatusFilters] = useState<ConsentStatus[]>([]);
   const [versionFilters, setVersionFilters] = useState<string[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/compliance/consents", { cache: "no-store" });
+        const json = await res.json();
+        if (!alive || !json?.ok) return;
+        setConsents(json.consents as Consent[]);
+        setStats(json.stats as Stats);
+        setPolicyVersions((json.policyVersions as string[]) ?? []);
+      } catch (err) {
+        console.error("[compliance/consents] fetch", err);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   function toggleStatus(s: ConsentStatus) {
     setStatusFilters((curr) => (curr.includes(s) ? curr.filter((x) => x !== s) : [...curr, s]));
@@ -62,7 +95,7 @@ export default function ComplianceConsents() {
           return false;
         return true;
       }),
-    [q, statusFilters, versionFilters],
+    [consents, q, statusFilters, versionFilters],
   );
 
   const activeCount = statusFilters.length + versionFilters.length;
@@ -82,6 +115,8 @@ export default function ComplianceConsents() {
     URL.revokeObjectURL(url);
     toast.success("Consent export downloaded");
   }
+
+  const stalePolicyLabel = `On stale policy (${stats.stalePolicyLabel === "v2.4" ? "pre-v2.4" : "older versions"})`;
 
   return (
     <>
@@ -110,7 +145,9 @@ export default function ComplianceConsents() {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>Policy version</DropdownMenuLabel>
-                {POLICY_VERSIONS.map((v) => (
+                {policyVersions.length === 0 ? (
+                  <DropdownMenuItem disabled>No versions yet</DropdownMenuItem>
+                ) : policyVersions.map((v) => (
                   <DropdownMenuItem key={v} onSelect={(e) => { e.preventDefault(); toggleVersion(v); }}>
                     {versionFilters.includes(v) ? <Check className="size-3.5" /> : <span className="size-3.5" />} {v}
                   </DropdownMenuItem>
@@ -128,10 +165,10 @@ export default function ComplianceConsents() {
 
       <div className="grid gap-3 sm:grid-cols-4">
         {[
-          { label: "Active", value: "1,284", good: true },
-          { label: "Revoked", value: 312, danger: true },
-          { label: "Expired", value: 68 },
-          { label: "On stale policy (v2.3)", value: 256, warn: true },
+          { label: "Active", value: stats.active.toLocaleString(), good: true },
+          { label: "Revoked", value: stats.revoked, danger: true },
+          { label: "Expired", value: stats.expired },
+          { label: stalePolicyLabel, value: stats.onStalePolicy, warn: true },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
             <p className="text-xs font-medium text-[var(--color-muted-foreground)]">{s.label}</p>
@@ -156,8 +193,16 @@ export default function ComplianceConsents() {
           <div className="col-span-1">Policy</div>
           <div className="col-span-2 text-right">Status · Date</div>
         </div>
-        {filteredConsents.length === 0 ? (
-          <p className="px-5 py-10 text-center text-sm text-[var(--color-muted-foreground)]">No consents match the current filters.</p>
+        {loading ? (
+          <p className="flex items-center justify-center gap-2 px-5 py-10 text-sm text-[var(--color-muted-foreground)]">
+            <Loader2 className="size-4 animate-spin" /> Loading consents…
+          </p>
+        ) : filteredConsents.length === 0 ? (
+          <p className="px-5 py-10 text-center text-sm text-[var(--color-muted-foreground)]">
+            {consents.length === 0
+              ? "No consents recorded in this tenant yet — rows appear here once patients approve or decline clinician access requests."
+              : "No consents match the current filters."}
+          </p>
         ) : (
         <ul className="divide-y divide-[var(--color-border)]">
           {filteredConsents.map((c) => (
@@ -166,11 +211,13 @@ export default function ComplianceConsents() {
                 href={`/compliance/consents/${c.id}`}
                 className="grid grid-cols-12 items-center gap-4 px-5 py-3.5 transition-colors hover:bg-[var(--color-muted)]/40"
               >
-                <div className="col-span-2 font-mono text-xs">{c.id}</div>
-                <div className="col-span-2 text-sm">{c.patient}</div>
-                <div className="col-span-2 text-sm">{c.clinician}</div>
+                <div className="col-span-2 truncate font-mono text-xs" title={c.id}>{c.id.slice(0, 8)}</div>
+                <div className="col-span-2 truncate text-sm" title={c.patient}>{c.patient}</div>
+                <div className="col-span-2 truncate text-sm" title={c.clinician}>{c.clinician}</div>
                 <div className="col-span-3 flex flex-wrap gap-1">
-                  {c.scope.split(" + ").map((s) => (
+                  {c.scopes.length === 0 ? (
+                    <Badge variant="muted" size="sm">—</Badge>
+                  ) : c.scopes.map((s) => (
                     <Badge key={s} variant="muted" size="sm">{s}</Badge>
                   ))}
                 </div>

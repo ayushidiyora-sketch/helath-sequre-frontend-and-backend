@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { AppointmentStatus, RoleKind } from "@prisma/client";
+import { AppointmentStatus, Prisma, RoleKind } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -44,31 +44,29 @@ export async function GET(req: Request) {
     toDate = new Date(y, m - 1, d, 23, 59, 59, 999);
   }
 
-  const rows = await prisma.appointment.findMany({
-    where: {
-      clinicianId: claims.uid,
-      deletedAt: null,
-      ...(fromDate || toDate
-        ? {
-            startsAt: {
-              ...(fromDate ? { gte: fromDate } : {}),
-              ...(toDate ? { lte: toDate } : {}),
-            },
-          }
-        : {}),
-    },
-    orderBy: { startsAt: "asc" },
-    select: {
-      id: true,
-      patientName: true,
-      patientEmail: true,
-      startsAt: true,
-      durationMinutes: true,
-      room: true,
-      status: true,
-      notes: true,
-    },
-  });
+  // Raw SQL so the response handles the new `arrived` / `in_progress` enum
+  // values — the generated Prisma client doesn't know them yet (Windows DLL
+  // lock prevents `prisma generate`), so a `select: { status: true }` would
+  // throw on any row with those values.
+  const rows = await prisma.$queryRaw<{
+    id: string;
+    patientName: string;
+    patientEmail: string | null;
+    startsAt: Date;
+    durationMinutes: number;
+    room: string | null;
+    status: string;
+    notes: string | null;
+  }[]>`
+    SELECT id, "patientName", "patientEmail", "startsAt",
+           "durationMinutes", room, status::text AS status, notes
+    FROM appointments
+    WHERE "clinicianId" = ${claims.uid}::uuid
+      AND "deletedAt" IS NULL
+      ${fromDate ? Prisma.sql`AND "startsAt" >= ${fromDate}` : Prisma.empty}
+      ${toDate ? Prisma.sql`AND "startsAt" <= ${toDate}` : Prisma.empty}
+    ORDER BY "startsAt" ASC
+  `;
 
   return NextResponse.json({
     ok: true,
@@ -79,9 +77,6 @@ export async function GET(req: Request) {
         patientName: a.patientName,
         patientEmail: a.patientEmail,
         startsAt: d.toISOString(),
-        // Convenient pre-formatted fields so the schedule UI doesn't have to
-        // re-parse — store-derived `date` (YYYY-MM-DD, local) and `time`
-        // ("9:30 AM") match the patient-store appointment shape too.
         date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
         time: d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
         durationMinutes: a.durationMinutes,
@@ -89,7 +84,7 @@ export async function GET(req: Request) {
         status: a.status,
         mode: a.room === "Telehealth" ? "telehealth" : "in-person",
         notes: a.notes,
-        completed: a.status === AppointmentStatus.completed,
+        completed: a.status === "completed",
       };
     }),
   });

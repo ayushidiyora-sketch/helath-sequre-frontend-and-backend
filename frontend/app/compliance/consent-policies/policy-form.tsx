@@ -1,12 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, ScrollText, FileText, Save, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ScrollText, FileText, Save, ShieldCheck, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
-import type { PolicyVersion } from "./consent-policies-data";
 
 const SECTION_HEADINGS = [
   "Purpose & scope",
@@ -15,11 +15,72 @@ const SECTION_HEADINGS = [
   "Re-consent & revocation",
 ];
 
+export interface FormPolicy {
+  id: string;
+  version: string;
+  slug: string;
+  status: "active" | "archived" | "draft";
+  summary: string;
+  sections: { heading: string; body: string }[];
+  scopeCategories: number;
+  roleBindings: number;
+  effectiveDate: string | null;
+}
+
 /** Shared editor for drafting a new policy version or editing an existing draft. */
-export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
+export function PolicyForm({ policy }: { policy?: FormPolicy }) {
   const router = useRouter();
   const isEdit = Boolean(policy);
-  const version = policy?.version ?? "v2.5";
+  const [version, setVersion] = useState(policy?.version ?? "v2.5");
+  const [summary, setSummary] = useState(policy?.summary ?? "");
+  const [effectiveDate, setEffectiveDate] = useState(policy?.effectiveDate ?? "");
+  const [scopeCategories, setScopeCategories] = useState(policy?.scopeCategories ?? 7);
+  const [roleBindings, setRoleBindings] = useState(policy?.roleBindings ?? 3);
+  const [sectionBodies, setSectionBodies] = useState<string[]>(
+    SECTION_HEADINGS.map((_, i) => policy?.sections[i]?.body ?? ""),
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const sections = SECTION_HEADINGS.map((heading, i) => ({ heading, body: sectionBodies[i] ?? "" }));
+      const payload = {
+        version,
+        summary,
+        effectiveDate: effectiveDate || null,
+        scopeCategories: Number(scopeCategories),
+        roleBindings: Number(roleBindings),
+        sections,
+      };
+      const url = isEdit
+        ? `/api/compliance/consent-policies/${policy!.id}`
+        : "/api/compliance/consent-policies";
+      const method = isEdit ? "PATCH" : "POST";
+      const body = isEdit ? JSON.stringify({ action: "save_draft", ...payload }) : JSON.stringify(payload);
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        toast.error(json?.error ?? "Could not save policy");
+        return;
+      }
+      toast.success(
+        isEdit ? `Policy ${version} draft saved` : `Policy version ${version} drafted`,
+        { description: isEdit ? "Changes saved · audit-logged" : "Edit legal text, then activate · audit-logged" },
+      );
+      router.push("/compliance/consent-policies");
+      router.refresh();
+    } catch {
+      toast.error("Network error — please retry.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <>
@@ -47,20 +108,9 @@ export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
         </p>
       </div>
 
-      <form
-        className="max-w-5xl"
-        onSubmit={(e) => {
-          e.preventDefault();
-          toast.success(
-            isEdit ? `Policy ${version} draft saved` : `Policy version ${version} drafted`,
-            { description: isEdit ? "Changes saved · audit-logged" : "Edit legal text, then activate · audit-logged" },
-          );
-          router.push("/compliance/consent-policies");
-        }}
-      >
+      <form className="max-w-5xl" onSubmit={submit}>
         <div className="grid gap-5 lg:grid-cols-[1.85fr_1fr]">
           <div className="space-y-5">
-            {/* Meta */}
             <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
               <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
                 <FileText className="size-4" /> Version details
@@ -68,17 +118,30 @@ export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="version">Version label</Label>
-                  <Input id="version" defaultValue={version} className="font-mono" required />
+                  <Input
+                    id="version"
+                    value={version}
+                    onChange={(e) => setVersion(e.target.value)}
+                    className="font-mono"
+                    required
+                    disabled={isEdit}
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="effective_date">Effective date</Label>
-                  <Input id="effective_date" type="date" required />
+                  <Input
+                    id="effective_date"
+                    type="date"
+                    value={effectiveDate ?? ""}
+                    onChange={(e) => setEffectiveDate(e.target.value)}
+                  />
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label htmlFor="summary">Summary</Label>
                   <Input
                     id="summary"
-                    defaultValue={policy?.summary}
+                    value={summary}
+                    onChange={(e) => setSummary(e.target.value)}
                     placeholder="One line describing what changed in this version"
                     required
                   />
@@ -89,7 +152,8 @@ export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
                     id="scope_categories"
                     type="number"
                     min={1}
-                    defaultValue={policy?.scopeCategories ?? 7}
+                    value={scopeCategories}
+                    onChange={(e) => setScopeCategories(Number(e.target.value))}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -98,13 +162,13 @@ export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
                     id="role_bindings"
                     type="number"
                     min={1}
-                    defaultValue={policy?.roleBindings ?? 3}
+                    value={roleBindings}
+                    onChange={(e) => setRoleBindings(Number(e.target.value))}
                   />
                 </div>
               </div>
             </div>
 
-            {/* Legal text */}
             <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
               <h2 className="inline-flex items-center gap-2 text-sm font-semibold">
                 <ScrollText className="size-4" /> Policy legal text
@@ -118,7 +182,12 @@ export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
                     <Textarea
                       id={`section_${i}`}
                       rows={4}
-                      defaultValue={policy?.sections[i]?.body}
+                      value={sectionBodies[i] ?? ""}
+                      onChange={(e) => {
+                        const next = [...sectionBodies];
+                        next[i] = e.target.value;
+                        setSectionBodies(next);
+                      }}
                       placeholder={`Legal text for "${heading}"…`}
                       required
                     />
@@ -128,15 +197,15 @@ export function PolicyForm({ policy }: { policy?: PolicyVersion }) {
             </div>
           </div>
 
-          {/* Sidebar */}
           <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
             <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
               <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
-                {isEdit ? "Editing draft" : "New draft"}
+                {isEdit ? "Editing" : "New draft"}
               </p>
               <p className="mt-1 font-mono text-sm font-semibold">{version}</p>
-              <Button type="submit" className="mt-4 w-full">
-                <Save /> {isEdit ? "Save draft" : "Create draft"}
+              <Button type="submit" className="mt-4 w-full" disabled={submitting}>
+                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Save />}
+                {isEdit ? "Save draft" : "Create draft"}
               </Button>
               <Button asChild variant="outline" className="mt-2 w-full">
                 <Link href="/compliance/consent-policies">Cancel</Link>

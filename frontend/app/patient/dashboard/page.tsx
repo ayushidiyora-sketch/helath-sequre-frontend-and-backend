@@ -31,6 +31,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { CancelAppointmentDialog, RescheduleDialog } from "@/components/shared/form-dialogs";
 import { CompleteProfileCard } from "./complete-profile-card";
+import { ReConsentBanner } from "@/components/patient/re-consent-banner";
 import { usePatientStore, type Appointment, type MessageThread } from "@/lib/patient-store";
 import { useMessagesUnread } from "@/lib/use-messages-unread";
 
@@ -146,6 +147,7 @@ export default function PatientDashboard() {
 
   return (
     <>
+      <ReConsentBanner />
       <GreetingHero firstName={greetingFirstName} next={heroNext} unread={stats.unreadMessages} pending={pendingConsents} />
       <QuickStats
         appointments={stats.upcomingCount}

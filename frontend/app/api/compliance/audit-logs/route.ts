@@ -302,13 +302,14 @@ export async function GET() {
       attemptsLeft: number;
       userEmail: string;
     }[]>`
-      SELECT mc.id, mc."createdAt", mc."attemptsLeft", u.email AS "userEmail"
+      SELECT mc.id, mc."issuedAt" AS "createdAt", mc."attemptsLeft", u.email AS "userEmail"
       FROM mfa_challenges mc
       JOIN users u ON u.id = mc."userId"
       WHERE u."organizationId" = ${g.orgId}::uuid
-        AND mc."createdAt" >= ${since}
+        AND mc."issuedAt" >= ${since}
         AND mc."attemptsLeft" = 0
-      ORDER BY mc."createdAt" DESC
+        AND mc."usedAt" IS NULL
+      ORDER BY mc."issuedAt" DESC
       LIMIT 100
     `;
     for (const r of rows) {

@@ -127,9 +127,37 @@ export default function GrantConsentPage() {
   const activeScopes = (Object.keys(scopeOn) as ConsentScope[]).filter((k) => scopeOn[k]);
   const canSubmit = ackPolicy && activeScopes.length > 0 && !submitting && !!selected;
 
-  function submit() {
+  async function submit() {
     if (!canSubmit || !selected) return;
     setSubmitting(true);
+
+    // Persist to consent_requests so Compliance / Auditor surfaces see this
+    // grant. We keep the local-store mirror alive so the patient's own page
+    // updates immediately even if the network call fails.
+    let dbConsentId: string | null = null;
+    try {
+      const res = await fetch("/api/patient/consents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clinicianId: selected.id,
+          scopes: activeScopes,
+          durationHours: null, // open-ended
+          policyVersion: "v2.4",
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        toast.error("Could not save consent on the server", {
+          description: json?.error ?? "Local copy kept; ask compliance to retry.",
+        });
+      } else {
+        dbConsentId = json.consent?.id ?? null;
+      }
+    } catch {
+      toast.error("Network error — local copy kept; not visible to compliance yet.");
+    }
+
     const con = addConsent({
       clinician: selected.name,
       department: selected.department,
@@ -141,7 +169,7 @@ export default function GrantConsentPage() {
       title: "Consent granted",
       body: `${selected.name} · ${activeScopes.map((s) => CONSENT_SCOPE_LABEL[s]).join(", ")}`,
       type: "consent",
-      href: `/patient/consents/${con.id}`,
+      href: `/patient/consents/${dbConsentId ?? con.id}`,
     });
     toast.success("Consent granted", {
       description: `${selected.name} can now read: ${activeScopes.map((s) => CONSENT_SCOPE_LABEL[s]).join(", ")}`,

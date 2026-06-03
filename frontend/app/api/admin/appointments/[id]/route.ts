@@ -112,17 +112,45 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   }
 
   try {
-    const updated = await prisma.appointment.update({
+    // Write via prisma.update (known enum value coming in), then read back
+    // via raw SQL so we tolerate rows whose CURRENT status is one of the new
+    // enum values the generated client doesn't know about (arrived /
+    // in_progress).
+    await prisma.appointment.update({
       where: { id: appointmentId },
       data,
-      include: { clinician: { select: { id: true, firstName: true, lastName: true } } },
+      select: { id: true },
     });
+    const rows = await prisma.$queryRaw<{
+      id: string;
+      clinicianId: string;
+      clinicianFirstName: string;
+      clinicianLastName: string;
+      patientName: string | null;
+      patientEmail: string | null;
+      startsAt: Date;
+      durationMinutes: number;
+      room: string | null;
+      status: string;
+      notes: string | null;
+    }[]>`
+      SELECT a.id, a."clinicianId",
+             u."firstName" AS "clinicianFirstName",
+             u."lastName"  AS "clinicianLastName",
+             a."patientName", a."patientEmail", a."startsAt",
+             a."durationMinutes", a.room, a.status::text AS status, a.notes
+      FROM appointments a
+      JOIN users u ON u.id = a."clinicianId"
+      WHERE a.id = ${appointmentId}::uuid
+      LIMIT 1
+    `;
+    const updated = rows[0];
     return NextResponse.json({
       ok: true,
       appointment: {
         id: updated.id,
         clinicianId: updated.clinicianId,
-        clinicianName: `Dr. ${updated.clinician.firstName} ${updated.clinician.lastName}`.trim(),
+        clinicianName: `Dr. ${updated.clinicianFirstName} ${updated.clinicianLastName}`.trim(),
         patientName: updated.patientName,
         patientEmail: updated.patientEmail,
         startsAt: updated.startsAt.toISOString(),

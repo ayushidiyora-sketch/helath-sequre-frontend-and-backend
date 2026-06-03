@@ -28,7 +28,8 @@ import {
 type Range = "today" | "upcoming" | "past" | "all";
 
 const STATUS_VARIANT: Record<AppointmentStatus, "info" | "warning" | "success" | "muted" | "danger"> = {
-  requested: "muted",
+  requested: "warning",
+  "reschedule-requested": "warning",
   confirmed: "info",
   arrived: "warning",
   "in-progress": "success",

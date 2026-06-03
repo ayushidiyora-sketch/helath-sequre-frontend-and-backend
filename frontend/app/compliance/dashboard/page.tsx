@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { ReportsWidget } from "@/components/shared/reports-widget";
-import { OPEN_ANOMALIES } from "../anomalies/anomalies-data";
+import { AnomalyFeed } from "./anomaly-feed";
 import { OPEN_APPROVALS } from "../approvals/approvals-data";
 
 export default function ComplianceDashboard() {
@@ -111,43 +111,6 @@ function Scorecard() {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function AnomalyFeed() {
-  return (
-    <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-      <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
-        <div>
-          <h2 className="text-sm font-semibold">Open anomalies</h2>
-          <p className="text-xs text-[var(--color-muted-foreground)]">Auto-detected by the anomaly engine · awaiting your decision</p>
-        </div>
-        <Button asChild variant="ghost" size="sm">
-          <Link href="/compliance/anomalies">Review all <ArrowRight /></Link>
-        </Button>
-      </div>
-      <ul className="divide-y divide-[var(--color-border)]">
-        {OPEN_ANOMALIES.map((a) => (
-          <li key={a.id} className="flex items-start gap-3 p-4 hover:bg-[var(--color-muted)]/40">
-            <span className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg ${a.sev === "high" ? "bg-[var(--color-danger-soft)] text-[var(--color-danger)]" : "bg-[var(--color-warning-soft)] text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]"}`}>
-              <AlertTriangle className="size-4" />
-            </span>
-            <div className="flex-1">
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold">{a.title}</p>
-                {a.sev === "high" && <Badge variant="danger" size="sm" dot>High</Badge>}
-                {a.sev === "medium" && <Badge variant="warning" size="sm" dot>Medium</Badge>}
-              </div>
-              <p className="text-[11px] text-[var(--color-muted-foreground)]">{a.summary}</p>
-              <p className="text-[10px] text-[var(--color-muted-foreground)]">Detected {a.time}</p>
-            </div>
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/compliance/anomalies/${a.id}`}>Investigate</Link>
-            </Button>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

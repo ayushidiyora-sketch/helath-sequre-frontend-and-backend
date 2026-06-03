@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { jsPDF } from "jspdf";
+import { toast } from "sonner";
 import {
   Pill,
   Calendar,
@@ -12,6 +14,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
 import { ActionButton } from "@/components/shared/action-button";
@@ -199,18 +202,121 @@ function Card({ rx }: { rx: ApiRx }) {
             <RefreshCw /> Request refill
           </ActionButton>
         )}
-        <ActionButton
-          variant="ghost"
-          size="sm"
-          toastMessage="Download started"
-          toastDescription={`${rx.drug} · PDF`}
-          toastVariant="info"
-        >
+        <Button variant="ghost" size="sm" onClick={() => downloadPrescriptionPdf(rx)}>
           <Download /> Download
-        </ActionButton>
+        </Button>
       </div>
     </div>
   );
+}
+
+/**
+ * Generate a printable PDF of a single prescription on the client and trigger
+ * a browser download. No round-trip to the server — the PDF is rendered from
+ * the same data the card displays. Uses jsPDF which is already in the bundle
+ * for the patient data-export feature.
+ */
+function downloadPrescriptionPdf(rx: ApiRx) {
+  try {
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 48;
+    let y = margin;
+
+    // Header band
+    doc.setFillColor(15, 118, 110);
+    doc.rect(0, 0, pageWidth, 70, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.text("HealthSecure Portal", margin, 32);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text("Prescription record", margin, 52);
+    doc.setFontSize(9);
+    doc.text(
+      `Issued: ${new Date(rx.finalizedAt ?? rx.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`,
+      pageWidth - margin,
+      52,
+      { align: "right" },
+    );
+    y = 100;
+
+    // Drug + strength
+    doc.setTextColor(20, 20, 20);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.text(`${rx.drug}${rx.strength ? ` · ${rx.strength}` : ""}`, margin, y);
+    y += 22;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(80, 80, 80);
+    doc.text(`${rx.route} · ${rx.frequency} · ${rx.duration}`, margin, y);
+    y += 28;
+
+    // Section divider
+    doc.setDrawColor(220, 220, 220);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 22;
+
+    // Two-column facts
+    const colWidth = (pageWidth - margin * 2) / 2;
+    function fact(label: string, value: string, col: 0 | 1, row: number) {
+      const x = margin + col * colWidth;
+      const yy = y + row * 36;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(120, 120, 120);
+      doc.text(label.toUpperCase(), x, yy);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.setTextColor(20, 20, 20);
+      doc.text(value || "—", x, yy + 14);
+    }
+    fact("Refills left", String(rx.refills), 0, 0);
+    fact("Status", rx.status === "Active" ? "Filled · take as prescribed" : "Completed", 1, 0);
+    fact("Prescribed by", rx.clinicianName, 0, 1);
+    fact("Department", rx.clinicianDepartment, 1, 1);
+    fact("Source", rx.tenantName ?? rx.clinicianDepartment, 0, 2);
+    fact(
+      "Prescribed on",
+      new Date(rx.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      1,
+      2,
+    );
+    y += 36 * 3 + 12;
+
+    // Instructions block
+    if (rx.instructions) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(20, 20, 20);
+      doc.text("Instructions", margin, y);
+      y += 16;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(60, 60, 60);
+      const wrapped = doc.splitTextToSize(rx.instructions, pageWidth - margin * 2);
+      doc.text(wrapped, margin, y);
+      y += wrapped.length * 14 + 24;
+    }
+
+    // Footer
+    doc.setDrawColor(220, 220, 220);
+    doc.line(margin, 760, pageWidth - margin, 760);
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text("Audit-logged · download recorded against the patient's access ledger.", margin, 778);
+    doc.text(`Prescription ID: ${rx.id}`, margin, 792);
+
+    const safeDrug = rx.drug.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 40) || "prescription";
+    doc.save(`${safeDrug}-${rx.id.slice(0, 8)}.pdf`);
+    toast.success("Prescription downloaded", { description: `${rx.drug} · PDF · audit-logged` });
+  } catch (err) {
+    console.error("[prescriptions] PDF download failed", err);
+    toast.error("Could not generate PDF");
+  }
 }
 
 function Stat({

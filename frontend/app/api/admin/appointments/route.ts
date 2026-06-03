@@ -103,19 +103,50 @@ export async function GET(req: Request) {
   const dayEnd = new Date(dayStart);
   dayEnd.setDate(dayEnd.getDate() + 1);
 
-  const rows = await prisma.appointment.findMany({
-    where: {
-      organizationId: guard.orgId,
-      deletedAt: null,
-      startsAt: { gte: dayStart, lt: dayEnd },
-    },
-    orderBy: [{ startsAt: "asc" }, { clinicianId: "asc" }],
-    include: {
-      clinician: { select: { id: true, firstName: true, lastName: true } },
-    },
-  });
-
-  const list = rows.map(shape);
+  // Raw SQL so we tolerate the new `arrived` / `in_progress` enum values that
+  // the generated Prisma client doesn't yet know (Windows DLL lock blocks
+  // `prisma generate`).
+  interface AdminApptRow {
+    id: string;
+    clinicianId: string;
+    clinicianFirstName: string;
+    clinicianLastName: string;
+    patientName: string | null;
+    patientEmail: string | null;
+    startsAt: Date;
+    durationMinutes: number;
+    room: string | null;
+    status: string;
+    notes: string | null;
+  }
+  const rawRows = await prisma.$queryRaw<AdminApptRow[]>`
+    SELECT a.id, a."clinicianId",
+           u."firstName" AS "clinicianFirstName",
+           u."lastName"  AS "clinicianLastName",
+           a."patientName", a."patientEmail", a."startsAt",
+           a."durationMinutes", a.room, a.status::text AS status, a.notes
+    FROM appointments a
+    JOIN users u ON u.id = a."clinicianId"
+    WHERE a."organizationId" = ${guard.orgId}::uuid
+      AND a."deletedAt" IS NULL
+      AND a."startsAt" >= ${dayStart}
+      AND a."startsAt" <  ${dayEnd}
+    ORDER BY a."startsAt" ASC, a."clinicianId" ASC
+  `;
+  const list = rawRows.map((r) =>
+    shape({
+      id: r.id,
+      clinicianId: r.clinicianId,
+      clinician: { firstName: r.clinicianFirstName, lastName: r.clinicianLastName },
+      patientName: r.patientName,
+      patientEmail: r.patientEmail,
+      startsAt: r.startsAt,
+      durationMinutes: r.durationMinutes,
+      room: r.room,
+      status: r.status as AppointmentStatus,
+      notes: r.notes,
+    }),
+  );
   const counts = {
     total: list.length,
     confirmed: list.filter((a) => a.status === "confirmed").length,

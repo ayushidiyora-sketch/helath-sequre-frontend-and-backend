@@ -97,7 +97,11 @@ model Department {
 // ---------------------------------------------------------------------------
 
 enum AppointmentStatus {
+  requested
+  reschedule_requested
   confirmed
+  arrived
+  in_progress
   no_show
   blocked
   cancelled
@@ -119,8 +123,13 @@ model Appointment {
   durationMinutes Int               @default(30)
   /// Room or "Telehealth" — free text for the demo.
   room            String?
-  status          AppointmentStatus @default(confirmed)
+  status          AppointmentStatus @default(requested)
   notes           String?
+  /// When the clinician requests a reschedule, the new proposed slot lives
+  /// here until the patient accepts (which moves it into startsAt + clears
+  /// these fields).
+  proposedStartsAt DateTime?
+  proposedNote     String?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   deletedAt       DateTime?
@@ -129,6 +138,43 @@ model Appointment {
   @@index([clinicianId, startsAt])
   @@index([status])
   @@map("appointments")
+}
+
+// Audit trail for every appointment status transition. Compliance reads from
+// here for the lifecycle ledger; nothing else writes to this table.
+model AppointmentAuditLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  appointmentId   String   @db.Uuid
+  organizationId  String   @db.Uuid
+  previousStatus  String?
+  newStatus       String
+  changedById     String?  @db.Uuid
+  changedByEmail  String?
+  changedByRole   String?
+  reason          String?
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now())
+
+  @@index([appointmentId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("appointment_audit_log")
+}
+
+// Scheduled T-24h / T-1h reminders. We record the intended dispatch here;
+// the actual outbound channel (email/SMS) is handled by the existing
+// notification surface or a future cron — out of scope for this slice.
+model AppointmentReminder {
+  id              String    @id @default(uuid()) @db.Uuid
+  appointmentId   String    @db.Uuid
+  organizationId  String    @db.Uuid
+  /// "t_24h" | "t_1h"
+  kind            String
+  scheduledAt     DateTime
+  sentAt          DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([appointmentId, kind])
+  @@map("appointment_reminders")
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +466,111 @@ model Incident {
 
   @@index([status, openedAt])
   @@map("incidents")
+}
+
+// Compliance Manager → Anomalies module. The anomaly engine is rule-based and
+// derives signals from existing tables (mfa_challenges, sessions, users,
+// patient_documents, consent_requests). This table only stores the
+// reviewer's *decision* per detected signature so status survives across page
+// loads — the detected items themselves are recomputed every request.
+model AnomalyDecision {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  /// Stable signature of the detected anomaly (e.g. "bulkUpload:<patientId>:2026-06-03").
+  signature       String
+  /// "open" | "investigating" | "resolved" | "dismissed"
+  status          String   @default("open")
+  decidedById     String?  @db.Uuid
+  decidedByEmail  String?
+  /// "legitimate" | "policy_update" | "incident"
+  outcome         String?
+  coordinatedWith String?
+  justification   String?
+  decidedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([organizationId, signature])
+  @@index([organizationId, status])
+  @@map("anomaly_decisions")
+}
+
+// Versioned consent policy text — one row per (organization, version). At
+// most one row per tenant is `status=active` at any time; activating a new
+// version archives the prior active one. Old versions are retained for the
+// lifetime of associated PHI per HIPAA.
+model ConsentPolicy {
+  id               String    @id @default(uuid()) @db.Uuid
+  organizationId   String    @db.Uuid
+  /// Display label, e.g. "v2.4"
+  version          String
+  /// URL slug, e.g. "v2-4"
+  slug             String
+  /// "draft" | "active" | "archived"
+  status           String    @default("draft")
+  summary          String
+  /// JSON array of `{heading, body}` sections (4 fixed headings).
+  sections         Json      @default("[]")
+  scopeCategories  Int       @default(7)
+  roleBindings     Int       @default(3)
+  effectiveDate    DateTime? @db.Date
+  draftedAt        DateTime  @default(now())
+  activatedAt      DateTime?
+  archivedAt       DateTime?
+  createdById      String?   @db.Uuid
+  /// JSON array of `{date, event}` timeline entries.
+  history          Json      @default("[]")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([organizationId, version])
+  @@unique([organizationId, slug])
+  @@index([organizationId, status])
+  @@map("consent_policies")
+}
+
+// Bulk re-consent dispatch triggered by Compliance when a new policy version
+// goes active. Currently best-effort — the row exists for audit + the toast
+// the UI shows; actual outbound mail is out of scope.
+model ReConsentCampaign {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @db.Uuid
+  policyId        String    @db.Uuid
+  policyVersion   String
+  recipientCount  Int       @default(0)
+  /// "queued" | "sending" | "completed" | "cancelled"
+  status          String    @default("queued")
+  triggeredById   String?   @db.Uuid
+  triggeredAt     DateTime  @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([organizationId, policyId])
+  @@map("re_consent_campaigns")
+}
+
+// Per-patient response to a re-consent campaign. Inserted as "pending" when
+// Compliance dispatches the campaign; flipped to "approved" / "declined"
+// when the patient acts on the gold banner on their dashboard.
+model ReConsentResponse {
+  id              String    @id @default(uuid()) @db.Uuid
+  campaignId      String    @db.Uuid
+  organizationId  String    @db.Uuid
+  patientId       String    @db.Uuid
+  policyId        String    @db.Uuid
+  policyVersion   String
+  /// "pending" | "approved" | "declined"
+  response        String    @default("pending")
+  respondedAt     DateTime?
+  decisionNote    String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([campaignId, patientId])
+  @@index([patientId, response])
+  @@index([organizationId, createdAt])
+  @@map("re_consent_responses")
 }
 
 // ---------------------------------------------------------------------------

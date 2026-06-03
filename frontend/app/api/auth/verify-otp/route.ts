@@ -15,6 +15,11 @@ import { roleHome } from "@/lib/auth";
 import { lookupUserByUid } from "@/lib/user-lookup";
 import { prisma } from "@/lib/prisma";
 import { issueSession } from "@/lib/session-store";
+import {
+  recordChallengeAttempt,
+  recordChallengeExhausted,
+  recordChallengeUsed,
+} from "@/lib/mfa-challenge-store";
 import { UserStatus } from "@prisma/client";
 import { verifyToken as verifyTotp } from "@/lib/mfa";
 
@@ -80,7 +85,14 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   if (!codeOk) {
     const attempts = pending.attempts + 1;
-    if (attempts >= MAX_OTP_ATTEMPTS) return expiredResponse();
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      // Force the audit row to attemptsLeft=0 so the Failed MFA detector
+      // picks this up even if a prior decrement was lost.
+      await recordChallengeExhausted(pending.uid);
+      return expiredResponse();
+    }
+    // Mirror the cookie-side decrement into the audit row.
+    await recordChallengeAttempt(pending.uid);
     const updated = await signPending({ ...pending, attempts });
     const res = NextResponse.json(
       {
@@ -122,6 +134,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         console.error("[verify-otp] could not update last-login / status:", err);
       });
   }
+
+  // Stamp the audit row as used BEFORE issuing the session so a crash mid-
+  // request can't leave the row looking like an unverified challenge.
+  await recordChallengeUsed(user.uid);
 
   const { jwt: session } = await issueSession(
     {

@@ -47,6 +47,18 @@ function fmt12(hhmm: string): string {
   return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+/** Inverse of fmt12 — parses "3:30 PM" → 930 (minutes since midnight). */
+function slotLabelToMinutes(label: string): number {
+  const m = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(label.trim());
+  if (!m) return -1;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = m[3].toUpperCase();
+  if (ap === "PM" && h < 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  return h * 60 + min;
+}
+
 function buildWindow(start: string, end: string, slotMinutes: number): string[] {
   const [sh, sm] = start.split(":").map(Number);
   const [eh, em] = end.split(":").map(Number);
@@ -111,8 +123,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   // Pull the clinician's already-booked appointments for the next ~10 days so
   // we can subtract those times from the slot grid — a booked slot must NOT
   // appear as available to the next patient. We bucket by local YYYY-MM-DD so
-  // the comparison matches the day-tile keys generated below.
+  // the comparison matches the day-tile keys generated below. The lower bound
+  // is *start of today* (not "now"), otherwise earlier-today bookings leak
+  // back as available.
   const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
   const windowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 11);
   const booked = await prisma.$queryRaw<{ startsAt: Date }[]>`
     SELECT "startsAt"
@@ -120,7 +135,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     WHERE "clinicianId" = ${id}::uuid
       AND "deletedAt" IS NULL
       AND "status"::text NOT IN ('cancelled', 'no_show')
-      AND "startsAt" >= ${now}
+      AND "startsAt" >= ${startOfToday}
       AND "startsAt" <  ${windowEnd}
   `;
   // Map: "YYYY-MM-DD" → Set of taken "H:MM AM/PM" labels (local time).
@@ -138,6 +153,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   // carries its own `slotMinutes` so the UI can render a per-day "15-min slots"
   // / "30-min slots" badge — the cadence is allowed to differ across days
   // (e.g. Wed 30-min, rest 15-min).
+  const nowMin = now.getHours() * 60 + now.getMinutes();
   const out: { day: string; times: string[]; slotMinutes: number }[] = [];
   for (let i = 0; i < 10 && out.length < 4; i++) {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
@@ -149,7 +165,13 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (allTimes.length === 0) continue;
     const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const taken = takenByDay.get(dayKey);
-    const times = taken ? allTimes.filter((t) => !taken.has(t)) : allTimes;
+    const isToday = i === 0;
+    let times = taken ? allTimes.filter((t) => !taken.has(t)) : allTimes;
+    if (isToday) {
+      // Drop today's slot times that have already passed — no patient should
+      // be able to book themselves into a slot in the recent past.
+      times = times.filter((t) => slotLabelToMinutes(t) > nowMin);
+    }
     if (times.length === 0) continue;
     out.push({ day: dayLabel(d), times, slotMinutes: day.slotMinutes });
   }

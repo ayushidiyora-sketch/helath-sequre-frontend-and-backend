@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Plus,
@@ -18,7 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { RescheduleDialog, CancelAppointmentDialog } from "@/components/shared/form-dialogs";
+import { RescheduleAppointmentDialog } from "@/components/shared/reschedule-appointment-dialog";
+import { CancelAppointmentDialog } from "@/components/shared/form-dialogs";
 import { CalendarView } from "./calendar-view";
 import {
   DropdownMenu,
@@ -56,10 +57,107 @@ function dateLabel(iso: string): string {
   });
 }
 
+interface DbAppointment {
+  id: string;
+  clinicianId: string;
+  clinicianName: string;
+  clinicianDepartment: string;
+  startsAt: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  room: string | null;
+  notes: string | null;
+  status: string;
+  mode: "in-person" | "telehealth";
+  proposedStartsAt?: string | null;
+  proposedNote?: string | null;
+}
+
+function mapDbStatus(s: string): Appointment["status"] {
+  if (s === "completed") return "completed";
+  if (s === "cancelled") return "cancelled";
+  if (s === "no_show") return "no-show";
+  if (s === "requested") return "requested";
+  if (s === "reschedule_requested") return "reschedule-requested";
+  if (s === "arrived") return "arrived";
+  if (s === "in_progress") return "in-progress";
+  return "confirmed";
+}
+
+function dbAppointmentToAppointment(d: DbAppointment): Appointment {
+  return {
+    id: d.id,
+    clinician: d.clinicianName,
+    department: d.clinicianDepartment,
+    date: d.date,
+    time: d.time,
+    mode: d.mode,
+    status: mapDbStatus(d.status),
+    reason: d.notes ?? "Visit",
+    documentIds: [],
+    createdAt: d.startsAt,
+  };
+}
+
+/**
+ * Merge DB rows with local-store rows. DB rows are authoritative — when the
+ * patient has any DB-backed appointments, drop ALL local-store mirrors so
+ * stale duplicates can't reappear after a reschedule moves the DB row's
+ * date/time (previously they kept showing the OLD "requested" status under
+ * the slug id `apt-xxx`). Local-store entries only surface for users who
+ * have never booked through the API (legacy demo data).
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isDbId(id: string): boolean { return UUID_RE.test(id); }
+
+function mergeAppointments(db: Appointment[], local: Appointment[]): Appointment[] {
+  if (db.length > 0) return db;
+  return local;
+}
+
+interface DbExtras { proposedStartsAt: string | null; proposedNote: string | null; startsAt: string }
+
 export default function AppointmentsPage() {
   const { state, rescheduleAppointment, cancelAppointment, addNotification } = usePatientStore();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [modeFilters, setModeFilters] = useState<ModeFilter[]>([]);
+  const [dbAppointments, setDbAppointments] = useState<Appointment[]>([]);
+  const [dbExtras, setDbExtras] = useState<Record<string, DbExtras>>({});
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reload = () => setReloadKey((k) => k + 1);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/patient/appointments", { cache: "no-store" });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!alive || !data?.ok) return;
+        const list = data.appointments as DbAppointment[];
+        setDbAppointments(list.map(dbAppointmentToAppointment));
+        const extras: Record<string, DbExtras> = {};
+        for (const a of list) {
+          extras[a.id] = {
+            proposedStartsAt: a.proposedStartsAt ?? null,
+            proposedNote: a.proposedNote ?? null,
+            startsAt: a.startsAt,
+          };
+        }
+        setDbExtras(extras);
+      } catch (err) {
+        console.error("[patient/appointments] fetch", err);
+      }
+    })();
+    return () => { alive = false; };
+  }, [reloadKey]);
+
+  const allAppointments = useMemo(
+    () => mergeAppointments(dbAppointments, state.appointments),
+    [dbAppointments, state.appointments],
+  );
 
   function toggleStatus(s: StatusFilter) {
     setStatusFilters((curr) => (curr.includes(s) ? curr.filter((x) => x !== s) : [...curr, s]));
@@ -74,7 +172,7 @@ export default function AppointmentsPage() {
 
   const upcoming = useMemo(
     () =>
-      state.appointments
+      allAppointments
         .filter((a) => !isPast(a))
         .filter((a) => {
           const status = a.status === "confirmed" ? "confirmed" : "requested";
@@ -83,19 +181,19 @@ export default function AppointmentsPage() {
           return true;
         })
         .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)),
-    [state.appointments, statusFilters, modeFilters],
+    [allAppointments, statusFilters, modeFilters],
   );
 
   const past = useMemo(
     () =>
-      state.appointments
+      allAppointments
         .filter(isPast)
         .filter((a) => {
           if (modeFilters.length > 0 && !modeFilters.includes(a.mode)) return false;
           return true;
         })
         .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`)),
-    [state.appointments, modeFilters],
+    [allAppointments, modeFilters],
   );
 
   const anyFilter = statusFilters.length > 0 || modeFilters.length > 0;
@@ -164,26 +262,85 @@ export default function AppointmentsPage() {
                 <UpcomingCard
                   key={a.id}
                   apt={a}
-                  onReschedule={(slot) => {
-                    rescheduleAppointment(a.id, a.date, slot);
-                    addNotification({
-                      title: "Appointment rescheduled",
-                      body: `${a.clinician} · ${slot}`,
-                      type: "appointment",
-                      href: `/patient/appointments/${a.id}`,
-                    });
-                    toast.success("Appointment rescheduled", { description: `New slot: ${slot} · reminders updated` });
+                  extras={dbExtras[a.id]}
+                  onReschedule={async (newIso) => {
+                    if (isDbId(a.id)) {
+                      const r = await fetch("/api/patient/appointments", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "patient_reschedule", appointmentId: a.id, proposedStartsAt: newIso }),
+                      });
+                      const j = await r.json();
+                      if (!r.ok || !j?.ok) {
+                        toast.error(j?.error ?? "Could not reschedule");
+                        return { ok: false };
+                      }
+                      toast.success("Reschedule sent · clinician will reconfirm", { description: `New slot: ${new Date(newIso).toLocaleString("en-IN", { hour12: false })}` });
+                      reload();
+                      return { ok: true };
+                    }
+                    // Local-store fallback for legacy slug ids.
+                    const label = new Date(newIso).toLocaleString("en-IN", { hour12: false });
+                    rescheduleAppointment(a.id, a.date, label);
+                    toast.success("Appointment rescheduled", { description: `New slot: ${label}` });
+                    return { ok: true };
                   }}
-                  onCancel={(reason) => {
+                  onCancel={async (reason) => {
+                    if (isDbId(a.id)) {
+                      const r = await fetch("/api/patient/appointments", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "cancel", appointmentId: a.id, reason }),
+                      });
+                      const j = await r.json();
+                      if (!r.ok || !j?.ok) { toast.error(j?.error ?? "Could not cancel"); return; }
+                      toast.warning("Appointment cancelled", { description: reason ? `Reason: ${reason} · audit-logged` : "Reminders cancelled · audit-logged" });
+                      reload();
+                      return;
+                    }
                     cancelAppointment(a.id);
-                    addNotification({
-                      title: "Appointment cancelled",
-                      body: `${a.clinician} · ${dateLabel(a.date)} ${a.time}`,
-                      type: "appointment",
+                    addNotification({ title: "Appointment cancelled", body: `${a.clinician} · ${dateLabel(a.date)} ${a.time}`, type: "appointment" });
+                    toast.warning("Appointment cancelled");
+                  }}
+                  onAcceptReschedule={async () => {
+                    const proposed = dbExtras[a.id]?.proposedStartsAt ?? null;
+                    const r = await fetch("/api/patient/appointments", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "accept_reschedule", appointmentId: a.id }),
                     });
-                    toast.warning("Appointment cancelled", {
-                      description: reason ? `Reason: ${reason} · audit-logged` : "Reminder jobs cancelled · audit-logged",
+                    const j = await r.json();
+                    if (!r.ok || !j?.ok) { toast.error(j?.error ?? "Could not accept"); return; }
+                    // Optimistic local update so the proposal banner + amber
+                    // pill disappear instantly without waiting for the refetch.
+                    setDbExtras((curr) => ({
+                      ...curr,
+                      [a.id]: { proposedStartsAt: null, proposedNote: null, startsAt: proposed ?? curr[a.id]?.startsAt ?? a.createdAt },
+                    }));
+                    setDbAppointments((curr) =>
+                      curr.map((x) => (x.id === a.id ? { ...x, status: "confirmed" as const, date: proposed ? proposed.slice(0, 10) : x.date, time: proposed ? new Date(proposed).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : x.time } : x)),
+                    );
+                    toast.success("New slot confirmed · reminders scheduled");
+                    reload();
+                  }}
+                  onDeclineReschedule={async () => {
+                    const r = await fetch("/api/patient/appointments", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "decline_reschedule", appointmentId: a.id }),
                     });
+                    const j = await r.json();
+                    if (!r.ok || !j?.ok) { toast.error(j?.error ?? "Could not decline"); return; }
+                    // Optimistic — banner disappears + status reverts to requested.
+                    setDbExtras((curr) => ({
+                      ...curr,
+                      [a.id]: { proposedStartsAt: null, proposedNote: null, startsAt: curr[a.id]?.startsAt ?? a.createdAt },
+                    }));
+                    setDbAppointments((curr) =>
+                      curr.map((x) => (x.id === a.id ? { ...x, status: "requested" as const } : x)),
+                    );
+                    toast.info("Proposal declined · clinician notified");
+                    reload();
                   }}
                 />
               ))}
@@ -228,18 +385,26 @@ export default function AppointmentsPage() {
 
 function UpcomingCard({
   apt,
+  extras,
   onReschedule,
   onCancel,
+  onAcceptReschedule,
+  onDeclineReschedule,
 }: {
   apt: Appointment;
-  onReschedule: (slot: string) => void;
-  onCancel: (reason: string) => void;
+  extras?: { proposedStartsAt: string | null; proposedNote: string | null; startsAt: string };
+  onReschedule: (newIso: string) => Promise<{ ok: boolean }>;
+  onCancel: (reason: string) => void | Promise<void>;
+  onAcceptReschedule: () => void | Promise<void>;
+  onDeclineReschedule: () => void | Promise<void>;
 }) {
   const Icon = apt.mode === "telehealth" ? Video : MapPin;
   const location =
     apt.mode === "telehealth"
       ? "Telehealth · video link 1h before"
       : `${apt.department} Wing`;
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const hasProposal = apt.status === "reschedule-requested" && extras?.proposedStartsAt;
 
   return (
     <div className="group overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] transition-all hover:-translate-y-0.5 hover:shadow-[var(--shadow-card)]">
@@ -248,11 +413,14 @@ function UpcomingCard({
           <Calendar className="size-3.5" />
           {dateLabel(apt.date)}
         </div>
-        {apt.status === "confirmed" ? (
-          <Badge variant="info" size="sm" dot>Confirmed</Badge>
-        ) : (
-          <Badge variant="warning" size="sm" dot>Requested</Badge>
-        )}
+        {apt.status === "confirmed" && <Badge variant="info" size="sm" dot>Confirmed</Badge>}
+        {apt.status === "requested" && <Badge variant="warning" size="sm" dot>Requested</Badge>}
+        {apt.status === "reschedule-requested" && <Badge variant="warning" size="sm" dot>Reschedule proposed</Badge>}
+        {apt.status === "arrived" && <Badge variant="warning" size="sm" dot>Arrived</Badge>}
+        {apt.status === "in-progress" && <Badge variant="success" size="sm" dot>In progress</Badge>}
+        {apt.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
+        {apt.status === "cancelled" && <Badge variant="muted" size="sm" dot>Cancelled</Badge>}
+        {apt.status === "no-show" && <Badge variant="danger" size="sm" dot>No-show</Badge>}
       </div>
       <Link href={`/patient/appointments/${apt.id}`} className="block">
         <div className="p-5">
@@ -276,18 +444,40 @@ function UpcomingCard({
           </div>
         </div>
       </Link>
+      {hasProposal && (
+        <div className="border-t border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/30 px-5 py-3 text-xs">
+          <p className="font-semibold text-[oklch(0.45_0.14_75)] dark:text-[oklch(0.85_0.13_80)]">
+            {apt.clinician} proposed a new slot
+          </p>
+          <p className="mt-0.5 text-[var(--color-muted-foreground)]">
+            {new Date(extras!.proposedStartsAt!).toLocaleString("en-IN", { hour12: false })}
+            {extras?.proposedNote ? ` · ${extras.proposedNote}` : ""}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" onClick={onAcceptReschedule}>Accept new slot</Button>
+            <Button size="sm" variant="outline" onClick={onDeclineReschedule}>Decline</Button>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2 border-t border-[var(--color-border)] bg-[var(--color-muted)]/30 px-5 py-3">
         <span className="font-mono text-[10px] text-[var(--color-muted-foreground)]">{apt.id}</span>
         <div className="flex gap-2">
-          <RescheduleDialog
-            triggerProps={{ variant: "outline", size: "sm" }}
-            appointment={{
-              id: apt.id,
-              doctor: apt.clinician,
-              date: dateLabel(apt.date),
-              time: apt.time,
-            }}
-            onConfirm={onReschedule}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRescheduleOpen(true)}
+            disabled={apt.status === "arrived" || apt.status === "in-progress"}
+          >
+            Reschedule
+          </Button>
+          <RescheduleAppointmentDialog
+            open={rescheduleOpen}
+            onOpenChange={setRescheduleOpen}
+            currentStartsAt={extras?.startsAt ?? new Date().toISOString()}
+            currentLabel={`${dateLabel(apt.date)} · ${apt.time}`}
+            clinicianName={apt.clinician}
+            mode="patient_request"
+            onSubmit={async ({ startsAt }) => onReschedule(startsAt)}
           />
           <CancelAppointmentDialog
             triggerProps={{
