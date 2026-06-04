@@ -70,8 +70,16 @@ async function guard(): Promise<
   return { orgId };
 }
 
+// HH:MM:SS in Asia/Kolkata (IST) regardless of the server's process timezone.
+// The audit ledger is read by Indian auditors so we format in their wall-clock.
 function fmtTime(d: Date): string {
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  return d.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Kolkata",
+  });
 }
 
 export async function GET() {

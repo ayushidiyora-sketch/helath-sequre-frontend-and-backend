@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import {
   Eye,
   ScrollText,
@@ -12,9 +15,72 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ActionButton } from "@/components/shared/action-button";
-import { ReportsWidget } from "@/components/shared/reports-widget";
+
+interface AuditorProfile {
+  name: string;
+  email: string;
+  organization: string;
+  scope: string;
+  accountExpiresLabel: string;
+  mfaEnrolled: boolean;
+  sessionIpAllowlist: string | null;
+}
+
+interface Stats {
+  events24h?: number;
+  activeConsents?: number;
+  openAnomalies?: number;
+  generatedReports?: number;
+}
 
 export default function AuditorDashboard() {
+  const [profile, setProfile] = useState<AuditorProfile | null>(null);
+  const [stats, setStats] = useState<Stats>({});
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/auditor/profile", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (alive && data?.ok) setProfile(data.profile); })
+      .catch(() => {});
+    fetch("/api/compliance/audit-logs", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.ok && typeof data.stats?.events24h === "number") {
+          setStats((s) => ({ ...s, events24h: data.stats.events24h }));
+        }
+      })
+      .catch(() => {});
+    fetch("/api/compliance/consents", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.ok && typeof data.stats?.active === "number") {
+          setStats((s) => ({ ...s, activeConsents: data.stats.active }));
+        }
+      })
+      .catch(() => {});
+    fetch("/api/compliance/anomalies", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.ok && typeof data.stats?.open === "number") {
+          setStats((s) => ({ ...s, openAnomalies: data.stats.open }));
+        }
+      })
+      .catch(() => {});
+    fetch("/api/auditor/report-exports", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.ok && typeof data.count === "number") {
+          setStats((s) => ({ ...s, generatedReports: data.count }));
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const orgLabel = profile?.organization ?? "—";
+  const expiresLabel = profile?.accountExpiresLabel ?? "—";
+
   return (
     <>
       <div className="relative overflow-hidden rounded-2xl border border-[var(--color-border)] bg-gradient-to-br from-[var(--color-card)] via-[var(--color-card)] to-[oklch(0.96_0.025_250)] p-6 sm:p-7">
@@ -25,11 +91,11 @@ export default function AuditorDashboard() {
               <Eye className="size-3" /> Strictly read-only · session bounded
             </div>
             <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-              Auditor overview · City General
+              Auditor overview · {orgLabel}
             </h1>
             <p className="mt-1.5 max-w-xl text-sm text-[var(--color-muted-foreground)]">
-              Audit window: <span className="font-medium text-[var(--color-foreground)]">May 1 – May 18, 2026</span>.
-              Your account expires automatically on <span className="font-medium text-[var(--color-foreground)]">Jun 1, 2026</span>.
+              Your account expires automatically on{" "}
+              <span className="font-medium text-[var(--color-foreground)]">{expiresLabel}</span>.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <ActionButton size="sm" href="/auditor/audit-logs">
@@ -43,11 +109,11 @@ export default function AuditorDashboard() {
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-[var(--shadow-soft)]">
             <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)]">Your access</p>
             <div className="mt-3 space-y-1.5 text-xs">
-              <Row label="Scope" value="org_citygeneral" mono />
+              <Row label="Scope" value={profile?.scope ?? "—"} mono />
               <Row label="Role" value="Auditor (read-only)" />
-              <Row label="MFA" value="TOTP active" />
-              <Row label="IP allowlist" value="203.0.113.0/24" mono />
-              <Row label="Account expires" value="Jun 1, 2026" />
+              <Row label="MFA" value={profile?.mfaEnrolled ? "TOTP active" : "Not enrolled"} />
+              <Row label="Last session IP" value={profile?.sessionIpAllowlist ?? "—"} mono />
+              <Row label="Account expires" value={expiresLabel} />
             </div>
           </div>
         </div>
@@ -55,10 +121,10 @@ export default function AuditorDashboard() {
 
       <div className="grid gap-3 sm:grid-cols-4">
         {[
-          { label: "Audit events visible", value: "12,489", icon: ScrollText },
-          { label: "Consent records", value: "1,284", icon: Shield },
-          { label: "Generated reports", value: 7, icon: FileBarChart2 },
-          { label: "Open anomalies", value: 4, icon: AlertTriangle, warn: true },
+          { label: "Audit events / 24h", value: stats.events24h?.toLocaleString() ?? "—", icon: ScrollText },
+          { label: "Active consents", value: stats.activeConsents?.toLocaleString() ?? "—", icon: Shield },
+          { label: "Generated reports", value: stats.generatedReports?.toLocaleString() ?? "—", icon: FileBarChart2 },
+          { label: "Open anomalies", value: stats.openAnomalies?.toLocaleString() ?? "—", icon: AlertTriangle, warn: (stats.openAnomalies ?? 0) > 0 },
         ].map((s) => {
           const Icon = s.icon;
           return (
@@ -72,57 +138,26 @@ export default function AuditorDashboard() {
         })}
       </div>
 
-      {/* <ReportsWidget preset="auditor" />   */}
-
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
           <h2 className="text-sm font-semibold">What you can do</h2>
           <ul className="mt-3 space-y-2 text-sm">
-            {[
-              "Read every audit log event",
-              "Drill into event payloads (PHI is redacted)",
-              "View consent records and policy history",
-              "Generate compliance reports as PDF / CSV",
-              "Export evidence with cryptographic checksums",
-            ].map((x) => (
-              <li key={x} className="flex items-center gap-2.5">
-                <CheckCircle2 className="size-4 text-[var(--color-success)]" /> {x}
-              </li>
-            ))}
+            <Capability icon={CheckCircle2} ok>Read the full audit ledger for {orgLabel}</Capability>
+            <Capability icon={CheckCircle2} ok>Read consent records (no PHI body)</Capability>
+            <Capability icon={CheckCircle2} ok>Download read-only reports (PDF)</Capability>
+            <Capability icon={Lock}>Modify any record — strictly blocked</Capability>
+            <Capability icon={Lock}>See PHI body content — out of scope</Capability>
+            <Capability icon={Clock}>Persist sessions — auto-revoked at expiry</Capability>
           </ul>
         </div>
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
-          <h2 className="text-sm font-semibold">What you cannot do</h2>
-          <ul className="mt-3 space-y-2 text-sm">
-            {[
-              "Modify any user, patient, or organization",
-              "Create or edit consent policies",
-              "Trigger break-glass or override workflows",
-              "Read PHI content (notes, prescriptions, messages)",
-              "Send messages or schedule appointments",
-            ].map((x) => (
-              <li key={x} className="flex items-center gap-2.5">
-                <Lock className="size-4 text-[var(--color-muted-foreground)]" /> {x}
-              </li>
-            ))}
+          <h2 className="text-sm font-semibold">Audit guardrails</h2>
+          <ul className="mt-3 space-y-2 text-xs text-[var(--color-muted-foreground)]">
+            <li className="flex items-start gap-2"><Shield className="mt-0.5 size-3.5" /> Every read is audit-logged against your session id.</li>
+            <li className="flex items-start gap-2"><Lock className="mt-0.5 size-3.5" /> Exports require an explicit click + reason.</li>
+            <li className="flex items-start gap-2"><Eye className="mt-0.5 size-3.5" /> No write surface available anywhere in your account.</li>
           </ul>
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-[var(--color-info)]/30 bg-[var(--color-info-soft)]/30 p-4 text-xs">
-        <div className="flex items-start gap-3">
-          <span className="flex size-9 items-center justify-center rounded-lg bg-[var(--color-card)] text-[var(--color-info)] ring-1 ring-[var(--color-info)]/30">
-            <Clock className="size-4" />
-          </span>
-          <div>
-            <p className="text-sm font-semibold">Your activity is itself audit-logged</p>
-            <p className="mt-0.5 text-[var(--color-muted-foreground)]">
-              Every view, drill-down, and export you perform produces an event in the
-              tenant&apos;s audit ledger. Compliance Manager sees an &quot;auditor.view&quot; entry
-              for each one.
-            </p>
-            <div className="mt-2"><SecurityBadge variant="audited" /></div>
-          </div>
+          <div className="mt-3"><SecurityBadge variant="audited" /></div>
         </div>
       </div>
     </>
@@ -131,9 +166,26 @@ export default function AuditorDashboard() {
 
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex justify-between gap-3">
+    <div className="flex items-center justify-between">
       <span className="text-[var(--color-muted-foreground)]">{label}</span>
-      <span className={`font-medium ${mono ? "font-mono" : ""}`}>{value}</span>
+      <span className={mono ? "font-mono" : ""}>{value}</span>
     </div>
+  );
+}
+
+function Capability({
+  icon: Icon,
+  children,
+  ok,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+  ok?: boolean;
+}) {
+  return (
+    <li className="flex items-start gap-2">
+      <Icon className={`mt-0.5 size-4 ${ok ? "text-[var(--color-success)]" : "text-[var(--color-muted-foreground)]"}`} />
+      <span className={ok ? "" : "text-[var(--color-muted-foreground)]"}>{children}</span>
+    </li>
   );
 }

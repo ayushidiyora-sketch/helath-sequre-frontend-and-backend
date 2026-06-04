@@ -32,7 +32,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { type Category, type RecordDetail } from "./records-data";
+import { RECORDS, type Category, type RecordDetail } from "./records-data";
 
 const LAB = "from-[oklch(0.65_0.13_195)] to-[oklch(0.5_0.12_205)]";
 const RX = "from-[oklch(0.7_0.13_320)] to-[oklch(0.55_0.13_330)]";
@@ -120,14 +120,16 @@ function RecordsPageInner() {
   // Real medical records — pulls finalized prescriptions + clinical notes +
   // discharge summaries from the DB, merged into a single MedicalRecord[]
   // shape. Empty arrays mean "no records yet"; UI renders the empty state.
-  const [records, setRecords] = useState<RecordDetail[]>([]);
+  // Seeded with the demo Lab/Imaging records (no backend table yet) so the
+  // viewer surface is reachable; DB-backed rx/notes/discharge are merged in.
+  const [records, setRecords] = useState<RecordDetail[]>(RECORDS);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/patient/records", { cache: "no-store" })
       .then(async (r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data?.ok) return;
-        setRecords(data.records as RecordDetail[]);
+        setRecords([...RECORDS, ...(data.records as RecordDetail[])]);
       })
       .catch(() => {});
     return () => {

@@ -573,6 +573,25 @@ model ReConsentResponse {
   @@map("re_consent_responses")
 }
 
+// Tracks every report download from /auditor/reports + /compliance/reports.
+// Feeds the "Generated reports" dashboard tile and any future "Recent
+// exports" surface. Compliance / Auditor only — no patient interaction.
+model ReportExport {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @db.Uuid
+  userId          String    @db.Uuid
+  userEmail       String?
+  /// "compliance_summary" | "access_report" | "consent_compliance" | "audit_summary"
+  reportKey       String
+  /// "pdf" | "xlsx"
+  format          String
+  createdAt       DateTime  @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@map("report_exports")
+}
+
 // ---------------------------------------------------------------------------
 // Users & auth
 // ---------------------------------------------------------------------------

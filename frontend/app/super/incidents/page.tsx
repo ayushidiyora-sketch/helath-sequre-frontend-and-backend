@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { CheckCircle2, ShieldAlert, Clock, Users } from "lucide-react";
+import { CheckCircle2, ShieldAlert, Clock, Users, ArrowRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/shared/page-header";
@@ -17,6 +18,7 @@ interface ApiIncident {
   severity: string;
   status: string;
   scope: string | null;
+  runbookUrl: string | null;
   source: "manual" | "auto";
   openedAt: string;
   resolvedAt: string | null;
@@ -157,9 +159,30 @@ export default function IncidentsPage() {
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <ActionButton variant="outline" size="sm" toastMessage={`Runbook for ${i.display} opened`} toastVariant="info">
-                        Open runbook
-                      </ActionButton>
+                      {i.source === "manual" && (
+                        <Button asChild variant="outline" size="sm">
+                          <Link href={`/super/incidents/${i.id}`}>
+                            View details <ArrowRight />
+                          </Link>
+                        </Button>
+                      )}
+                      {i.runbookUrl ? (
+                        <Button asChild variant="outline" size="sm">
+                          <a href={i.runbookUrl} target="_blank" rel="noopener noreferrer">
+                            Open runbook
+                          </a>
+                        </Button>
+                      ) : (
+                        <ActionButton
+                          variant="outline"
+                          size="sm"
+                          toastMessage="No runbook attached"
+                          toastDescription="Edit the incident to add a runbook URL."
+                          toastVariant="info"
+                        >
+                          Open runbook
+                        </ActionButton>
+                      )}
                       <Button size="sm" onClick={() => void advance(i)}>
                         {i.source === "auto" ? "Auto-managed" : "Update status"}
                       </Button>
@@ -197,6 +220,13 @@ export default function IncidentsPage() {
                       </p>
                     </div>
                     {i.severity === "high" ? <Badge variant="danger" size="sm">High · resolved</Badge> : <Badge variant="muted" size="sm">Resolved</Badge>}
+                    {i.source === "manual" && (
+                      <Button asChild variant="ghost" size="sm">
+                        <Link href={`/super/incidents/${i.id}`}>
+                          Details <ArrowRight />
+                        </Link>
+                      </Button>
+                    )}
                   </li>
                 ))}
               </ul>

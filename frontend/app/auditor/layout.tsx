@@ -5,31 +5,29 @@ import { LayoutDashboard, ScrollText, Shield, FileBarChart2, Settings, Bell } fr
 import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/role-sidebar";
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
+import { OnboardingTour } from "@/components/shared/onboarding-tour";
 
 interface MeResponse {
   ok: boolean;
   user?: { uid: string; name: string; email: string; role: string; org: string | null; initials: string };
 }
 
-const GROUPS: NavGroup[] = [
-  {
-    label: "Read-only access",
-    items: [
-      { href: "/auditor/dashboard", label: "Overview", icon: LayoutDashboard },
-      { href: "/auditor/audit-logs", label: "Audit ledger", icon: ScrollText, count: "12.4k" },
-      { href: "/auditor/consents", label: "Consent records", icon: Shield },
-      { href: "/auditor/reports", label: "Reports", icon: FileBarChart2 },
-    ],
-  },
-];
-
 const UTILITY: NavItem[] = [
   { href: "/auditor/notifications", label: "Notifications", icon: Bell },
   { href: "/auditor/settings", label: "Settings", icon: Settings },
 ];
 
+/** Compact format: 1234 → "1.2k", 12489 → "12.5k", 0 → "0". */
+function compactCount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 1)}k`.replace(".0k", "k");
+  return `${(n / 1_000_000).toFixed(1)}M`.replace(".0M", "M");
+}
+
 export default function AuditorLayout({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<MeResponse["user"] | null>(null);
+  const [auditCount, setAuditCount] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,10 +37,32 @@ export default function AuditorLayout({ children }: { children: React.ReactNode 
         if (!cancelled && data?.ok) setMe(data.user ?? null);
       })
       .catch(() => {});
+    // Live audit-ledger count for the sidebar badge. The audit-logs endpoint
+    // returns `stats.events24h` which is what the old "12.4k" represented.
+    fetch("/api/compliance/audit-logs", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { ok?: boolean; stats?: { events24h?: number } } | null) => {
+        if (!cancelled && data?.ok && typeof data.stats?.events24h === "number") {
+          setAuditCount(compactCount(data.stats.events24h));
+        }
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const GROUPS: NavGroup[] = [
+    {
+      label: "Read-only access",
+      items: [
+        { href: "/auditor/dashboard", label: "Overview", icon: LayoutDashboard },
+        { href: "/auditor/audit-logs", label: "Audit ledger", icon: ScrollText, count: auditCount },
+        { href: "/auditor/consents", label: "Consent records", icon: Shield },
+        { href: "/auditor/reports", label: "Reports", icon: FileBarChart2 },
+      ],
+    },
+  ];
 
   const user = me
     ? {
@@ -56,6 +76,7 @@ export default function AuditorLayout({ children }: { children: React.ReactNode 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--color-background)]">
       <IdleTimeout />
+      <OnboardingTour role="auditor" />
       <RoleSidebar groups={GROUPS} utility={UTILITY} />
       <div className="flex min-w-0 flex-1 flex-col">
         <RoleHeader

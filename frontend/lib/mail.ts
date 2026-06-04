@@ -15,6 +15,7 @@
  * is used. If none match, sendMail falls back to: resend → smtp → none.
  */
 import nodemailer, { type Transporter } from "nodemailer";
+import { emailBrandHeader } from "@/lib/brand";
 
 export type Transport = "resend" | "sendgrid" | "smtp" | "twilio";
 
@@ -353,8 +354,8 @@ export function welcomeEmail(args: WelcomeEmailArgs): { subject: string; text: s
 <body style="margin:0;padding:24px 12px;background:#eff3f4;font-family:'Segoe UI',Helvetica,Arial,sans-serif;color:#0f172a">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0">
     <tr>
-      <td style="background:#0f5b66;padding:20px 28px">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;letter-spacing:0.2px">HealthSecure Portal</div>
+      <td style="background:#0f5b66;padding:18px 28px">
+        ${emailBrandHeader()}
       </td>
     </tr>
     <tr>
@@ -437,8 +438,8 @@ export function resetEmail(link: string, name?: string): { subject: string; text
 <body style="margin:0;padding:24px 12px;background:#eff3f4;font-family:'Segoe UI',Helvetica,Arial,sans-serif;color:#0f172a">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0">
     <tr>
-      <td style="background:#0f5b66;padding:20px 28px">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;letter-spacing:0.2px">HealthSecure Portal</div>
+      <td style="background:#0f5b66;padding:18px 28px">
+        ${emailBrandHeader()}
       </td>
     </tr>
     <tr>
@@ -504,8 +505,8 @@ export function otpEmail(code: string): { subject: string; text: string; html: s
 <body style="margin:0;padding:24px 12px;background:#eff3f4;font-family:'Segoe UI',Helvetica,Arial,sans-serif;color:#0f172a">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0">
     <tr>
-      <td style="background:#0f5b66;padding:20px 28px">
-        <div style="font-size:16px;font-weight:700;color:#ffffff;letter-spacing:0.2px">HealthSecure Portal</div>
+      <td style="background:#0f5b66;padding:18px 28px">
+        ${emailBrandHeader()}
       </td>
     </tr>
     <tr>

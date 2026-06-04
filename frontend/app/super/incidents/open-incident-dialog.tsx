@@ -32,6 +32,7 @@ export function OpenIncidentDialog({ onCreated }: { onCreated?: () => void }) {
   const [scope, setScope] = useState<"platform" | "tenant" | "region">("platform");
   const [affected, setAffected] = useState("");
   const [description, setDescription] = useState("");
+  const [runbookUrl, setRunbookUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   function reset() {
@@ -40,6 +41,7 @@ export function OpenIncidentDialog({ onCreated }: { onCreated?: () => void }) {
     setScope("platform");
     setAffected("");
     setDescription("");
+    setRunbookUrl("");
   }
 
   async function submit(e: React.FormEvent) {
@@ -57,7 +59,12 @@ export function OpenIncidentDialog({ onCreated }: { onCreated?: () => void }) {
       const r = await fetch("/api/super/incidents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: fullTitle, severity, scope: scopeStr }),
+        body: JSON.stringify({
+          title: fullTitle,
+          severity,
+          scope: scopeStr,
+          runbookUrl: runbookUrl.trim() || undefined,
+        }),
       });
       const data = await r.json();
       if (!r.ok || !data?.ok) {
@@ -151,6 +158,16 @@ export function OpenIncidentDialog({ onCreated }: { onCreated?: () => void }) {
               placeholder="What is happening, and what is the impact?"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="inc-runbook">Runbook URL (optional)</Label>
+            <Input
+              id="inc-runbook"
+              placeholder="https://docs.example.com/runbooks/ransomware"
+              value={runbookUrl}
+              onChange={(e) => setRunbookUrl(e.target.value)}
+              maxLength={500}
             />
           </div>
           <DialogFooter>

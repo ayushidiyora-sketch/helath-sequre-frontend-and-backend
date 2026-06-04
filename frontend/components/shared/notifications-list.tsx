@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Bell,
@@ -58,38 +58,52 @@ export const CATEGORY_META: Record<string, { icon: LucideIcon; color: string }> 
   approval: { icon: Hourglass, color: "from-[oklch(0.7_0.15_75)] to-[oklch(0.56_0.13_55)]" },
 };
 
-type Tab = "all" | "unread" | "critical";
+type Tab = "all" | "critical";
 
 /**
- * Static notifications list. Each non-patient role renders this with its
- * own hardcoded feed — visually identical to the patient page but free
- * of the patient store dependency.
+ * Notifications feed UI. Read notifications are removed from the list (and
+ * remembered by the parent so they don't reappear on the next poll), so every
+ * row shown is unread — opening one or "Mark all read" clears it from view.
  */
-export function NotificationsList({ items }: { items: SimpleNotification[] }) {
+export function NotificationsList({
+  items,
+  onRead,
+  onReadAll,
+}: {
+  items: SimpleNotification[];
+  /** Called when a notification is read. The parent removes it from the feed
+   *  and persists it as read so it doesn't reappear on the next poll. */
+  onRead?: (id: string) => void;
+  /** Called when "Mark all read" is pressed — clears + persists the whole feed. */
+  onReadAll?: () => void;
+}) {
   const [tab, setTab] = useState<Tab>("all");
   const [feed, setFeed] = useState(items);
 
+  // Read notifications are removed from the list, so the feed mirrors `items`.
+  useEffect(() => {
+    setFeed(items);
+  }, [items]);
+
   const totalCount = feed.length;
-  const unreadCount = feed.filter((n) => !n.read).length;
   const criticalCount = feed.filter((n) => n.critical).length;
 
-  const filtered = feed.filter((n) => {
-    if (tab === "all") return true;
-    if (tab === "unread") return !n.read;
-    return !!n.critical;
-  });
+  const filtered = feed.filter((n) => (tab === "critical" ? !!n.critical : true));
 
   function markAllRead() {
-    if (unreadCount === 0) {
-      toast.info("Nothing to mark", { description: "All notifications are already read." });
+    if (totalCount === 0) {
+      toast.info("Nothing to mark", { description: "You're all caught up." });
       return;
     }
-    setFeed((curr) => curr.map((n) => ({ ...n, read: true })));
-    toast.success(`Marked ${unreadCount} as read`);
+    const n = totalCount;
+    setFeed([]);
+    onReadAll?.();
+    toast.success(`Marked ${n} as read`);
   }
 
   function markOneRead(id: string) {
-    setFeed((curr) => curr.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    setFeed((curr) => curr.filter((n) => n.id !== id));
+    onRead?.(id);
   }
 
   return (
@@ -97,8 +111,7 @@ export function NotificationsList({ items }: { items: SimpleNotification[] }) {
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
-            <TabsTrigger value="all">All · {totalCount}</TabsTrigger>
-            <TabsTrigger value="unread">Unread · {unreadCount}</TabsTrigger>
+            <TabsTrigger value="all">Unread · {totalCount}</TabsTrigger>
             <TabsTrigger value="critical">Critical · {criticalCount}</TabsTrigger>
           </TabsList>
 
@@ -123,11 +136,9 @@ export function NotificationsList({ items }: { items: SimpleNotification[] }) {
         {filtered.length === 0 ? (
           <p className="px-5 py-12 text-center text-sm text-[var(--color-muted-foreground)]">
             {totalCount === 0
-              ? "You're all caught up — no notifications yet."
-              : tab === "unread"
-                ? "You're all caught up — no unread notifications."
-                : tab === "critical"
-                  ? "No critical notifications."
+              ? "You're all caught up — no unread notifications."
+              : tab === "critical"
+                ? "No critical notifications."
                   : "No notifications."}
           </p>
         ) : (

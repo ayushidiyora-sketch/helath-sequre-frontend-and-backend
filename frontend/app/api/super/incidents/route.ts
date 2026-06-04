@@ -3,8 +3,52 @@ import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { sendMail } from "@/lib/mail";
 
 export const runtime = "nodejs";
+
+/**
+ * Parse a `scope` string like "tenant:org_slug" into its parts so we can
+ * resolve the organization and notify its Compliance Manager(s). Other shapes
+ * ("platform", "region:ap-south-1", null) return null — no per-tenant fan-out.
+ */
+function scopeOrgSlug(scope: string | null | undefined): string | null {
+  if (!scope) return null;
+  const m = scope.match(/^tenant:([\w_-]+)$/i);
+  return m ? m[1] : null;
+}
+
+/**
+ * Best-effort: send `subject/text` to every active Compliance Manager in the
+ * tenant identified by `orgSlug`. Swallows errors so the calling handler
+ * never 500s because of a transient mail-provider issue.
+ */
+async function emailTenantComplianceManagers(
+  orgSlug: string,
+  subject: string,
+  text: string,
+): Promise<void> {
+  try {
+    const cms = await prisma.$queryRaw<{ email: string }[]>`
+      SELECT u.email
+      FROM users u
+      JOIN organizations o ON o.id = u."organizationId"
+      WHERE o.slug = ${orgSlug}
+        AND u."roleKind" = 'compliance_manager'
+        AND u.status = 'active'::"UserStatus"
+    `;
+    if (cms.length === 0) return;
+    await Promise.all(
+      cms.map((cm) =>
+        sendMail({ to: cm.email, subject, text }).catch((e) => {
+          console.error(`[incidents] mail to ${cm.email} failed:`, e);
+        }),
+      ),
+    );
+  } catch (err) {
+    console.error("[incidents] CM notification fan-out failed:", err);
+  }
+}
 
 /**
  * Super Admin incidents feed. Combines:
@@ -26,6 +70,8 @@ interface Incident {
   /** "open" | "investigating" | "mitigating" | "monitoring" | "resolved" */
   status: string;
   scope: string | null;
+  /** Optional URL the "Open runbook" button navigates to. */
+  runbookUrl: string | null;
   /** "manual" — has a DB row · "auto" — derived from a live signal */
   source: "manual" | "auto";
   openedAt: string;
@@ -62,6 +108,7 @@ interface ManualRow {
   severity: string;
   status: string;
   scope: string | null;
+  runbookUrl: string | null;
   openedAt: Date;
   resolvedAt: Date | null;
   resolutionNote: string | null;
@@ -100,6 +147,7 @@ async function deriveAuto(): Promise<{ active: Incident[]; closed: Incident[] }>
       severity: "high",
       status: stillLocked ? "investigating" : "resolved",
       scope: r.orgName ? `tenant:${r.orgName}` : "platform",
+      runbookUrl: null,
       source: "auto",
       openedAt: r.lockedUntil.toISOString(),
       resolvedAt: stillLocked ? null : r.lockedUntil.toISOString(),
@@ -129,6 +177,7 @@ async function deriveAuto(): Promise<{ active: Incident[]; closed: Incident[] }>
       severity: "high",
       status: "investigating",
       scope: r.orgName ? `tenant:${r.orgName}` : "platform",
+      runbookUrl: null,
       source: "auto",
       openedAt: r.updatedAt.toISOString(),
       resolvedAt: null,
@@ -155,6 +204,7 @@ async function deriveAuto(): Promise<{ active: Incident[]; closed: Incident[] }>
       severity: "medium",
       status: "investigating",
       scope: "platform",
+      runbookUrl: null,
       source: "auto",
       openedAt: r.createdAt.toISOString(),
       resolvedAt: null,
@@ -183,6 +233,7 @@ async function deriveAuto(): Promise<{ active: Incident[]; closed: Incident[] }>
       severity: "high",
       status: "mitigating",
       scope: r.orgName ? `tenant:${r.orgName}` : "platform",
+      runbookUrl: null,
       source: "auto",
       openedAt: r.uploadedAt.toISOString(),
       resolvedAt: null,
@@ -208,6 +259,7 @@ async function deriveAuto(): Promise<{ active: Incident[]; closed: Incident[] }>
       severity: "minor",
       status: "monitoring",
       scope: `tenant:${r.name}`,
+      runbookUrl: null,
       source: "auto",
       openedAt: r.archivedAt.toISOString(),
       resolvedAt: null,
@@ -227,7 +279,7 @@ export async function GET() {
 
   // Manual rows from the incidents table.
   const rows = await prisma.$queryRaw<ManualRow[]>`
-    SELECT i.id, i.number, i.title, i.severity, i.status, i.scope,
+    SELECT i.id, i.number, i.title, i.severity, i.status, i.scope, i."runbookUrl",
            i."openedAt", i."resolvedAt", i."resolutionNote",
            u."firstName" AS "openerFirstName",
            u."lastName"  AS "openerLastName"
@@ -248,6 +300,7 @@ export async function GET() {
       severity: r.severity,
       status: r.status,
       scope: r.scope,
+      runbookUrl: r.runbookUrl,
       source: "manual",
       openedAt: r.openedAt.toISOString(),
       resolvedAt: r.resolvedAt ? r.resolvedAt.toISOString() : null,
@@ -278,6 +331,7 @@ interface PostBody {
   title?: string;
   severity?: string;
   scope?: string | null;
+  runbookUrl?: string | null;
 }
 
 export async function POST(req: Request) {
@@ -294,6 +348,10 @@ export async function POST(req: Request) {
   const severityRaw = (body.severity ?? "minor").toLowerCase();
   const severity = ["high", "medium", "minor"].includes(severityRaw) ? severityRaw : "minor";
   const scope = body.scope?.trim() || null;
+  const runbookUrl = body.runbookUrl?.trim() || null;
+  if (runbookUrl && runbookUrl.length > 500) {
+    return NextResponse.json({ ok: false, error: "Runbook URL too long (max 500)." }, { status: 400 });
+  }
   // Demo Super Admin (seeded user) has a non-UUID uid → store openedBy=NULL.
   // `Prisma.sql` builds the correct SQL fragment for either case.
   const openedByFragment = isDbUid(g.claims.uid)
@@ -302,22 +360,53 @@ export async function POST(req: Request) {
 
   const inserted = await prisma.$queryRaw<{ id: string; number: number; openedAt: Date }[]>`
     INSERT INTO incidents
-      (id, title, severity, status, scope, "openedBy", "openedAt", "createdAt", "updatedAt")
+      (id, title, severity, status, scope, "runbookUrl", "openedBy",
+       "openedAt", "createdAt", "updatedAt")
     VALUES
-      (gen_random_uuid(), ${title}, ${severity}, 'open', ${scope},
+      (gen_random_uuid(), ${title}, ${severity}, 'open', ${scope}, ${runbookUrl},
        ${openedByFragment}, NOW(), NOW(), NOW())
     RETURNING id, number, "openedAt"
   `;
+  const display = `INC-${String(inserted[0].number).padStart(4, "0")}`;
+
+  // Gap-2 fix: email the tenant's CM(s) so they know the platform side has
+  // opened an incident against their tenant. Fire-and-forget — never blocks
+  // the response.
+  const tenantSlug = scopeOrgSlug(scope);
+  if (tenantSlug) {
+    const subject = `${display} opened on ${tenantSlug} (${severity}) — ${title.slice(0, 80)}`;
+    const text = [
+      `A Sensussoft Super Admin has opened a platform incident scoped to your tenant.`,
+      ``,
+      `Incident: ${display}`,
+      `Severity: ${severity}`,
+      `Tenant scope: ${scope}`,
+      `Opened at: ${inserted[0].openedAt.toISOString()}`,
+      `Opened by: ${g.claims.email}`,
+      ``,
+      `Title:`,
+      title,
+      ``,
+      `Sign in to the Compliance dashboard to coordinate response. The`,
+      `incident will be marked resolved (with a public resolutionNote) when`,
+      `the platform side closes it.`,
+    ].join("\n");
+    // Don't await — keep the POST snappy. emailTenantComplianceManagers
+    // already swallows errors so this is safe.
+    void emailTenantComplianceManagers(tenantSlug, subject, text);
+  }
+
   return NextResponse.json(
     {
       ok: true,
       incident: {
         id: inserted[0].id,
-        display: `INC-${String(inserted[0].number).padStart(4, "0")}`,
+        display,
         title,
         severity,
         status: "open",
         scope,
+        runbookUrl,
         source: "manual",
         openedAt: inserted[0].openedAt.toISOString(),
         resolvedAt: null,
@@ -350,15 +439,45 @@ export async function PATCH(req: Request) {
   if (!STATUS_FLOW.has(status)) return NextResponse.json({ ok: false, error: "Invalid status." }, { status: 400 });
 
   const note = body.resolutionNote?.trim() || null;
-  const rows = await prisma.$queryRaw<{ id: string; number: number; status: string; resolvedAt: Date | null }[]>`
+  const rows = await prisma.$queryRaw<
+    { id: string; number: number; title: string; severity: string; scope: string | null; status: string; resolvedAt: Date | null }[]
+  >`
     UPDATE incidents SET
       status = ${status},
       "resolvedAt" = CASE WHEN ${status} = 'resolved' THEN NOW() ELSE NULL END,
       "resolutionNote" = ${note},
       "updatedAt" = NOW()
     WHERE id = ${id}::uuid
-    RETURNING id, number, status, "resolvedAt"
+    RETURNING id, number, title, severity, scope, status, "resolvedAt"
   `;
   if (rows.length === 0) return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
-  return NextResponse.json({ ok: true, incident: rows[0] });
+  const inc = rows[0];
+
+  // Gap-2 fix: notify tenant CM(s) when the incident moves to 'resolved'.
+  // Other transitions stay silent — too noisy to mail on every step.
+  if (status === "resolved") {
+    const tenantSlug = scopeOrgSlug(inc.scope);
+    if (tenantSlug) {
+      const display = `INC-${String(inc.number).padStart(4, "0")}`;
+      const subject = `${display} resolved on ${tenantSlug}`;
+      const text = [
+        `A Sensussoft platform incident scoped to your tenant has been resolved.`,
+        ``,
+        `Incident: ${display}`,
+        `Severity: ${inc.severity}`,
+        `Tenant scope: ${inc.scope}`,
+        `Resolved at: ${inc.resolvedAt ? new Date(inc.resolvedAt).toISOString() : "(now)"}`,
+        `Resolved by: ${g.claims.email}`,
+        ``,
+        `Title:`,
+        inc.title,
+        ``,
+        `Resolution note:`,
+        note ?? "(none provided)",
+      ].join("\n");
+      void emailTenantComplianceManagers(tenantSlug, subject, text);
+    }
+  }
+
+  return NextResponse.json({ ok: true, incident: inc });
 }

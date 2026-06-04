@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Megaphone,
@@ -7,18 +10,33 @@ import {
   ArrowRight,
   CheckCircle2,
   Users,
+  Loader2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
-import {
-  CAMPAIGNS,
-  campaignProgress,
-  type Campaign,
-  type Channel,
-} from "./campaigns-data";
+
+type Channel = "email" | "in_app" | "sms";
+
+interface Campaign {
+  id: string;
+  policyId: string;
+  policyVersion: string;
+  status: string;
+  triggeredAt: string;
+  completedAt: string | null;
+  activatedAt: string | null;
+  target: number;
+  approved: number;
+  declined: number;
+  pending: number;
+  responded: number;
+  remaining: number;
+  pct: number;
+  channels: Channel[];
+}
 
 const CHANNEL_META: Record<Channel, { label: string; icon: React.ComponentType<{ className?: string }> }> = {
   email: { label: "Email", icon: Mail },
@@ -26,9 +44,33 @@ const CHANNEL_META: Record<Channel, { label: string; icon: React.ComponentType<{
   sms: { label: "SMS", icon: Smartphone },
 };
 
+function dateLabel(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 export default function CampaignsPage() {
-  const active = CAMPAIGNS.filter((c) => c.status === "active");
-  const completed = CAMPAIGNS.filter((c) => c.status === "completed");
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/compliance/re-consent-campaigns", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive || !j?.ok) return;
+        setCampaigns(j.campaigns as Campaign[]);
+      } catch (err) {
+        console.error("[campaigns] fetch", err);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const active = campaigns.filter((c) => c.status !== "completed");
+  const completed = campaigns.filter((c) => c.status === "completed");
 
   return (
     <>
@@ -45,15 +87,27 @@ export default function CampaignsPage() {
         </TabsList>
 
         <TabsContent value="active">
-          <div className="space-y-4">
-            {active.map((c) => <CampaignRow key={c.id} c={c} />)}
-          </div>
+          {loading ? (
+            <LoadingBlock />
+          ) : active.length === 0 ? (
+            <EmptyBlock message="No active campaigns. Activating a new policy version automatically launches one." />
+          ) : (
+            <div className="space-y-4">
+              {active.map((c) => <CampaignRow key={c.id} c={c} />)}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="completed">
-          <div className="space-y-4">
-            {completed.map((c) => <CampaignRow key={c.id} c={c} />)}
-          </div>
+          {loading ? (
+            <LoadingBlock />
+          ) : completed.length === 0 ? (
+            <EmptyBlock message="No completed campaigns yet." />
+          ) : (
+            <div className="space-y-4">
+              {completed.map((c) => <CampaignRow key={c.id} c={c} />)}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </>
@@ -61,7 +115,6 @@ export default function CampaignsPage() {
 }
 
 function CampaignRow({ c }: { c: Campaign }) {
-  const { reconsented, pct, remaining } = campaignProgress(c);
   const done = c.status === "completed";
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
@@ -80,7 +133,7 @@ function CampaignRow({ c }: { c: Campaign }) {
               )}
             </div>
             <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
-              Started {c.startedAt} · {c.targetCount.toLocaleString()} patients targeted
+              Started {dateLabel(c.triggeredAt)} · {c.target.toLocaleString()} patient{c.target === 1 ? "" : "s"} targeted
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {c.channels.map((ch) => {
@@ -103,15 +156,36 @@ function CampaignRow({ c }: { c: Campaign }) {
       <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-center">
         <div>
           <div className="mb-1.5 flex items-center justify-between text-xs">
-            <span className="inline-flex items-center gap-1 font-medium"><Users className="size-3.5" /> {reconsented.toLocaleString()} re-consented</span>
-            <span className="font-mono tabular-nums">{pct}%</span>
+            <span className="inline-flex items-center gap-1 font-medium">
+              <Users className="size-3.5" /> {c.approved.toLocaleString()} re-consented
+              {c.declined > 0 && (
+                <span className="ml-2 text-[var(--color-danger)]">· {c.declined} declined</span>
+              )}
+            </span>
+            <span className="font-mono tabular-nums">{c.pct}%</span>
           </div>
-          <Progress value={pct} />
+          <Progress value={c.pct} />
         </div>
         <p className="text-[11px] text-[var(--color-muted-foreground)] sm:min-w-[140px] sm:text-right">
-          {remaining.toLocaleString()} remaining
+          {c.remaining.toLocaleString()} remaining
         </p>
       </div>
+    </div>
+  );
+}
+
+function LoadingBlock() {
+  return (
+    <div className="flex items-center justify-center rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-10 text-sm text-[var(--color-muted-foreground)]">
+      <Loader2 className="mr-2 size-4 animate-spin" /> Loading campaigns…
+    </div>
+  );
+}
+
+function EmptyBlock({ message }: { message: string }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
+      {message}
     </div>
   );
 }

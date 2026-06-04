@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { NotificationsList, type SimpleNotification } from "./notifications-list";
+import { NotificationsList } from "./notifications-list";
+import { useNotifications } from "@/lib/use-notifications";
 
 /**
  * Fetches the signed-in user's notifications from `/api/notifications` (which
@@ -9,25 +9,13 @@ import { NotificationsList, type SimpleNotification } from "./notifications-list
  * appointments, prescriptions, tenant signups, etc.) and renders them with the
  * shared `NotificationsList` UI. Used by every role's `/notifications` page so
  * the feed is dynamic rather than hardcoded per role.
+ *
+ * Uses the live `useNotifications` hook so the feed refreshes on a poll, on tab
+ * focus, and on the `hs:notifications-changed` event — no manual reload needed.
+ * Toasts are left to the header bell to avoid double-notifying on this page.
  */
 export function DynamicNotifications() {
-  const [items, setItems] = useState<SimpleNotification[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/notifications", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        setItems(Array.isArray(data?.items) ? data.items : []);
-      })
-      .catch(() => {
-        if (!cancelled) setItems([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { items, markRead, markAllRead } = useNotifications();
 
   if (items === null) {
     return (
@@ -37,5 +25,5 @@ export function DynamicNotifications() {
     );
   }
 
-  return <NotificationsList items={items} />;
+  return <NotificationsList items={items} onRead={markRead} onReadAll={markAllRead} />;
 }

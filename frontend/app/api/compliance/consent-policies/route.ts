@@ -124,28 +124,47 @@ function shape(p: PolicyRow, consents: number, totalActive: number): PolicyOut {
 }
 
 /**
- * For each policy version, count `consent_requests` rows in the tenant whose
- * decidedAt falls inside the policy's [activatedAt, archivedAt) window AND
- * which still represent live consent (approved + not expired). For the active
- * policy, the window is [activatedAt, +∞).
+ * For each policy version, count the patients who EXPLICITLY approved that
+ * policy via a re-consent campaign (`re_consent_responses.response =
+ * 'approved'`). Plus a fallback for the policy that was active when a
+ * patient FIRST granted consent (so policies that pre-date the re-consent
+ * system still show non-zero numbers): `consent_requests` rows whose
+ * decidedAt falls inside the policy's `[activatedAt, archivedAt)` window
+ * and still represent live consent. The two sources are unioned on
+ * patientId so a patient who both originally consented under v2.3 AND
+ * approved the v2.4 re-consent doesn't double-count.
  */
 async function consentsByPolicy(orgId: string, policies: PolicyRow[]): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   for (const p of policies) {
     counts.set(p.id, 0);
-    if (!p.activatedAt) continue;
-    const upper = p.archivedAt ?? new Date("9999-12-31T00:00:00Z");
     try {
-      const r = await prisma.$queryRaw<{ n: bigint }[]>`
-        SELECT COUNT(*)::bigint AS n
-        FROM consent_requests
+      // Live re-consent approvals (the gold banner → Approve flow).
+      const approvedRespRows = await prisma.$queryRaw<{ patientId: string }[]>`
+        SELECT DISTINCT "patientId"
+        FROM re_consent_responses
         WHERE "organizationId" = ${orgId}::uuid
-          AND status = 'approved'
-          AND ("expiresAt" IS NULL OR "expiresAt" > NOW())
-          AND COALESCE("decidedAt", "requestedAt") >= ${p.activatedAt}
-          AND COALESCE("decidedAt", "requestedAt") <  ${upper}
+          AND "policyId" = ${p.id}::uuid
+          AND response = 'approved'
       `;
-      counts.set(p.id, Number(r[0]?.n ?? 0n));
+      // Original consents decided while this policy was the active version.
+      const originalRows = p.activatedAt
+        ? await prisma.$queryRaw<{ patientId: string }[]>`
+            SELECT DISTINCT "patientId"
+            FROM consent_requests
+            WHERE "organizationId" = ${orgId}::uuid
+              AND status = 'approved'
+              AND ("expiresAt" IS NULL OR "expiresAt" > NOW())
+              AND COALESCE("decidedAt", "requestedAt") >= ${p.activatedAt}
+              AND COALESCE("decidedAt", "requestedAt") <  ${p.archivedAt ?? new Date("9999-12-31T00:00:00Z")}
+          `
+        : [];
+      // Union by patientId so a patient who both originally consented under
+      // this policy AND re-consented through the campaign counts once.
+      const uniq = new Set<string>();
+      for (const r of approvedRespRows) uniq.add(r.patientId);
+      for (const r of originalRows) uniq.add(r.patientId);
+      counts.set(p.id, uniq.size);
     } catch (err) {
       console.error("[consent-policies] count for", p.version, err);
     }

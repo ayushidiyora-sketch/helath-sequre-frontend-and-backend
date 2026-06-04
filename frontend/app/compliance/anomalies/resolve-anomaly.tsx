@@ -84,7 +84,10 @@ export function ResolveAnomalyButton({
   const [justification, setJustification] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  async function submitDecision(targetStatus: DecisionStatus, outcomeKey: Outcome | null) {
+  async function submitDecision(
+    targetStatus: DecisionStatus,
+    outcomeKey: Outcome | null,
+  ): Promise<{ ok: boolean; incident?: { id: string; display: string } | null }> {
     setSubmitting(true);
     try {
       const res = await fetch("/api/compliance/anomalies", {
@@ -101,12 +104,12 @@ export function ResolveAnomalyButton({
       const json = await res.json();
       if (!res.ok || !json?.ok) {
         toast.error(json?.error ?? "Failed to save decision");
-        return false;
+        return { ok: false };
       }
-      return true;
+      return { ok: true, incident: json.incident ?? null };
     } catch {
       toast.error("Network error — please retry.");
-      return false;
+      return { ok: false };
     } finally {
       setSubmitting(false);
     }
@@ -120,11 +123,17 @@ export function ResolveAnomalyButton({
       return;
     }
     const meta = OUTCOMES.find((o) => o.key === outcome)!;
-    const ok = await submitDecision(meta.status, outcome);
-    if (!ok) return;
+    const result = await submitDecision(meta.status, outcome);
+    if (!result.ok) return;
     if (outcome === "incident") {
-      toast.error("Incident opened", {
-        description: `${anomalyId.slice(0, 24)}${anomalyId.length > 24 ? "…" : ""} · audit-logged`,
+      // The PATCH handler now auto-creates an incidents row and returns the
+      // INC-NNNN display. Surface it so the CM knows exactly which incident
+      // they escalated to — and where to find it on the Super Admin side.
+      const incDisplay = result.incident?.display;
+      toast.error(incDisplay ? `Incident ${incDisplay} opened` : "Incident opened", {
+        description: incDisplay
+          ? `Linked to /super/incidents/${result.incident!.id} · tenant CM emailed`
+          : `${anomalyId.slice(0, 24)}${anomalyId.length > 24 ? "…" : ""} · audit-logged`,
       });
     } else {
       toast.success(`Resolved · ${meta.label.toLowerCase()}`, {
@@ -140,8 +149,8 @@ export function ResolveAnomalyButton({
   }
 
   async function quickInvestigate() {
-    const ok = await submitDecision("investigating", null);
-    if (!ok) return;
+    const result = await submitDecision("investigating", null);
+    if (!result.ok) return;
     toast.info("Marked as investigating", { description: "Status updated on the anomaly." });
     onDone?.();
     router.refresh();
@@ -154,8 +163,8 @@ export function ResolveAnomalyButton({
       });
       return;
     }
-    const ok = await submitDecision("dismissed", "legitimate");
-    if (!ok) return;
+    const result = await submitDecision("dismissed", "legitimate");
+    if (!result.ok) return;
     toast.success("Anomaly dismissed", { description: "audit-logged" });
     setOpen(false);
     setJustification("");

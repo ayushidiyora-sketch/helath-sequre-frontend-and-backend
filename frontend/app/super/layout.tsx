@@ -15,6 +15,7 @@ import {
 import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/role-sidebar";
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
+import { OnboardingTour } from "@/components/shared/onboarding-tour";
 
 interface MeResponse {
   ok: boolean;
@@ -77,6 +78,7 @@ export default function SuperLayout({ children }: { children: React.ReactNode })
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--color-background)]">
       <IdleTimeout />
+      <OnboardingTour role="super" />
       <RoleSidebar groups={groups} utility={UTILITY} />
       <div className="flex min-w-0 flex-1 flex-col">
         <RoleHeader

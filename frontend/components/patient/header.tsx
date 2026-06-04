@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { NavSearch, type NavSearchItem } from "@/components/shared/nav-search";
 import { RoleMobileNav } from "@/components/shared/role-mobile-nav";
 import type { NavGroup, NavItem } from "@/components/shared/role-sidebar";
+import { useNotifications } from "@/lib/use-notifications";
 
 /** Patient sidebar nav — kept in sync with components/patient/sidebar.tsx. */
 const PATIENT_NAV: NavSearchItem[] = [
@@ -80,6 +81,7 @@ interface PatientHeaderUser {
 export function PatientHeader() {
   const [dark, setDark] = useState(false);
   const [user, setUser] = useState<PatientHeaderUser | null>(null);
+  const { unread } = useNotifications({ toastOnNew: true });
 
   useEffect(() => {
     const root = document.documentElement;
@@ -140,13 +142,17 @@ export function PatientHeader() {
         <Link
           href="/patient/notifications"
           className="relative inline-flex h-9 w-9 items-center justify-center rounded-md text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
-          aria-label="Notifications"
+          aria-label={unread > 0 ? `Notifications · ${unread} unread` : "Notifications"}
         >
           <Bell className="size-4" />
-          <span className="absolute right-2 top-1.5 flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--color-danger)] opacity-60" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--color-danger)]" />
-          </span>
+          {unread > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--color-danger)] opacity-50" />
+              <span className="relative inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-danger)] px-1 text-[10px] font-semibold leading-none text-white">
+                {unread > 9 ? "9+" : unread}
+              </span>
+            </span>
+          )}
         </Link>
 
         <DropdownMenu>

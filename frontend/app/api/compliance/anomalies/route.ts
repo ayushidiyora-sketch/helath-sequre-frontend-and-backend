@@ -825,5 +825,46 @@ export async function PATCH(req: Request) {
       "updatedAt" = NOW()
   `;
 
-  return NextResponse.json({ ok: true });
+  // Gap-1 fix: when the CM picks "Escalate — open incident", auto-create a
+  // real `incidents` row scoped to the tenant. Previously this flag was
+  // metadata-only and the CM had to phone the Super Admin. Now the incident
+  // exists immediately and the response carries the INC-NNNN display so the
+  // Resolve dialog toast can surface it.
+  let incident: { id: string; display: string } | null = null;
+  if (outcome === "incident") {
+    try {
+      const [org] = await prisma.$queryRaw<{ slug: string; name: string }[]>`
+        SELECT slug, name FROM organizations WHERE id = ${g.orgId}::uuid LIMIT 1
+      `;
+      const sigPrefix = signature.split(":")[0] || "anomaly";
+      const titleSrc = (justification ?? signature).replace(/\s+/g, " ").slice(0, 180);
+      const incTitle = `Escalated anomaly · ${sigPrefix} — ${titleSrc}`;
+      const incScope = org ? `tenant:${org.slug}` : null;
+      const [inserted] = await prisma.$queryRaw<{ id: string; number: number }[]>`
+        INSERT INTO incidents
+          (id, title, severity, status, scope, "openedBy", "openedAt", "createdAt", "updatedAt")
+        VALUES
+          (gen_random_uuid(), ${incTitle}, 'high', 'open', ${incScope},
+           ${g.viewer.uid}::uuid, NOW(), NOW(), NOW())
+        RETURNING id, number
+      `;
+      const display = `INC-${String(inserted.number).padStart(4, "0")}`;
+      incident = { id: inserted.id, display };
+
+      // Backfill the link: append "· INC-NNNN" to coordinatedWith so the
+      // Closed-tab row tells the CM exactly which incident they escalated to.
+      const coordSuffix = coordinatedWith ? `${coordinatedWith} · ${display}` : display;
+      await prisma.$executeRaw`
+        UPDATE anomaly_decisions
+        SET "coordinatedWith" = ${coordSuffix}, "updatedAt" = NOW()
+        WHERE "organizationId" = ${g.orgId}::uuid AND signature = ${signature}
+      `;
+    } catch (err) {
+      console.error("[anomalies PATCH] auto-incident failed:", err);
+      // Don't fail the whole PATCH — the anomaly_decisions row is already
+      // written; the CM still has a closed row. Just no auto-incident.
+    }
+  }
+
+  return NextResponse.json({ ok: true, incident });
 }

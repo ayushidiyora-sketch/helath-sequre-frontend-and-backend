@@ -6,8 +6,8 @@
  *  - verifySync(args)    → { valid, delta, epoch, timeStep } | { valid: false }
  *
  * Token: standard RFC 6238 TOTP, 30 s period, SHA-1, 6 digits.
- * Uses `epochTolerance: 1` to allow ±1 period (±30 s) of phone-clock drift —
- * matches what Google Authenticator users expect.
+ * Uses `epochTolerance: 30` (SECONDS, not periods) to allow ±30 s of
+ * phone-clock drift — matches Google Authenticator UX.
  */
 import { generateSecret, generateURI, verifySync } from "otplib";
 
@@ -35,19 +35,17 @@ export function buildOtpAuthUri(args: { email: string; secret: string }): string
 export function verifyToken(args: { token: string; secret: string }): boolean {
   const code = args.token.replace(/\s+/g, "");
   if (!/^\d{6}$/.test(code)) return false;
-  // otplib v13: `verifySync` returns a discriminated union
-  // `{ valid: true, delta, epoch, timeStep } | { valid: false }` — read `.valid`.
-  // `epochTolerance: 1` means accept tokens from the previous, current, OR next
-  // 30-s window (covers normal phone-clock drift). The library does the window
-  // sweep internally; we used to do it ourselves with the (non-existent) `now`
-  // option which was silently dropped.
+  // otplib v13: `verifySync` returns `{ valid, delta, epoch, timeStep } |
+  // { valid: false }`. `epochTolerance` is in SECONDS (not periods) — passing
+  // `1` rejected every legitimate code unless the phone & server clocks agreed
+  // to the same second. `30` gives ±30 s of drift, the standard 2FA tolerance.
   const result = verifySync({
     token: code,
     secret: args.secret,
     strategy: "totp",
     digits: DIGITS,
     period: PERIOD,
-    epochTolerance: 1,
+    epochTolerance: 30,
   });
   return !!(result && (result as { valid: boolean }).valid);
 }

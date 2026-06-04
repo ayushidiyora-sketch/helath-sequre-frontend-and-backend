@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, ChevronDown, Settings, UserCircle2, Sun, Moon, ShieldCheck } from "lucide-react";
+import { Bell, ChevronDown, Settings, UserCircle2, Sun, Moon, ShieldCheck, Compass } from "lucide-react";
 import { LogoutButton } from "@/components/shared/logout-button";
 import { useEffect, useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -65,10 +65,10 @@ export function RoleHeader({
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-background)]/85 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
       <RoleMobileNav groups={navGroups} utility={navUtility} />
-      <NavSearch items={navItems} placeholder={searchPlaceholder} />
+      <NavSearch items={navItems} placeholder={searchPlaceholder} dataTour="header-search" />
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="hidden items-center gap-1.5 rounded-full border border-[var(--color-success)]/30 bg-[var(--color-success-soft)] px-2.5 py-1 text-[11px] font-medium text-[oklch(0.4_0.12_158)] dark:text-[oklch(0.85_0.12_158)] md:inline-flex">
+        <div data-tour="header-mfa" className="hidden items-center gap-1.5 rounded-full border border-[var(--color-success)]/30 bg-[var(--color-success-soft)] px-2.5 py-1 text-[11px] font-medium text-[oklch(0.4_0.12_158)] dark:text-[oklch(0.85_0.12_158)] md:inline-flex">
           <ShieldCheck className="size-3.5" />
           MFA · idle in <span className="font-mono">{sessionMins}:{(sessionMins % 60).toString().padStart(2, "0").slice(0, 2)}</span>
         </div>
@@ -79,6 +79,7 @@ export function RoleHeader({
 
         <Link
           href={notificationsHref}
+          data-tour="header-notifications"
           className="relative inline-flex h-9 w-9 items-center justify-center rounded-md text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
           aria-label="Notifications"
         >
@@ -88,7 +89,7 @@ export function RoleHeader({
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex items-center gap-2.5 rounded-lg p-1 pr-2 text-left hover:bg-[var(--color-muted)]">
+            <button data-tour="header-profile" className="flex items-center gap-2.5 rounded-lg p-1 pr-2 text-left hover:bg-[var(--color-muted)]">
               <Avatar className="size-8 ring-2 ring-[var(--color-card)]"><AvatarFallback>{user.initials}</AvatarFallback></Avatar>
               <div className="hidden text-left sm:block">
                 <p className="text-sm font-semibold leading-tight">{user.name}</p>
@@ -109,6 +110,9 @@ export function RoleHeader({
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link href={settingsHref}><Settings /> Settings</Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => window.dispatchEvent(new Event("hs:start-tour"))}>
+              <Compass /> Take a tour
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>

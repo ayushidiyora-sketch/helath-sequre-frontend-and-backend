@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
 import { ActionButton } from "@/components/shared/action-button";
 import { SecurityBadge } from "@/components/shared/security-badge";
+import { drawPdfBrandHeader } from "@/lib/brand";
 
 interface ApiRx {
   id: string;
@@ -223,21 +224,19 @@ function downloadPrescriptionPdf(rx: ApiRx) {
     const margin = 48;
     let y = margin;
 
-    // Header band
-    doc.setFillColor(15, 118, 110);
+    // Header band with brand mark + wordmark.
+    doc.setFillColor(15, 91, 102);
     doc.rect(0, 0, pageWidth, 70, "F");
-    doc.setTextColor(255, 255, 255);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(18);
-    doc.text("HealthSecure Portal", margin, 32);
+    drawPdfBrandHeader(doc, margin, 18, true);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(11);
-    doc.text("Prescription record", margin, 52);
+    doc.setTextColor(220, 234, 236);
+    doc.text("Prescription record", margin, 60);
     doc.setFontSize(9);
     doc.text(
       `Issued: ${new Date(rx.finalizedAt ?? rx.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`,
       pageWidth - margin,
-      52,
+      60,
       { align: "right" },
     );
     y = 100;

@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { SecurityBadge } from "@/components/shared/security-badge";
+import { LabResultsViewer } from "@/components/shared/lab-results-viewer";
+import { ImagingViewer } from "@/components/shared/imaging-viewer";
 import { RecordActions } from "./record-actions";
 import { RECORDS, getRecord, type Category } from "../records-data";
 
@@ -96,34 +98,19 @@ export default async function RecordDetailPage({
               {record.results && (
                 <>
                   <SectionTitle>Results</SectionTitle>
-                  <div className="overflow-x-auto rounded-xl border border-[var(--color-border)]">
-                    <table className="w-full min-w-[560px] text-sm">
-                      <thead>
-                        <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
-                          <th className="px-4 py-2.5">Marker</th>
-                          <th className="px-4 py-2.5 text-right">Result</th>
-                          <th className="px-4 py-2.5 text-right">Reference</th>
-                          <th className="px-4 py-2.5 text-right">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[var(--color-border)]">
-                        {record.results.map((row) => (
-                          <tr key={row.marker} className="hover:bg-[var(--color-muted)]/30">
-                            <td className="px-4 py-3 font-medium">{row.marker}</td>
-                            <td className="px-4 py-3 text-right font-mono tabular-nums">{row.result}</td>
-                            <td className="px-4 py-3 text-right text-[var(--color-muted-foreground)]">{row.reference}</td>
-                            <td className="px-4 py-3 text-right">
-                              {row.ok ? (
-                                <Badge variant="success" size="sm" dot>Normal</Badge>
-                              ) : (
-                                <Badge variant="warning" size="sm" dot>Borderline</Badge>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <LabResultsViewer results={record.results} />
+                </>
+              )}
+
+              {record.images && record.images.length > 0 && (
+                <>
+                  <SectionTitle>Images</SectionTitle>
+                  <ImagingViewer
+                    images={record.images}
+                    modality={record.modality}
+                    bodyPart={record.bodyPart}
+                    studyDate={record.collectionDate}
+                  />
                 </>
               )}
 
@@ -151,7 +138,7 @@ export default async function RecordDetailPage({
 
               {record.findings && (
                 <>
-                  <SectionTitle>Findings</SectionTitle>
+                  <SectionTitle className={record.images ? "mt-7" : ""}>Findings</SectionTitle>
                   <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)]/30 p-4 text-sm leading-relaxed">
                     {record.findings}
                   </div>
