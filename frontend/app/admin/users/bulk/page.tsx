@@ -16,7 +16,6 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useAdminStore, type StaffRole } from "@/lib/admin-store";
 
 interface ParsedRow {
   rowIdx: number;
@@ -28,7 +27,11 @@ interface ParsedRow {
   errors: string[];
 }
 
-const VALID_ROLES: StaffRole[] = ["Clinician", "Org Admin", "Compliance Manager", "Auditor", "Care Team"];
+type SendResult = { status: "ok" | "failed"; error?: string };
+
+// Roles the staff-create API (`POST /api/admin/users`) accepts. "Org Admin" is
+// intentionally excluded — those accounts are provisioned by the Super Admin.
+const VALID_ROLES = ["Clinician", "Care Team", "Compliance Manager", "Auditor"] as const;
 
 function parseCsv(text: string): ParsedRow[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
@@ -50,7 +53,7 @@ function parseCsv(text: string): ParsedRow[] {
     if (!row.firstName) row.errors.push("Missing first name");
     if (!row.lastName) row.errors.push("Missing last name");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email)) row.errors.push("Invalid email");
-    if (!VALID_ROLES.includes(row.role as StaffRole)) row.errors.push(`Unknown role · expected one of ${VALID_ROLES.join(", ")}`);
+    if (!(VALID_ROLES as readonly string[]).includes(row.role)) row.errors.push(`Unknown role · expected one of ${VALID_ROLES.join(", ")}`);
     out.push(row);
   }
   return out;
@@ -60,11 +63,11 @@ const TEMPLATE = "First name,Last name,Email,Role,Department\nAisha,Khan,aisha.k
 
 export default function BulkStaffPage() {
   const router = useRouter();
-  const { addStaff, markOnboardingStep } = useAdminStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [filename, setFilename] = useState("");
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [results, setResults] = useState<Record<number, SendResult>>({});
 
   function downloadTemplate() {
     const blob = new Blob([TEMPLATE], { type: "text/csv" });
@@ -82,33 +85,60 @@ export default function BulkStaffPage() {
     setFilename(f.name);
     const text = await f.text();
     setRows(parseCsv(text));
+    setResults({});
     e.target.value = "";
   }
 
-  function sendAll() {
+  async function sendAll() {
     const valid = rows.filter((r) => r.errors.length === 0);
     if (valid.length === 0) {
       toast.warning("No valid rows to send");
       return;
     }
     setSubmitting(true);
-    valid.forEach((r) =>
-      addStaff({
-        email: r.email,
-        firstName: r.firstName,
-        lastName: r.lastName,
-        role: r.role as StaffRole,
-        department: r.department || undefined,
-      }),
-    );
-    markOnboardingStep("firstStaffInvited", true);
-    toast.success(`${valid.length} invitation${valid.length === 1 ? "" : "s"} queued`, {
-      description: "SendGrid throttled to 100/min · status visible in user list",
-    });
-    setTimeout(() => {
-      setSubmitting(false);
-      router.push("/admin/users");
-    }, 400);
+    setResults({});
+    let ok = 0;
+    let failed = 0;
+    // Create each row via the real staff-create endpoint (DB-backed). Sequential
+    // so we stay well under the email provider's send rate and surface a clear
+    // per-row outcome rather than a fire-and-forget store write.
+    for (const r of valid) {
+      try {
+        const res = await fetch("/api/admin/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            firstName: r.firstName,
+            lastName: r.lastName,
+            email: r.email,
+            role: r.role,
+            department: r.department || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          failed++;
+          setResults((cur) => ({ ...cur, [r.rowIdx]: { status: "failed", error: data?.error ?? `HTTP ${res.status}` } }));
+        } else {
+          ok++;
+          setResults((cur) => ({ ...cur, [r.rowIdx]: { status: "ok" } }));
+        }
+      } catch {
+        failed++;
+        setResults((cur) => ({ ...cur, [r.rowIdx]: { status: "failed", error: "Network error" } }));
+      }
+    }
+    setSubmitting(false);
+    if (ok > 0) {
+      toast.success(`${ok} invitation${ok === 1 ? "" : "s"} sent`, {
+        description: failed > 0 ? `${failed} failed — see the table` : "Staff created · invitations emailed · audit-logged",
+      });
+      if (failed === 0) {
+        setTimeout(() => router.push("/admin/users"), 600);
+      }
+    } else {
+      toast.error("No invitations sent", { description: "Every row failed — see the table." });
+    }
   }
 
   const validCount = rows.filter((r) => r.errors.length === 0).length;
@@ -183,7 +213,15 @@ export default function BulkStaffPage() {
                         <td className="px-3 py-2">{r.role}</td>
                         <td className="px-3 py-2 text-[var(--color-muted-foreground)]">{r.department || "—"}</td>
                         <td className="px-3 py-2">
-                          {r.errors.length === 0 ? (
+                          {results[r.rowIdx] ? (
+                            results[r.rowIdx].status === "ok" ? (
+                              <Badge variant="success" size="sm" dot>Sent</Badge>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[var(--color-danger)]" title={results[r.rowIdx].error}>
+                                <AlertCircle className="size-3" /> {results[r.rowIdx].error}
+                              </span>
+                            )
+                          ) : r.errors.length === 0 ? (
                             <Badge variant="success" size="sm" dot>OK</Badge>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-[var(--color-danger)]" title={r.errors.join("; ")}>

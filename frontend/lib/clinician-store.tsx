@@ -64,6 +64,7 @@ export type AppointmentStatus =
   | "in-progress"
   | "completed"
   | "cancelled"
+  | "rejected"
   | "no-show";
 
 export type AppointmentMode = "in-person" | "telehealth";

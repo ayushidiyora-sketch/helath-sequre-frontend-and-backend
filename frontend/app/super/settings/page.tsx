@@ -9,26 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { AddRangeDialog } from "./add-range-dialog";
-
-const ALERT_LABELS = [
-  "Break-glass session opened anywhere on the platform",
-  "Cross-tenant access attempts",
-  "Tenant suspension events",
-  "Platform-wide outages",
-] as const;
-
-type AlertKey = (typeof ALERT_LABELS)[number];
-type AlertState = Record<AlertKey, boolean>;
-
-const initialAlerts: AlertState = ALERT_LABELS.reduce(
-  (acc, label) => ({ ...acc, [label]: true }),
-  {} as AlertState,
-);
+import { NotificationPreferences } from "@/components/shared/notification-preferences";
 
 export default function SuperSettings() {
-  const [alerts, setAlerts] = React.useState<AlertState>(initialAlerts);
-  const [savedAlerts, setSavedAlerts] = React.useState<AlertState>(initialAlerts);
-
   return (
     <>
       <PageHeader eyebrow="Settings" title="Super Admin · account" description="Highest-privilege account · enforced IP allowlist + short session." />
@@ -81,39 +64,7 @@ export default function SuperSettings() {
         </TabsContent>
 
         <TabsContent value="alerts">
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6 space-y-3">
-            {ALERT_LABELS.map((a) => (
-              <div key={a} className="flex items-center justify-between rounded-xl border border-[var(--color-border)] p-4">
-                <div>
-                  <p className="text-sm font-medium">{a}</p>
-                  <p className="text-[11px] text-[var(--color-muted-foreground)]">Push + email + on-call rotation</p>
-                </div>
-                <Switch
-                  checked={alerts[a]}
-                  onCheckedChange={(v) => setAlerts((s) => ({ ...s, [a]: v }))}
-                />
-              </div>
-            ))}
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setAlerts(savedAlerts);
-                  toast.info("Changes discarded");
-                }}
-              >
-                Discard
-              </Button>
-              <Button
-                onClick={() => {
-                  setSavedAlerts(alerts);
-                  toast.success("Alert preferences saved");
-                }}
-              >
-                Save changes
-              </Button>
-            </div>
-          </div>
+          <NotificationPreferences role="super" />
         </TabsContent>
       </Tabs>
     </>

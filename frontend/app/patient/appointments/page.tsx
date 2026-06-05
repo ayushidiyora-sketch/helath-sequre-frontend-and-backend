@@ -20,6 +20,8 @@ import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RescheduleAppointmentDialog } from "@/components/shared/reschedule-appointment-dialog";
 import { CancelAppointmentDialog } from "@/components/shared/form-dialogs";
+import { AddToCalendar } from "@/components/shared/add-to-calendar";
+import { toEventStart, type CalendarEvent } from "@/lib/calendar-export";
 import { CalendarView } from "./calendar-view";
 import {
   DropdownMenu,
@@ -45,7 +47,18 @@ function initials(name: string): string {
 }
 
 function isPast(a: Appointment): boolean {
-  return a.status === "completed" || a.status === "cancelled" || a.status === "no-show";
+  return a.status === "completed" || a.status === "cancelled" || a.status === "no-show" || a.status === "rejected";
+}
+
+function appointmentToEvent(a: Appointment): CalendarEvent {
+  return {
+    id: a.id,
+    title: `${a.clinician} · ${a.department}`,
+    start: toEventStart(a.date, a.time),
+    durationMinutes: 15,
+    location: a.mode === "telehealth" ? "Telehealth (video link)" : `${a.department} Wing`,
+    description: a.reason,
+  };
 }
 
 function dateLabel(iso: string): string {
@@ -209,9 +222,18 @@ export default function AppointmentsPage() {
         title="Schedule & manage your visits"
         description="Booking is consent-bound to assigned clinicians. Cancellations follow your clinic's window policy. Reminders are sent T-24h and T-1h."
         actions={
-          <Button asChild>
-            <Link href="/patient/appointments/new"><Plus /> Book appointment</Link>
-          </Button>
+          <>
+            {upcoming.length > 0 && (
+              <AddToCalendar
+                event={upcoming.map(appointmentToEvent)}
+                filename="healthsecure-appointments"
+                label="Export (.ics)"
+              />
+            )}
+            <Button asChild>
+              <Link href="/patient/appointments/new"><Plus /> Book appointment</Link>
+            </Button>
+          </>
         }
       />
 
@@ -367,6 +389,7 @@ export default function AppointmentsPage() {
                     </div>
                     {p.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
                     {p.status === "cancelled" && <Badge variant="muted" size="sm" dot>Cancelled</Badge>}
+                    {p.status === "rejected" && <Badge variant="danger" size="sm" dot>Declined</Badge>}
                     {p.status === "no-show" && <Badge variant="danger" size="sm" dot>No-show</Badge>}
                   </li>
                 ))}

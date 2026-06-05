@@ -12,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { EditColorButton } from "./org-widgets";
 import { Upload } from "lucide-react";
 import { useBranding } from "@/components/shared/branding-theme";
+import { NotificationPreferences } from "@/components/shared/notification-preferences";
 import { useAdminStore, type OrgProfile, type RetentionPolicy } from "@/lib/admin-store";
 
 interface ApiBranding {
@@ -447,6 +448,10 @@ export default function AdminSettingsPage() {
               alwaysOn
             />
           </div>
+          <p className="mt-6 mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+            Your personal preferences
+          </p>
+          <NotificationPreferences role="admin" />
         </TabsContent>
       </Tabs>
     </>

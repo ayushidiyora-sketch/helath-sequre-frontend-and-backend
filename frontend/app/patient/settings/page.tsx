@@ -32,6 +32,7 @@ import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Switch } from "@/components/ui/switch";
+import { NotificationPreferences } from "@/components/shared/notification-preferences";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -690,108 +691,8 @@ function SecurityTab() {
   );
 }
 
-type ChannelState = { inApp: boolean; email: boolean; sms: boolean };
-
 function NotificationsTab() {
-  const categories = [
-    { name: "Appointments", desc: "Reminders, confirmations, reschedules", critical: false },
-    { name: "Records", desc: "New labs, prescriptions, notes", critical: false },
-    { name: "Consents", desc: "New requests, expirations", critical: false },
-    { name: "Messages", desc: "Replies from your care team", critical: false },
-    { name: "Security", desc: "Sign-ins, MFA changes, suspicious activity", critical: true },
-    { name: "Marketing", desc: "Product updates and policy changes", critical: false },
-  ];
-
-  const DEFAULTS: ChannelState[] = categories.map((_, i) => ({
-    inApp: true,
-    email: i < 4,
-    sms: i === 4,
-  }));
-
-  const [channels, setChannels] = useState<ChannelState[]>(DEFAULTS);
-
-  const setChannel = (idx: number, key: keyof ChannelState, value: boolean) =>
-    setChannels((prev) => prev.map((row, i) => (i === idx ? { ...row, [key]: value } : row)));
-
-  const dirty =
-    channels.length !== DEFAULTS.length ||
-    channels.some((row, i) =>
-      (Object.keys(row) as (keyof ChannelState)[]).some((k) => row[k] !== DEFAULTS[i][k]),
-    );
-
-  function save() {
-    toast.success("Notification preferences saved", {
-      description: "Changes take effect on your next sign-in · audit-logged",
-    });
-  }
-
-  function reset() {
-    setChannels(DEFAULTS);
-    toast.info("Reset to defaults");
-  }
-
-  return (
-    <Section title="Notification preferences" desc="Pick the channels for each category. Critical security alerts cannot be disabled.">
-      <div className="overflow-x-auto rounded-xl border border-[var(--color-border)]">
-        <table className="w-full min-w-[560px] text-sm">
-          <thead>
-            <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
-              <th className="px-4 py-3">Category</th>
-              <th className="px-4 py-3 text-center">In-app</th>
-              <th className="px-4 py-3 text-center">Email</th>
-              <th className="px-4 py-3 text-center">SMS</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--color-border)]">
-            {categories.map((c, i) => (
-              <tr key={c.name}>
-                <td className="px-4 py-3.5">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-medium">{c.name}</p>
-                    {c.critical && (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 px-1.5 py-0.5 text-[10px] font-medium text-[oklch(0.5_0.14_75)] dark:text-[oklch(0.85_0.13_80)]">
-                        <Lock className="size-2.5" /> Always on
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-[var(--color-muted-foreground)]">{c.desc}</p>
-                </td>
-                <td className="px-4 py-3.5 text-center">
-                  <Switch
-                    checked={channels[i].inApp}
-                    disabled={c.critical}
-                    onCheckedChange={(v) => setChannel(i, "inApp", v)}
-                  />
-                </td>
-                <td className="px-4 py-3.5 text-center">
-                  <Switch
-                    checked={channels[i].email}
-                    disabled={c.critical}
-                    onCheckedChange={(v) => setChannel(i, "email", v)}
-                  />
-                </td>
-                <td className="px-4 py-3.5 text-center">
-                  <Switch checked={channels[i].sms} onCheckedChange={(v) => setChannel(i, "sms", v)} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
-        SMS is delivered via your clinic&apos;s Twilio integration. Standard carrier rates may apply.
-        Security alerts (sign-ins, MFA, suspicious activity) cannot be disabled per platform policy.
-      </p>
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={reset} disabled={!dirty}>
-          Reset to defaults
-        </Button>
-        <Button size="sm" onClick={save} disabled={!dirty}>
-          Save preferences
-        </Button>
-      </div>
-    </Section>
-  );
+  return <NotificationPreferences role="patient" />;
 }
 
 function pickDeviceIcon(label: string) {

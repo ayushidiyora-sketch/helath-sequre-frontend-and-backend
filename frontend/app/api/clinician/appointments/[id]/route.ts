@@ -23,6 +23,7 @@ const ALLOWED_DB_STATUSES = new Set<AppointmentLifecycleStatus>([
   "completed",
   "no_show",
   "cancelled",
+  "rejected",
   "blocked",
 ]);
 
@@ -48,6 +49,61 @@ interface PatchBody {
   notes?: string | null;
   /** Audit reason — surfaces in the audit ledger row's `reason` column. */
   reason?: string;
+}
+
+/**
+ * Single appointment owned by the signed-in clinician. Powers the appointment
+ * detail page so lifecycle actions read/write the DB rather than localStorage.
+ */
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  const jar = await cookies();
+  const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
+  if (!claims) return NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 });
+  if (claims.role !== "Clinician")
+    return NextResponse.json({ ok: false, error: "Forbidden — Clinician only." }, { status: 403 });
+  if (!isDbUid(claims.uid) || !UUID_RE.test(id))
+    return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
+
+  const rows = await prisma.$queryRaw<{
+    id: string;
+    patientName: string | null;
+    patientEmail: string | null;
+    startsAt: Date;
+    durationMinutes: number;
+    status: string;
+    room: string | null;
+    notes: string | null;
+    proposedStartsAt: Date | null;
+    proposedNote: string | null;
+  }[]>`
+    SELECT id, "patientName", "patientEmail", "startsAt", "durationMinutes",
+           status::text AS status, room, notes, "proposedStartsAt", "proposedNote"
+    FROM appointments
+    WHERE id = ${id}::uuid
+      AND "clinicianId" = ${claims.uid}::uuid
+      AND "deletedAt" IS NULL
+    LIMIT 1
+  `;
+  const a = rows[0];
+  if (!a) return NextResponse.json({ ok: false, error: "Appointment not found." }, { status: 404 });
+
+  return NextResponse.json({
+    ok: true,
+    appointment: {
+      id: a.id,
+      patientName: a.patientName,
+      patientEmail: a.patientEmail,
+      startsAt: a.startsAt.toISOString(),
+      durationMinutes: a.durationMinutes,
+      status: a.status,
+      room: a.room,
+      mode: a.room === "Telehealth" ? "telehealth" : "in-person",
+      notes: a.notes,
+      proposedStartsAt: a.proposedStartsAt ? a.proposedStartsAt.toISOString() : null,
+      proposedNote: a.proposedNote,
+    },
+  });
 }
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -158,7 +214,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     // Side effects per terminal status:
     if (nextStatus === "confirmed") {
       await scheduleReminders({ appointmentId: id, organizationId: appt.organizationId, startsAt: appt.startsAt });
-    } else if (nextStatus === "cancelled" || nextStatus === "no_show") {
+    } else if (nextStatus === "cancelled" || nextStatus === "no_show" || nextStatus === "rejected") {
       await cancelReminders(id);
     }
     return after(id);

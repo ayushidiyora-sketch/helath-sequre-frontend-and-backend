@@ -35,6 +35,7 @@ const STATUS_VARIANT: Record<AppointmentStatus, "info" | "warning" | "success" |
   "in-progress": "success",
   completed: "success",
   cancelled: "muted",
+  rejected: "danger",
   "no-show": "danger",
 };
 

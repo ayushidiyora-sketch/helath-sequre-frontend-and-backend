@@ -105,6 +105,7 @@ enum AppointmentStatus {
   no_show
   blocked
   cancelled
+  rejected
   completed
 }
 

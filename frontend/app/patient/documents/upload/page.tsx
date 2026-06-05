@@ -13,12 +13,57 @@ import {
   Tags,
   X,
   Loader2,
+  CheckCircle2,
+  AlertOctagon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { usePatientStore, type DocumentCategory } from "@/lib/patient-store";
 import { scanFile } from "@/lib/document-scanner";
+
+type UploadPhase = "queued" | "scanning" | "uploading" | "done" | "blocked" | "failed";
+interface UploadItem {
+  pct: number;
+  phase: UploadPhase;
+  error?: string;
+}
+
+const PHASE_LABEL: Record<UploadPhase, string> = {
+  queued: "Queued",
+  scanning: "Virus scanning…",
+  uploading: "Uploading",
+  done: "Uploaded · clean",
+  blocked: "Blocked by scanner",
+  failed: "Failed",
+};
+
+/** POST a document with real upload-progress events via XHR. */
+function postDocumentWithProgress(
+  payload: unknown,
+  onProgress: (pct: number) => void,
+): Promise<{ ok: boolean; status: number; data: { ok?: boolean; error?: string } | null }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/patient/documents");
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      let data: { ok?: boolean; error?: string } | null = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        data = null;
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+    };
+    xhr.onerror = () => resolve({ ok: false, status: 0, data: null });
+    xhr.send(JSON.stringify(payload));
+  });
+}
 
 const MAX_MB = 25;
 
@@ -64,6 +109,7 @@ export default function UploadPage() {
   const { addDocument } = usePatientStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [title, setTitle] = useState("");
@@ -108,9 +154,15 @@ export default function UploadPage() {
     });
   }
 
+  const patchItem = (i: number, patch: Partial<UploadItem>) =>
+    setItems((cur) => cur.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+
   async function startUpload() {
     if (files.length === 0) return;
     setUploading(true);
+    // Initialise a per-file progress row so each file shows its own bar +
+    // phase (queued → scanning → uploading → done/blocked/failed).
+    setItems(files.map(() => ({ pct: 0, phase: "queued" as UploadPhase })));
     // Per-file: scan first (lib/document-scanner — magic-byte verify, EICAR
     // signature, suspicious-extension and PDF-tag checks); if clean, POST
     // to /api/patient/documents to persist the row in Postgres. Local store
@@ -119,10 +171,13 @@ export default function UploadPage() {
     let accepted = 0;
     let rejected = 0;
     let netFailed = 0;
-    for (const f of files) {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      patchItem(i, { phase: "scanning", pct: 0 });
       const scan = await scanFile(f);
       if (scan.status === "infected") {
         rejected++;
+        patchItem(i, { phase: "blocked", error: scan.reason ?? "Virus scan flagged this file." });
         toast.error(`Blocked: ${f.name}`, {
           description: scan.reason ?? "Virus scan flagged this file.",
         });
@@ -141,32 +196,27 @@ export default function UploadPage() {
       const perFileCategory = categoryEdited ? category : guessCategory(f);
       const displayName = files.length === 1 && title.trim() ? title.trim() : f.name;
 
-      // POST to the DB-backed endpoint. This is the network call that shows
-      // in DevTools → Network and creates the Postgres row.
-      try {
-        const r = await fetch("/api/patient/documents", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: displayName,
-            category: perFileCategory,
-            mimeType: f.type || null,
-            sizeBytes: f.size,
-            dataUrl,
-            scanStatus: "clean",
-          }),
-        });
-        const data = await r.json();
-        if (!r.ok || !data?.ok) {
-          netFailed++;
-          toast.error(`Could not save: ${f.name}`, {
-            description: data?.error ?? `HTTP ${r.status}`,
-          });
-          continue;
-        }
-      } catch {
+      // POST to the DB-backed endpoint with real upload-progress events. This
+      // is the network call that shows in DevTools → Network and creates the
+      // Postgres row.
+      patchItem(i, { phase: "uploading", pct: 0 });
+      const res = await postDocumentWithProgress(
+        {
+          name: displayName,
+          category: perFileCategory,
+          mimeType: f.type || null,
+          sizeBytes: f.size,
+          dataUrl,
+          scanStatus: "clean",
+        },
+        (pct) => patchItem(i, { pct }),
+      );
+      if (!res.ok || !res.data?.ok) {
         netFailed++;
-        toast.error(`Network error: ${f.name}`, { description: "Could not reach the server." });
+        patchItem(i, { phase: "failed", error: res.data?.error ?? `HTTP ${res.status}` });
+        toast.error(`Could not save: ${f.name}`, {
+          description: res.data?.error ?? `HTTP ${res.status}`,
+        });
         continue;
       }
 
@@ -183,10 +233,13 @@ export default function UploadPage() {
         mimeType: f.type || undefined,
         scanStatus: "clean",
       });
+      patchItem(i, { phase: "done", pct: 100 });
       accepted++;
     }
     setUploading(false);
     if (accepted > 0) {
+      // Briefly let the completed bars render before navigating away.
+      await new Promise((r) => setTimeout(r, 700));
       const tail: string[] = [];
       if (rejected > 0) tail.push(`${rejected} blocked`);
       if (netFailed > 0) tail.push(`${netFailed} failed to save`);
@@ -273,28 +326,46 @@ export default function UploadPage() {
                 Selected files <span className="text-[var(--color-muted-foreground)]">· {files.length}</span>
               </h2>
               <ul className="mt-3 space-y-2">
-                {files.map((f, i) => (
-                  <li
-                    key={`${f.name}-${i}`}
-                    className="flex items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-muted)]/30 px-3 py-2"
-                  >
-                    <span className="flex size-8 items-center justify-center rounded-md bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
-                      <FileText className="size-4" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{f.name}</p>
-                      <p className="text-[11px] text-[var(--color-muted-foreground)]">{fileSize(f.size)}</p>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Remove file"
-                      onClick={() => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
-                      className="rounded p-1 text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+                {files.map((f, i) => {
+                  const it = items[i];
+                  const showBar = it && (it.phase === "uploading" || it.phase === "done");
+                  return (
+                    <li
+                      key={`${f.name}-${i}`}
+                      className="flex items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-muted)]/30 px-3 py-2"
                     >
-                      <X className="size-4" />
-                    </button>
-                  </li>
-                ))}
+                      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
+                        <FileText className="size-4" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{f.name}</p>
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--color-muted-foreground)]">
+                          <span>
+                            {fileSize(f.size)}
+                            {it ? ` · ${PHASE_LABEL[it.phase]}` : ""}
+                          </span>
+                          {it?.phase === "uploading" && <span className="tabular-nums">{it.pct}%</span>}
+                        </div>
+                        {showBar && <Progress value={it.pct} className="mt-1.5" />}
+                        {it?.error && (
+                          <p className="mt-1 text-[11px] text-[var(--color-danger)]">{it.error}</p>
+                        )}
+                      </div>
+                      {uploading ? (
+                        <PhaseIcon phase={it?.phase ?? "queued"} />
+                      ) : (
+                        <button
+                          type="button"
+                          aria-label="Remove file"
+                          onClick={() => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                          className="rounded p-1 text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+                        >
+                          <X className="size-4" />
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -360,7 +431,7 @@ export default function UploadPage() {
           </div>
 
           <div className="flex gap-2">
-            <Button asChild variant="outline" className="flex-1">
+            <Button asChild variant="outline" className="flex-1" disabled={uploading}>
               <Link href="/patient/documents">Cancel</Link>
             </Button>
             <Button className="flex-1" onClick={startUpload} disabled={files.length === 0 || uploading}>
@@ -377,4 +448,13 @@ export default function UploadPage() {
       </div>
     </>
   );
+}
+
+function PhaseIcon({ phase }: { phase: UploadPhase }) {
+  if (phase === "done") return <CheckCircle2 className="size-4 shrink-0 text-[var(--color-success)]" />;
+  if (phase === "blocked" || phase === "failed")
+    return <AlertOctagon className="size-4 shrink-0 text-[var(--color-danger)]" />;
+  if (phase === "scanning" || phase === "uploading")
+    return <Loader2 className="size-4 shrink-0 animate-spin text-[var(--color-muted-foreground)]" />;
+  return <Loader2 className="size-4 shrink-0 text-[var(--color-muted-foreground)] opacity-40" />;
 }

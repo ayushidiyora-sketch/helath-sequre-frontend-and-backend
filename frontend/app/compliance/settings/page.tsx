@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Sliders, Bell, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { NotificationPreferences } from "@/components/shared/notification-preferences";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ActionButton } from "@/components/shared/action-button";
@@ -24,28 +24,9 @@ const initialThresholds: Thresholds = {
   mfa: "3 in 90 s",
 };
 
-const ALERT_LABELS = [
-  "High-severity anomalies",
-  "Medium-severity anomalies",
-  "MFA failures",
-  "Consent revocations on the same day as access",
-  "Bulk downloads",
-] as const;
-
-type AlertKey = (typeof ALERT_LABELS)[number];
-type AlertState = Record<AlertKey, boolean>;
-
-const initialAlerts: AlertState = ALERT_LABELS.reduce(
-  (acc, label) => ({ ...acc, [label]: true }),
-  {} as AlertState,
-);
-
 export default function ComplianceSettings() {
   const [thresholds, setThresholds] = React.useState<Thresholds>(initialThresholds);
   const [savedThresholds, setSavedThresholds] = React.useState<Thresholds>(initialThresholds);
-
-  const [alerts, setAlerts] = React.useState<AlertState>(initialAlerts);
-  const [savedAlerts, setSavedAlerts] = React.useState<AlertState>(initialAlerts);
 
   return (
     <>
@@ -113,39 +94,7 @@ export default function ComplianceSettings() {
         </TabsContent>
 
         <TabsContent value="alerts">
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6 space-y-3">
-            {ALERT_LABELS.map((a) => (
-              <div key={a} className="flex items-center justify-between rounded-xl border border-[var(--color-border)] p-4">
-                <div>
-                  <p className="text-sm font-medium">{a}</p>
-                  <p className="text-[11px] text-[var(--color-muted-foreground)]">In-app + email</p>
-                </div>
-                <Switch
-                  checked={alerts[a]}
-                  onCheckedChange={(v) => setAlerts((s) => ({ ...s, [a]: v }))}
-                />
-              </div>
-            ))}
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setAlerts(savedAlerts);
-                  toast.info("Changes discarded");
-                }}
-              >
-                Discard
-              </Button>
-              <Button
-                onClick={() => {
-                  setSavedAlerts(alerts);
-                  toast.success("Alert preferences saved");
-                }}
-              >
-                Save changes
-              </Button>
-            </div>
-          </div>
+          <NotificationPreferences role="compliance" />
         </TabsContent>
 
         <TabsContent value="security">

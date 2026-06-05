@@ -117,6 +117,7 @@ export default function GrantConsentPage() {
     for (const s of SCOPES) out[s.key] = s.defaultOn;
     return out;
   });
+  const [durationHours, setDurationHours] = useState<number | null>(null);
   const [ackPolicy, setAckPolicy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -131,6 +132,12 @@ export default function GrantConsentPage() {
     if (!canSubmit || !selected) return;
     setSubmitting(true);
 
+    // Compute the expiry from the chosen duration so the local mirror matches
+    // what the server stores (the API derives expiresAt from durationHours).
+    const expiresAt = durationHours
+      ? new Date(Date.now() + durationHours * 3_600_000).toISOString()
+      : null;
+
     // Persist to consent_requests so Compliance / Auditor surfaces see this
     // grant. We keep the local-store mirror alive so the patient's own page
     // updates immediately even if the network call fails.
@@ -142,7 +149,7 @@ export default function GrantConsentPage() {
         body: JSON.stringify({
           clinicianId: selected.id,
           scopes: activeScopes,
-          durationHours: null, // open-ended
+          durationHours,
           policyVersion: "v2.4",
         }),
       });
@@ -163,7 +170,7 @@ export default function GrantConsentPage() {
       department: selected.department,
       scopes: activeScopes,
       policyVersion: "v2.4",
-      expiresAt: null,
+      expiresAt,
     });
     addNotification({
       title: "Consent granted",
@@ -172,7 +179,9 @@ export default function GrantConsentPage() {
       href: `/patient/consents/${dbConsentId ?? con.id}`,
     });
     toast.success("Consent granted", {
-      description: `${selected.name} can now read: ${activeScopes.map((s) => CONSENT_SCOPE_LABEL[s]).join(", ")}`,
+      description: `${selected.name} can now read: ${activeScopes.map((s) => CONSENT_SCOPE_LABEL[s]).join(", ")}${
+        expiresAt ? ` · expires ${new Date(expiresAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : " · open-ended"
+      }`,
     });
     setTimeout(() => router.push("/patient/consents"), 400);
   }
@@ -310,7 +319,7 @@ export default function GrantConsentPage() {
               Open-ended consents stay active until you revoke them. Time-bound
               consents expire automatically.
             </p>
-            <DurationPicker />
+            <DurationPicker value={durationHours} onChange={setDurationHours} />
           </div>
 
           {/* Policy ack */}
@@ -381,7 +390,21 @@ export default function GrantConsentPage() {
               )}
             </div>
             <dl className="mt-4 space-y-2 text-xs">
-              <div className="flex justify-between"><dt className="text-[var(--color-muted-foreground)]">Duration</dt><dd>Open-ended</dd></div>
+              <div className="flex justify-between">
+                <dt className="text-[var(--color-muted-foreground)]">Duration</dt>
+                <dd className="text-right">
+                  {durationHours === null
+                    ? "Open-ended"
+                    : durationHours < 48
+                      ? `${durationHours} hours`
+                      : `${Math.round(durationHours / 24)} days`}
+                  {durationHours !== null && (
+                    <span className="block text-[10px] text-[var(--color-muted-foreground)]">
+                      until {new Date(Date.now() + durationHours * 3_600_000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                    </span>
+                  )}
+                </dd>
+              </div>
               <div className="flex justify-between"><dt className="text-[var(--color-muted-foreground)]">Policy</dt><dd className="font-mono">v2.4</dd></div>
             </dl>
             <Button className="mt-5 w-full" onClick={submit} disabled={!canSubmit}>

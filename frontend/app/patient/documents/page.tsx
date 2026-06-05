@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/shared/page-header";
 import { Progress } from "@/components/ui/progress";
 import { SecurityBadge } from "@/components/shared/security-badge";
+import { DocumentPreviewDialog } from "@/components/shared/document-preview-dialog";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -72,6 +73,7 @@ export default function DocumentsPage() {
   const [tag, setTag] = useState<DocumentCategory | "All">("All");
   const [search, setSearch] = useState("");
   const [scanFilter, setScanFilter] = useState<DocumentScanStatus | "all">("all");
+  const [preview, setPreview] = useState<PatientDocument | null>(null);
 
   const docs = state.documents;
   const totalBytes = docs.reduce((sum, d) => sum + d.sizeBytes, 0);
@@ -130,10 +132,16 @@ export default function DocumentsPage() {
     return false;
   }
 
+  /** Open the inline preview dialog (images, PDFs render in-app). */
   function previewDoc(d: PatientDocument) {
     if (blockedByScan(d)) return;
+    setPreview(d);
+  }
+
+  /** Open the raw file in a new browser tab (kept as a secondary action). */
+  function openInNewTab(d: PatientDocument) {
+    if (blockedByScan(d)) return;
     if (!d.dataUrl) {
-      // Legacy / seeded doc without bytes — fall back to a placeholder.
       const blob = new Blob(
         [`HealthSecure Portal — secure document\n\nFile: ${d.name}\nType: ${d.category}\nUploaded: ${formatDate(d.uploadedAt)}\n\n(No file bytes — uploaded before binary capture was wired up.)`],
         { type: "text/plain" },
@@ -151,7 +159,6 @@ export default function DocumentsPage() {
     }
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank", "noopener");
-    // Keep the URL alive long enough for the new tab to read it.
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
     toast.success("Preview opened · audit-logged", { description: `${d.name} · view counted` });
   }
@@ -316,6 +323,12 @@ export default function DocumentsPage() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem onSelect={() => previewDoc(d)}>
+                              <FileImage /> Preview
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => openInNewTab(d)}>
+                              <Link2 /> Open in new tab
+                            </DropdownMenuItem>
                             <DropdownMenuItem onSelect={() => downloadDoc(d)}>
                               <Download /> Download
                             </DropdownMenuItem>
@@ -344,6 +357,14 @@ export default function DocumentsPage() {
           </div>
         </div>
       </div>
+
+      <DocumentPreviewDialog
+        doc={preview}
+        open={!!preview}
+        onOpenChange={(o) => !o && setPreview(null)}
+        onDownload={(d) => downloadDoc(d as PatientDocument)}
+        onOpenInNewTab={(d) => openInNewTab(d as PatientDocument)}
+      />
     </>
   );
 }

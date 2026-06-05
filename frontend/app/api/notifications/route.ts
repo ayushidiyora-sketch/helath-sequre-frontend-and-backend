@@ -131,18 +131,94 @@ async function patientFeed(uid: string): Promise<Notification[]> {
       AND a."patientEmail" = me.email
       AND a."startsAt" >= ${now}
       AND a."startsAt" <  ${horizon}
-      AND a.status::text NOT IN ('cancelled','no_show')
+      AND a.status::text NOT IN ('cancelled','no_show','rejected')
     ORDER BY a."startsAt" ASC
     LIMIT 10
   `;
   for (const a of appts) {
     const doctor = `Dr. ${a.clinicianFirstName} ${a.clinicianLastName}`.trim();
+    const when = a.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    let title: string;
+    let body = when;
+    if (a.status === "requested") {
+      title = `Appointment requested with ${doctor}`;
+      body = `Awaiting confirmation · ${when}`;
+    } else if (a.status === "reschedule_requested") {
+      title = `${doctor} proposed a new time`;
+      body = `Review & accept on your appointments page · ${when}`;
+    } else if (a.status === "confirmed") {
+      title = `Appointment confirmed with ${doctor}`;
+    } else {
+      title = `Upcoming appointment with ${doctor}`;
+    }
     out.push({
       id: `ap-${a.id}`,
       category: "appointment",
-      title: `Upcoming appointment with ${doctor}`,
-      body: a.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+      title,
+      body,
       time: relativeTime(a.startsAt),
+      href: "/patient/appointments",
+    });
+  }
+
+  // Recently rejected appointment requests (last 14d) — the clinician declined.
+  const rejectedSince = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
+  const rejected = await prisma.$queryRaw<
+    { id: string; startsAt: Date; updatedAt: Date; clinicianFirstName: string; clinicianLastName: string }[]
+  >`
+    SELECT a.id, a."startsAt", a."updatedAt",
+           c."firstName" AS "clinicianFirstName",
+           c."lastName"  AS "clinicianLastName"
+    FROM appointments a
+    JOIN users me ON me.id = ${uid}::uuid
+    JOIN users c  ON c.id  = a."clinicianId"
+    WHERE a."deletedAt" IS NULL
+      AND a."patientEmail" = me.email
+      AND a.status::text = 'rejected'
+      AND a."updatedAt" >= ${rejectedSince}
+    ORDER BY a."updatedAt" DESC
+    LIMIT 10
+  `;
+  for (const a of rejected) {
+    const doctor = `Dr. ${a.clinicianFirstName} ${a.clinicianLastName}`.trim();
+    out.push({
+      id: `ap-rej-${a.id}`,
+      category: "appointment",
+      title: `Appointment declined by ${doctor}`,
+      body: "Your requested slot wasn't available — please book another time.",
+      time: relativeTime(a.updatedAt),
+      href: "/patient/appointments",
+    });
+  }
+
+  // Appointment reminders dispatched in the last 24h (T-24h / T-1h).
+  const reminders = await prisma.$queryRaw<
+    { kind: string; sentAt: Date; startsAt: Date; clinicianFirstName: string; clinicianLastName: string; appointmentId: string }[]
+  >`
+    SELECT r.kind, r."sentAt", a."startsAt", a.id AS "appointmentId",
+           c."firstName" AS "clinicianFirstName",
+           c."lastName"  AS "clinicianLastName"
+    FROM appointment_reminders r
+    JOIN appointments a ON a.id = r."appointmentId"
+    JOIN users me ON me.id = ${uid}::uuid
+    JOIN users c  ON c.id  = a."clinicianId"
+    WHERE r."sentAt" IS NOT NULL
+      AND r."sentAt" >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000)}
+      AND a."patientEmail" = me.email
+      AND a."deletedAt" IS NULL
+    ORDER BY r."sentAt" DESC
+    LIMIT 10
+  `;
+  for (const r of reminders) {
+    const doctor = `Dr. ${r.clinicianFirstName} ${r.clinicianLastName}`.trim();
+    const lead = r.kind === "t_24h" ? "in 24 hours" : r.kind === "t_1h" ? "in 1 hour" : "soon";
+    const when = r.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    out.push({
+      id: `ap-rem-${r.appointmentId}-${r.kind}`,
+      category: "appointment",
+      title: `Reminder: appointment ${lead}`,
+      body: `${doctor} · ${when}`,
+      time: relativeTime(r.sentAt),
       href: "/patient/appointments",
     });
   }

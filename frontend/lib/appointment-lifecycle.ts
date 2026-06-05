@@ -35,6 +35,7 @@ export type AppointmentLifecycleStatus =
   | "no_show"
   | "blocked"
   | "cancelled"
+  | "rejected"
   | "completed";
 
 const ALL_STATUSES = new Set<AppointmentLifecycleStatus>([
@@ -46,18 +47,20 @@ const ALL_STATUSES = new Set<AppointmentLifecycleStatus>([
   "no_show",
   "blocked",
   "cancelled",
+  "rejected",
   "completed",
 ]);
 
 const TRANSITIONS: Record<AppointmentLifecycleStatus, AppointmentLifecycleStatus[]> = {
-  requested:            ["confirmed", "reschedule_requested", "cancelled"],
-  reschedule_requested: ["confirmed", "cancelled", "requested"],
+  requested:            ["confirmed", "reschedule_requested", "cancelled", "rejected"],
+  reschedule_requested: ["confirmed", "cancelled", "requested", "rejected"],
   confirmed:            ["arrived", "in_progress", "no_show", "cancelled", "reschedule_requested"],
   arrived:              ["in_progress", "completed", "no_show", "cancelled"],
   in_progress:          ["completed", "cancelled"],
   no_show:              [],
   blocked:              ["cancelled"],
   cancelled:            [],
+  rejected:             [],
   completed:            [],
 };
 
@@ -215,6 +218,7 @@ export function statusLabel(s: string): string {
     case "in_progress": return "In progress";
     case "completed": return "Completed";
     case "cancelled": return "Cancelled";
+    case "rejected": return "Rejected";
     case "no_show": return "No-show";
     case "blocked": return "Blocked";
     default: return s;

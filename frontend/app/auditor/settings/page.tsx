@@ -8,6 +8,7 @@ import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/shared/page-header";
 import { SecurityBadge } from "@/components/shared/security-badge";
+import { NotificationPreferences } from "@/components/shared/notification-preferences";
 
 interface AuditorProfile {
   name: string;
@@ -123,6 +124,8 @@ export default function AuditorSettings() {
       </div>
 
       <ChangePasswordCard />
+
+      <NotificationPreferences role="auditor" />
 
       <SecurityBadge variant="audited" />
     </>

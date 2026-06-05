@@ -25,6 +25,7 @@ export type AppointmentStatus =
   | "in-progress"
   | "completed"
   | "cancelled"
+  | "rejected"
   | "no-show";
 
 export interface Appointment {

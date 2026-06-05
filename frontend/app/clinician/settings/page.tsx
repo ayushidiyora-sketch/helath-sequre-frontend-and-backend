@@ -5,25 +5,17 @@ import { toast } from "sonner";
 import { Stethoscope, KeyRound, Bell, Monitor, ShieldCheck, Award, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ActionButton } from "@/components/shared/action-button";
+import { NotificationPreferences } from "@/components/shared/notification-preferences";
 import { useClinicianStore, type ClinicianProfile } from "@/lib/clinician-store";
-
-const NOTIFICATION_LABELS = [
-  "New patient messages",
-  "Schedule changes",
-  "Consent revocations",
-  "Lab results in",
-];
 
 export default function ClinicianSettings() {
   const { state, updateProfile } = useClinicianStore();
   const [draft, setDraft] = useState<ClinicianProfile>(state.profile);
-  const [notifications, setNotifications] = useState<boolean[]>(() => NOTIFICATION_LABELS.map(() => true));
 
   useEffect(() => {
     if (state.hydrated) setDraft(state.profile);
@@ -144,22 +136,7 @@ export default function ClinicianSettings() {
         </TabsContent>
 
         <TabsContent value="notifications">
-          <Section title="Notification preferences" desc="Get pinged for new messages, schedule changes, and consent updates.">
-            {NOTIFICATION_LABELS.map((n, i) => (
-              <div key={n} className="flex items-center justify-between rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-                <div>
-                  <p className="text-sm font-medium">{n}</p>
-                  <p className="text-xs text-[var(--color-muted-foreground)]">In-app + email{i === 2 ? " + push" : ""}</p>
-                </div>
-                <Switch
-                  checked={notifications[i]}
-                  onCheckedChange={(v) =>
-                    setNotifications((prev) => prev.map((val, idx) => (idx === i ? v : val)))
-                  }
-                />
-              </div>
-            ))}
-          </Section>
+          <NotificationPreferences role="clinician" />
         </TabsContent>
 
         <TabsContent value="sessions">

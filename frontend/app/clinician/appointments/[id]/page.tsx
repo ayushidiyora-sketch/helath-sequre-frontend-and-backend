@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -12,6 +12,9 @@ import {
   MapPin,
   Play,
   CheckCheck,
+  Check,
+  Ban,
+  Loader2,
   ClipboardList,
   Plus,
   FileText,
@@ -22,13 +25,53 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Textarea } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { SecurityBadge } from "@/components/shared/security-badge";
+import { AddToCalendar } from "@/components/shared/add-to-calendar";
+import { toEventStart } from "@/lib/calendar-export";
 import {
   useClinicianStore,
   type AppointmentStatus,
   type ClinicianAppointment,
 } from "@/lib/clinician-store";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Map the DB-backed appointment (from GET) into the store's display shape. */
+function apiToAppt(a: {
+  id: string;
+  startsAt: string;
+  durationMinutes: number;
+  status: string;
+  mode: string;
+  notes: string | null;
+}): ClinicianAppointment {
+  const d = new Date(a.startsAt);
+  let h = d.getHours();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return {
+    id: a.id,
+    patientId: "",
+    date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+    time: `${h}:${pad2(d.getMinutes())} ${ampm}`,
+    durationMinutes: a.durationMinutes,
+    mode: a.mode === "telehealth" ? "telehealth" : "in-person",
+    status: a.status.replace(/_/g, "-") as AppointmentStatus,
+    reason: a.notes || "Appointment",
+  };
+}
 
 function fullDate(yyyymmdd: string): string {
   return new Date(yyyymmdd + "T00:00:00").toLocaleDateString("en-US", {
@@ -56,6 +99,7 @@ const STATUS_VARIANT: Record<AppointmentStatus, "info" | "warning" | "success" |
   "in-progress": "success",
   completed: "success",
   cancelled: "muted",
+  rejected: "danger",
   "no-show": "danger",
 };
 
@@ -63,8 +107,19 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
   const { id } = use(params);
   const { state, setAppointmentStatus } = useClinicianStore();
 
-  const appointment = state.hydrated ? state.appointments.find((a) => a.id === id) : undefined;
-  const patient = appointment ? state.assignedPatients.find((p) => p.id === appointment.patientId) : undefined;
+  const storeAppt = state.hydrated ? state.appointments.find((a) => a.id === id) : undefined;
+
+  // For real DB appointments not held in the local store (e.g. patient-booked),
+  // fall back to the API so the detail page can still open + drive them.
+  const [apiAppt, setApiAppt] = useState<ClinicianAppointment | null>(null);
+  const [apiPatientName, setApiPatientName] = useState<string | null>(null);
+  const [fetchState, setFetchState] = useState<"idle" | "loading" | "done">("idle");
+  const [busy, setBusy] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+
+  const appointment = storeAppt ?? apiAppt;
+  const patient = storeAppt ? state.assignedPatients.find((p) => p.id === storeAppt.patientId) : undefined;
 
   const relatedNotes = useMemo(
     () => (appointment ? state.notes.filter((n) => n.appointmentId === appointment.id) : []),
@@ -75,7 +130,60 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
     [appointment, state.prescriptions],
   );
 
-  if (!state.hydrated) {
+  useEffect(() => {
+    if (!state.hydrated || storeAppt || !UUID_RE.test(id) || fetchState !== "idle") return;
+    setFetchState("loading");
+    fetch(`/api/clinician/appointments/${id}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.ok && data.appointment) {
+          setApiAppt(apiToAppt(data.appointment));
+          setApiPatientName(data.appointment.patientName ?? null);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setFetchState("done"));
+  }, [state.hydrated, storeAppt, id, fetchState]);
+
+  /** Drive a status change through the DB API (real appts) or the local store
+   *  (demo appts), then mirror the result so the UI updates immediately. */
+  async function changeStatus(next: AppointmentStatus, message: string, reason?: string) {
+    setBusy(true);
+    try {
+      if (UUID_RE.test(id)) {
+        const res = await fetch(`/api/clinician/appointments/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: next, reason }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          toast.error(data?.error ?? "Could not update appointment");
+          return;
+        }
+        const normalized = (data.appointment.status as string).replace(/_/g, "-") as AppointmentStatus;
+        if (storeAppt) setAppointmentStatus(id, normalized);
+        else setApiAppt((prev) => (prev ? { ...prev, status: normalized } : prev));
+      } else {
+        setAppointmentStatus(id, next);
+      }
+      toast.success(message, {
+        description: `${patient?.name ?? apiPatientName ?? "Patient"} · ${appointment?.time ?? ""} · audit-logged`,
+      });
+    } catch {
+      toast.error("Network error — please retry.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function submitReject() {
+    setRejectOpen(false);
+    void changeStatus("rejected", "Appointment rejected", rejectReason.trim() || "Rejected by clinician");
+    setRejectReason("");
+  }
+
+  if (!state.hydrated || (!appointment && fetchState !== "done")) {
     return (
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
         Loading…
@@ -88,14 +196,8 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
   }
 
   const status = appointment.status;
-  const closed = status === "completed" || status === "cancelled" || status === "no-show";
-
-  function changeStatus(next: AppointmentStatus, message: string) {
-    setAppointmentStatus(appointment!.id, next);
-    toast.success(message, {
-      description: `${patient?.name ?? "Patient"} · ${appointment!.time} · audit-logged`,
-    });
-  }
+  const closed =
+    status === "completed" || status === "cancelled" || status === "no-show" || status === "rejected";
 
   return (
     <>
@@ -120,6 +222,18 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
                   <Stethoscope /> Open patient chart
                 </Link>
               </Button>
+            )}
+            {!closed && (
+              <AddToCalendar
+                event={{
+                  id: appointment.id,
+                  title: `${patient?.name ?? "Patient"} · ${appointment.reason}`,
+                  start: toEventStart(appointment.date, appointment.time),
+                  durationMinutes: appointment.durationMinutes,
+                  description: appointment.reason,
+                }}
+                filename={`appointment-${appointment.id}`}
+              />
             )}
             <Badge variant={STATUS_VARIANT[status]} size="sm" dot>{status.replace("-", " ")}</Badge>
           </>
@@ -150,16 +264,31 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
             )}
           </div>
         </div>
+      ) : apiPatientName ? (
+        <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-[var(--color-border)] bg-gradient-to-br from-[var(--color-card)] to-[oklch(0.96_0.025_235)] p-4">
+          <Avatar className="size-12"><AvatarFallback>{initialsOf(apiPatientName)}</AvatarFallback></Avatar>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">{apiPatientName}</p>
+            <p className="text-[11px] text-[var(--color-muted-foreground)]">Booked via the patient portal</p>
+          </div>
+        </div>
       ) : (
         <div className="rounded-xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/40 p-3.5 text-xs">
           <AlertTriangle className="mr-1 inline size-3.5" />
-          Patient <code className="font-mono">{appointment.patientId}</code> is not on your panel. Some actions may be limited.
+          Patient is not on your panel. Some actions may be limited.
         </div>
       )}
 
       {/* Encounter details + lifecycle */}
       <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-        <LifecyclePanel appt={appointment} closed={closed} onChange={changeStatus} />
+        <LifecyclePanel
+          appt={appointment}
+          closed={closed}
+          busy={busy}
+          onChange={changeStatus}
+          onConfirm={() => changeStatus("confirmed", "Appointment confirmed · reminders scheduled")}
+          onReject={() => setRejectOpen(true)}
+        />
 
         <div className="space-y-4">
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
@@ -228,19 +357,72 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
           }))}
         />
       </div>
+
+      <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
+        <DialogContent className="sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle>Reject appointment</DialogTitle>
+            <DialogDescription>
+              The patient will be notified that their request was declined. This can&apos;t be undone — they&apos;ll need to book again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5 pt-1">
+            <label htmlFor="reject-reason" className="text-xs font-medium text-[var(--color-muted-foreground)]">
+              Reason (optional)
+            </label>
+            <Textarea
+              id="reject-reason"
+              rows={3}
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="e.g. Slot no longer available — please pick another time."
+            />
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button
+              className="text-white"
+              variant="destructive"
+              onClick={submitReject}
+              disabled={busy}
+            >
+              <Ban /> Reject appointment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
+}
+
+function initialsOf(name: string): string {
+  return name
+    .replace(/^Dr\.?\s*/, "")
+    .split(/\s+/)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 }
 
 function LifecyclePanel({
   appt,
   closed,
+  busy,
   onChange,
+  onConfirm,
+  onReject,
 }: {
   appt: ClinicianAppointment;
   closed: boolean;
+  busy: boolean;
   onChange: (next: AppointmentStatus, message: string) => void;
+  onConfirm: () => void;
+  onReject: () => void;
 }) {
+  const pendingReview = appt.status === "requested";
   return (
     <div className="rounded-2xl border border-[var(--color-primary)]/30 bg-[var(--color-primary-50)]/40 p-5">
       <h2 className="text-sm font-semibold inline-flex items-center gap-2">
@@ -249,8 +431,27 @@ function LifecyclePanel({
       <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
         {closed
           ? "This encounter is closed. Status changes are no longer permitted."
-          : "Advance the encounter through arrival, consultation, and completion. Each transition is timestamped."}
+          : pendingReview
+            ? "This appointment is awaiting your review — confirm it, reject it, or propose a new time from the schedule."
+            : "Advance the encounter through arrival, consultation, and completion. Each transition is timestamped."}
       </p>
+
+      {pendingReview && (
+        <div className="mt-4 flex flex-wrap gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+          <Button size="sm" onClick={onConfirm} disabled={busy}>
+            {busy ? <Loader2 className="animate-spin" /> : <Check />} Confirm
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
+            onClick={onReject}
+            disabled={busy}
+          >
+            <Ban /> Reject
+          </Button>
+        </div>
+      )}
 
       <ol className="mt-4 space-y-3">
         <Step
@@ -287,7 +488,7 @@ function LifecyclePanel({
         <Button
           size="sm"
           variant={appt.status === "confirmed" ? "default" : "outline"}
-          disabled={appt.status !== "confirmed"}
+          disabled={appt.status !== "confirmed" || busy}
           onClick={() => onChange("arrived", "Marked arrived")}
         >
           <CheckCheck /> Mark arrived
@@ -295,7 +496,7 @@ function LifecyclePanel({
         <Button
           size="sm"
           variant={appt.status === "arrived" ? "default" : "outline"}
-          disabled={appt.status !== "arrived"}
+          disabled={appt.status !== "arrived" || busy}
           onClick={() => onChange("in-progress", "Consultation started")}
         >
           <Play /> Start consultation
@@ -303,7 +504,7 @@ function LifecyclePanel({
         <Button
           size="sm"
           variant={appt.status === "in-progress" ? "default" : "outline"}
-          disabled={appt.status !== "in-progress"}
+          disabled={appt.status !== "in-progress" || busy}
           onClick={() => onChange("completed", "Encounter completed")}
         >
           <CheckCheck /> Complete
@@ -312,7 +513,7 @@ function LifecyclePanel({
           size="sm"
           variant="ghost"
           className="text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
-          disabled={closed}
+          disabled={closed || busy}
           onClick={() => onChange("no-show", "Marked no-show")}
         >
           No-show

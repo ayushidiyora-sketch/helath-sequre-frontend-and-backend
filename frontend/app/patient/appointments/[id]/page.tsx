@@ -23,9 +23,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SecurityBadge } from "@/components/shared/security-badge";
-import { ActionButton } from "@/components/shared/action-button";
+import { AddToCalendar } from "@/components/shared/add-to-calendar";
 import { RescheduleDialog, CancelAppointmentDialog } from "@/components/shared/form-dialogs";
 import { usePatientStore, type Appointment, type PatientDocument } from "@/lib/patient-store";
+import { toEventStart } from "@/lib/calendar-export";
 
 function initials(name: string): string {
   return name
@@ -65,7 +66,7 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
 
   const docs = state.documents.filter((d) => apt.documentIds.includes(d.id));
   const days = daysUntil(apt.date);
-  const isPast = apt.status === "completed" || apt.status === "cancelled" || apt.status === "no-show";
+  const isPast = apt.status === "completed" || apt.status === "cancelled" || apt.status === "no-show" || apt.status === "rejected";
 
   const statusBadge =
     apt.status === "confirmed" ? (
@@ -78,6 +79,8 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
       <Badge variant="success" size="sm" dot>Completed</Badge>
     ) : apt.status === "cancelled" ? (
       <Badge variant="muted" size="sm" dot>Cancelled</Badge>
+    ) : apt.status === "rejected" ? (
+      <Badge variant="danger" size="sm" dot>Declined by clinician</Badge>
     ) : (
       <Badge variant="danger" size="sm" dot>No-show</Badge>
     );
@@ -131,14 +134,21 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
                     toast.success("Appointment rescheduled", { description: `New slot: ${slot} · reminders updated` });
                   }}
                 />
-                <ActionButton
-                  variant="outline"
-                  size="sm"
-                  toastMessage="Added to calendar"
-                  toastDescription="ICS file downloaded"
-                >
-                  <Bell /> Add to calendar
-                </ActionButton>
+                <AddToCalendar
+                  event={{
+                    id: apt.id,
+                    title: `${apt.clinician} · ${apt.department}`,
+                    start: toEventStart(apt.date, apt.time),
+                    durationMinutes: 15,
+                    location:
+                      apt.mode === "telehealth"
+                        ? "Telehealth (video link)"
+                        : `${apt.department} Wing`,
+                    description: apt.reason,
+                  }}
+                  filename={`appointment-${apt.id}`}
+                  triggerProps={{ variant: "outline", size: "sm" }}
+                />
                 <CancelAppointmentDialog
                   triggerLabel="Cancel appointment"
                   triggerProps={{

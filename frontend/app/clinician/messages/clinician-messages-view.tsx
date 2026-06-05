@@ -16,12 +16,15 @@ import {
   Check,
   Plus,
   MessagesSquare,
+  ChevronUp,
+  ChevronDown,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { SecurityBadge } from "@/components/shared/security-badge";
+import { highlightText } from "@/lib/highlight";
 import {
   Dialog,
   DialogContent,
@@ -752,11 +755,43 @@ function ThreadPane({
   onRemoveAttachment: (name: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Auto-scroll to bottom whenever the conversation or message count changes.
+  const msgRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // In-conversation full-text search.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [current, setCurrent] = useState(0);
+  const matchIds = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return [] as string[];
+    return messages.filter((m) => m.body.toLowerCase().includes(needle)).map((m) => m.id);
+  }, [q, messages]);
+
   useEffect(() => {
+    setSearchOpen(false);
+    setQ("");
+    setCurrent(0);
+  }, [active.id]);
+  useEffect(() => {
+    setCurrent(0);
+  }, [q]);
+  useEffect(() => {
+    if (matchIds.length === 0) return;
+    const id = matchIds[Math.min(current, matchIds.length - 1)];
+    msgRefs.current[id]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [current, matchIds]);
+
+  const activeMatchId = matchIds.length > 0 ? matchIds[Math.min(current, matchIds.length - 1)] : null;
+  const stepMatch = (dir: 1 | -1) =>
+    setCurrent((c) => (matchIds.length === 0 ? 0 : (c + dir + matchIds.length) % matchIds.length));
+
+  // Auto-scroll to bottom whenever the conversation or message count changes
+  // (suppressed while searching so the match scroll wins).
+  useEffect(() => {
+    if (searchOpen) return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [active.id, messages.length]);
+  }, [active.id, messages.length, searchOpen]);
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--color-background)]">
       <div className="flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-card)]/80 px-5 py-3 backdrop-blur">
@@ -790,8 +825,20 @@ function ThreadPane({
             )}
           </p>
         </div>
-        <SecurityBadge variant="encrypted" className="hidden sm:inline-flex" />
-        <SecurityBadge variant="audited" className="hidden md:inline-flex" />
+        <span
+          className="hidden items-center gap-1.5 rounded-full border border-[var(--color-success)]/30 bg-[var(--color-success-soft)] px-2.5 py-1 text-[11px] font-medium text-[oklch(0.4_0.12_158)] dark:text-[oklch(0.85_0.12_158)] sm:inline-flex"
+          title="Messages are encrypted at rest (AES-256). Every read is audit-logged."
+        >
+          <ShieldCheck className="size-3.5" /> Encrypted &amp; audited
+        </span>
+        <Button
+          variant={searchOpen ? "soft" : "ghost"}
+          size="icon-sm"
+          aria-label="Search in conversation"
+          onClick={() => setSearchOpen((v) => !v)}
+        >
+          <Search />
+        </Button>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -805,6 +852,40 @@ function ThreadPane({
           />
         </Button>
       </div>
+
+      {searchOpen && (
+        <div className="flex items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-card)]/60 px-4 py-2">
+          <Input
+            autoFocus
+            placeholder={`Search in conversation with ${active.patient}…`}
+            leadingIcon={<Search />}
+            className="h-9 flex-1"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                stepMatch(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                setSearchOpen(false);
+                setQ("");
+              }
+            }}
+          />
+          <span className="min-w-[44px] text-center text-xs tabular-nums text-[var(--color-muted-foreground)]">
+            {q.trim() ? `${matchIds.length === 0 ? 0 : Math.min(current, matchIds.length - 1) + 1}/${matchIds.length}` : "0/0"}
+          </span>
+          <Button variant="ghost" size="icon-sm" aria-label="Previous match" disabled={matchIds.length === 0} onClick={() => stepMatch(-1)}>
+            <ChevronUp />
+          </Button>
+          <Button variant="ghost" size="icon-sm" aria-label="Next match" disabled={matchIds.length === 0} onClick={() => stepMatch(1)}>
+            <ChevronDown />
+          </Button>
+          <Button variant="ghost" size="icon-sm" aria-label="Close search" onClick={() => { setSearchOpen(false); setQ(""); }}>
+            <X />
+          </Button>
+        </div>
+      )}
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         <div className="mb-4 flex items-center justify-center gap-3">
@@ -825,8 +906,9 @@ function ThreadPane({
               const prevKey = i > 0 ? dayKey(messages[i - 1].at) : null;
               const thisKey = dayKey(m.at);
               const showDate = prevKey !== thisKey;
+              const isActiveMatch = m.id === activeMatchId;
               return (
-              <div key={m.id}>
+              <div key={m.id} ref={(el) => { msgRefs.current[m.id] = el; }}>
               {showDate && (
                 <div className="my-3 flex items-center justify-center">
                   <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-muted-foreground)] shadow-[var(--shadow-soft)]">
@@ -847,9 +929,9 @@ function ThreadPane({
                         m.from === "clinician"
                           ? "bg-[var(--color-primary)] text-white"
                           : "bg-[var(--color-card)] text-[var(--color-foreground)]"
-                      }`}
+                      } ${isActiveMatch ? "ring-2 ring-[var(--color-warning)] ring-offset-2 ring-offset-[var(--color-background)]" : ""}`}
                     >
-                      {m.body}
+                      {q.trim() ? highlightText(m.body, q) : m.body}
                     </div>
                   )}
                   {m.attachments && m.attachments.length > 0 && (
