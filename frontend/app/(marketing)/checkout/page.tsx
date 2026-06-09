@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -16,9 +16,11 @@ import {
   Building2,
   Loader2,
 } from "lucide-react";
+import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { getStripePromise } from "@/lib/stripe-client";
 
 type TierId = "solo" | "hospital" | "enterprise";
 
@@ -111,7 +113,22 @@ export default function CheckoutPage() {
 
 function CheckoutPageInner() {
   const params = useSearchParams();
+  const tierParam = (params.get("tier") || "solo") as TierId;
+  if (tierParam === "enterprise") return <EnterpriseContact />;
+  // Deferred Payment Element — initial amount is a placeholder; the form updates
+  // it via elements.update() as cycle/quantity change.
+  return (
+    <Elements stripe={getStripePromise()} options={{ mode: "payment", amount: 100, currency: "usd" }}>
+      <CheckoutForm />
+    </Elements>
+  );
+}
+
+function CheckoutForm() {
+  const params = useSearchParams();
   const router = useRouter();
+  const stripe = useStripe();
+  const elements = useElements();
   const tierParam = (params.get("tier") || "solo") as TierId;
   const tier = TIERS[tierParam] ?? TIERS.solo;
 
@@ -123,13 +140,42 @@ function CheckoutPageInner() {
   const [orgName, setOrgName] = useState("");
   const [country, setCountry] = useState("India");
   const [taxId, setTaxId] = useState("");
-
   const [cardName, setCardName] = useState("");
-  const [cardNumber, setCardNumber] = useState("");
-  const [cardExp, setCardExp] = useState("");
-  const [cardCvc, setCardCvc] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
+
+  // Live tier price from the DB (Super Admin edits flow through here).
+  const [dbPrice, setDbPrice] = useState<{ monthly: number; annualMonthly: number } | null>(null);
+
+  // Pre-fill billing details from the signed-in user (blank for prospects).
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me/billing-prefill", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        if (j.fullName) setFullName(j.fullName);
+        if (j.email) setEmail(j.email);
+        if (j.orgName) setOrgName(j.orgName);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Pull the live price for this tier so the displayed + charged amount match
+  // whatever Super Admin has configured.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/tiers", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        const dt = (j.tiers as { id: string; monthly: number | null; annualMonthly: number | null }[]).find((t) => t.id === tierParam);
+        if (dt && dt.monthly !== null) setDbPrice({ monthly: dt.monthly, annualMonthly: dt.annualMonthly ?? dt.monthly });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tierParam]);
 
   // Memoize before any early return so hook order stays stable.
   const formatINR = useMemo(
@@ -137,34 +183,65 @@ function CheckoutPageInner() {
     [],
   );
 
-  if (tier.id === "enterprise") {
-    return <EnterpriseContact />;
-  }
-
-  const unitPrice = cycle === "annual" ? tier.annualMonthly : tier.monthly;
+  const effMonthly = dbPrice?.monthly ?? tier.monthly;
+  const effAnnual = dbPrice?.annualMonthly ?? tier.annualMonthly;
+  const unitPrice = cycle === "annual" ? effAnnual : effMonthly;
   const months = cycle === "annual" ? 12 : 1;
   const subtotal = unitPrice * qty * months;
   const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
   const total = subtotal + tax;
 
+  // Keep the embedded Payment Element's amount in sync with the order total.
+  useEffect(() => {
+    if (elements) elements.update({ amount: Math.max(50, Math.round(total * 100)) });
+  }, [total, elements]);
+
   const canSubmit =
     fullName.trim().length > 1 &&
     /\S+@\S+\.\S+/.test(email) &&
     orgName.trim().length > 1 &&
-    cardName.trim().length > 1 &&
-    cardNumber.replace(/\s/g, "").length >= 13 &&
-    /^\d{2}\s*\/\s*\d{2}$/.test(cardExp) &&
-    /^\d{3,4}$/.test(cardCvc);
+    cardName.trim().length > 1;
 
   async function placeOrder() {
-    if (!canSubmit || submitting) return;
+    if (!canSubmit || submitting || !stripe || !elements) return;
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 900));
-    toast.success("Order placed", {
-      description: `${tier.name} · ${cycle} · ${formatINR.format(total)} · receipt emailed to ${email}`,
-    });
-    setSubmitting(false);
-    router.push("/admin/billing?status=success");
+    // 1) Validate the embedded card fields.
+    const { error: submitError } = await elements.submit();
+    if (submitError) {
+      toast.error(submitError.message ?? "Please check your card details.");
+      setSubmitting(false);
+      return;
+    }
+    try {
+      // 2) Create the PaymentIntent server-side (authoritative amount).
+      const r = await fetch("/api/checkout/payment-intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tierId: tier.id, cycle, qty, fullName, email, orgName, country, taxId }),
+      });
+      const j = (await r.json()) as { ok?: boolean; clientSecret?: string; error?: string };
+      if (!r.ok || !j.ok || !j.clientSecret) {
+        toast.error("Could not start payment", { description: j.error ?? `HTTP ${r.status}` });
+        setSubmitting(false);
+        return;
+      }
+      // 3) Confirm the card payment in place; Stripe redirects to thank-you on success.
+      const { error } = await stripe.confirmPayment({
+        elements,
+        clientSecret: j.clientSecret,
+        confirmParams: {
+          return_url: `${window.location.origin}/checkout/thank-you`,
+          payment_method_data: { billing_details: { name: cardName || fullName, email } },
+        },
+      });
+      if (error) {
+        toast.error(error.message ?? "Payment could not be completed.");
+        setSubmitting(false);
+      }
+    } catch {
+      toast.error("Network error — payment not completed.");
+      setSubmitting(false);
+    }
   }
 
   function startTrial() {
@@ -200,13 +277,13 @@ function CheckoutPageInner() {
                 active={cycle === "monthly"}
                 onClick={() => setCycle("monthly")}
                 title="Monthly"
-                sub={`${formatINR.format(tier.monthly)} per ${tier.unitLabel}`}
+                sub={`${formatINR.format(effMonthly)} per ${tier.unitLabel}`}
               />
               <CycleOption
                 active={cycle === "annual"}
                 onClick={() => setCycle("annual")}
                 title="Annual"
-                sub={`${formatINR.format(tier.annualMonthly)} per ${tier.unitLabel} · save 17%`}
+                sub={`${formatINR.format(effAnnual)} per ${tier.unitLabel} · save 17%`}
                 badge="Best value"
               />
             </div>
@@ -252,23 +329,30 @@ function CheckoutPageInner() {
 
           {/* Payment */}
           <Card>
-            <SectionHeader icon={CreditCard} title="Payment method" subtitle="Card · processed by Stripe (PCI-DSS Level 1)." />
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <Field label="Name on card" id="card-name" value={cardName} onChange={setCardName} placeholder="Anjali Desai" className="sm:col-span-2" />
+            <SectionHeader icon={CreditCard} title="Payment method" subtitle="Card · processed securely by Stripe (PCI-DSS Level 1)." />
+            <div className="mt-4 space-y-4">
               <Field
-                label="Card number"
-                id="card-number"
-                value={cardNumber}
-                onChange={(v) => setCardNumber(formatCardNumber(v))}
-                placeholder="4242 4242 4242 4242"
-                inputMode="numeric"
-                className="sm:col-span-2"
+                label="Cardholder name"
+                id="card-name"
+                value={cardName}
+                onChange={setCardName}
+                placeholder="Name as printed on the card"
               />
-              <Field label="Expiry · MM/YY" id="card-exp" value={cardExp} onChange={(v) => setCardExp(formatExp(v))} placeholder="12/27" inputMode="numeric" />
-              <Field label="CVC" id="card-cvc" value={cardCvc} onChange={(v) => setCardCvc(v.replace(/\D/g, "").slice(0, 4))} placeholder="123" inputMode="numeric" />
+              <div className="space-y-1.5">
+                <Label>Card information</Label>
+                <div className="rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] p-3">
+                  <PaymentElement
+                    options={{
+                      layout: "tabs",
+                      fields: { billingDetails: { name: "never", email: "never" } },
+                    }}
+                  />
+                </div>
+              </div>
             </div>
             <p className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
-              <Lock className="size-3.5" /> Card data tokenized in your browser — never touches our servers.
+              <Lock className="size-3.5" /> Card details go straight to Stripe — never touch our servers. Test card{" "}
+              <span className="font-mono">4242 4242 4242 4242</span>, any future expiry &amp; CVC.
             </p>
           </Card>
         </div>
@@ -308,7 +392,7 @@ function CheckoutPageInner() {
               className="mt-5 w-full"
               size="lg"
               onClick={placeOrder}
-              disabled={!canSubmit || submitting}
+              disabled={!canSubmit || submitting || !stripe}
             >
               {submitting ? (
                 <>
@@ -466,13 +550,3 @@ function Field({
   );
 }
 
-function formatCardNumber(v: string): string {
-  const digits = v.replace(/\D/g, "").slice(0, 19);
-  return digits.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
-}
-
-function formatExp(v: string): string {
-  const digits = v.replace(/\D/g, "").slice(0, 4);
-  if (digits.length <= 2) return digits;
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-}

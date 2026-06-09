@@ -64,15 +64,20 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
+  // Trim stray whitespace — temp/onboarding passwords are commonly copy-pasted
+  // from emails or terminals, which can prepend a tab/space and break the match.
+  // Our passwords never contain leading/trailing whitespace, so this is safe.
+  const pw = password.trim();
+
   // Two password-check paths:
   //  - DB users (source: "database") have a real bcrypt hash → compare.
   //  - Demo users fall back to the in-memory password override + DEMO_PASSWORD seed.
   let passwordOk: boolean;
   if (user.source === "database" && user.passwordHash) {
-    passwordOk = await bcrypt.compare(password, user.passwordHash);
+    passwordOk = await bcrypt.compare(pw, user.passwordHash);
   } else {
-    const override = checkPassword(user.uid, password);
-    passwordOk = override === undefined ? password === DEMO_PASSWORD : override;
+    const override = checkPassword(user.uid, pw);
+    passwordOk = override === undefined ? pw === DEMO_PASSWORD : override;
   }
   if (!passwordOk) {
     return NextResponse.json(

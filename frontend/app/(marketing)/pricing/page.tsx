@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageHero } from "@/components/marketing/page-hero";
+import { getTiers } from "@/lib/tiers";
 
 export const metadata = {
   title: "Pricing",
@@ -21,8 +22,12 @@ export const metadata = {
     "Transparent pricing for HealthSecure Portal. Pick a tier per the size of your practice — every plan includes end-to-end encryption, append-only audit, and a signed HIPAA BAA.",
 };
 
+// Tiers are DB-backed (edited from Super Admin → Configuration → Tiers), so the
+// pricing always reflects the latest config.
+export const dynamic = "force-dynamic";
+
 interface Tier {
-  id: "solo" | "hospital" | "enterprise";
+  id: string;
   name: string;
   icon: React.ComponentType<{ className?: string }>;
   tagline: string;
@@ -35,70 +40,11 @@ interface Tier {
   bullets: string[];
 }
 
-const TIERS: Tier[] = [
-  {
-    id: "solo",
-    name: "Solo Practice",
-    icon: Stethoscope,
-    tagline: "For independent clinicians and small clinics getting compliant.",
-    monthly: 149,
-    annualMonthly: 124,
-    unit: "per clinician / month",
-    ctaLabel: "Start 14-day trial",
-    ctaHref: "/checkout?tier=solo",
-    featured: false,
-    bullets: [
-      "Up to 5 clinical users",
-      "Unlimited patient accounts",
-      "Encrypted records · consent management",
-      "Append-only audit ledger (1-year retention)",
-      "MFA + email OTP sign-in",
-      "Standard email support · 1 business day SLA",
-    ],
-  },
-  {
-    id: "hospital",
-    name: "Hospital",
-    icon: Building2,
-    tagline: "For multi-department hospitals running real compliance programs.",
-    monthly: 7,
-    annualMonthly: 6,
-    unit: "per active patient record / month",
-    ctaLabel: "Get started",
-    ctaHref: "/checkout?tier=hospital",
-    featured: true,
-    bullets: [
-      "Unlimited clinical users",
-      "Compliance dashboard · anomaly engine",
-      "Re-consent campaigns · approval workflows",
-      "Audit ledger (6-year retention · HIPAA minimum)",
-      "Break-glass emergency access · audited",
-      "Single-sign-on (SAML / OIDC)",
-      "Dedicated CSM · 4-hour priority SLA",
-    ],
-  },
-  {
-    id: "enterprise",
-    name: "Enterprise",
-    icon: ShieldCheck,
-    tagline: "For multi-org health systems with custom security requirements.",
-    monthly: null,
-    annualMonthly: null,
-    unit: "Custom — talk to us",
-    ctaLabel: "Talk to a specialist",
-    ctaHref: "/checkout?tier=enterprise",
-    featured: false,
-    bullets: [
-      "Multi-tenant federation · dedicated infrastructure",
-      "Customer-managed encryption keys (BYOK / HSM)",
-      "On-prem or sovereign-cloud deployment",
-      "Custom audit retention (up to lifetime)",
-      "Custom DPA · sub-processor approval",
-      "Named TAM + 24×7 paging · 1-hour SLA",
-      "Penetration testing on request",
-    ],
-  },
-];
+const TIER_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  solo: Stethoscope,
+  hospital: Building2,
+  enterprise: ShieldCheck,
+};
 
 interface FeatureRow {
   label: string;
@@ -185,7 +131,11 @@ const FAQ: { q: string; a: string }[] = [
   },
 ];
 
-export default function PricingPage() {
+export default async function PricingPage() {
+  const tiers: Tier[] = (await getTiers()).map((t) => ({
+    ...t,
+    icon: TIER_ICONS[t.icon] ?? Stethoscope,
+  }));
   return (
     <>
       <PageHero
@@ -206,7 +156,7 @@ export default function PricingPage() {
 
       <section className="mx-auto max-w-7xl px-6 py-16 sm:py-20">
         <div className="grid gap-5 lg:grid-cols-3">
-          {TIERS.map((t) => <TierCard key={t.id} t={t} />)}
+          {tiers.map((t) => <TierCard key={t.id} t={t} />)}
         </div>
         <p className="mt-6 text-center text-xs text-[var(--color-muted-foreground)]">
           Prices in USD · billed monthly unless annual is selected · GST / VAT exclusive
@@ -230,7 +180,7 @@ export default function PricingPage() {
               <thead>
                 <tr className="border-b border-[var(--color-border)] bg-[var(--color-muted)]/40">
                   <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Capability</th>
-                  {TIERS.map((t) => (
+                  {tiers.map((t) => (
                     <th key={t.id} className="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
                       <span className="flex items-center gap-2">
                         {t.name}

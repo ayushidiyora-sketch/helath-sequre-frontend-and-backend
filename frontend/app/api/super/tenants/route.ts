@@ -64,6 +64,7 @@ interface CreateTenantBody {
   region?: string;
   multiAz?: boolean;
   s3Replication?: boolean;
+  contact?: { email?: string; phone?: string; address?: string };
   adminName?: string;
   adminEmail?: string;
   integrations?: IntegrationFlags;
@@ -233,6 +234,14 @@ export async function POST(req: Request) {
     customSmtp: !!body.integrations?.customSmtp,
   };
 
+  // Organization contact → settings.contact (read by /api/admin/tenant +
+  // the Org Admin Settings → Profile tab). All optional.
+  const contact = {
+    email: typeof body.contact?.email === "string" ? body.contact.email.trim() : "",
+    phone: typeof body.contact?.phone === "string" ? body.contact.phone.trim() : "",
+    address: typeof body.contact?.address === "string" ? body.contact.address.trim() : "",
+  };
+
   let created;
   try {
     created = await prisma.$transaction(async (tx) => {
@@ -245,7 +254,7 @@ export async function POST(req: Request) {
           region,
           multiAzEnabled: body.multiAz ?? true,
           crossRegionS3: body.s3Replication ?? false,
-          settings: { integrations } as Prisma.InputJsonValue,
+          settings: { integrations, contact } as Prisma.InputJsonValue,
         },
       });
       const role = await tx.role.create({

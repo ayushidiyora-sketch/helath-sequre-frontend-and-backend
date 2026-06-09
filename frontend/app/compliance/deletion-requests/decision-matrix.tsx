@@ -58,13 +58,39 @@ export function DecisionMatrix({ request }: { request: DeletionRequest }) {
     setDecisions({ ...decisions, [key]: d });
   }
 
-  function approve(kind: "partial" | "full" | "export") {
+  const [saving, setSaving] = useState(false);
+
+  async function persist(status: string): Promise<boolean> {
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/compliance/data-requests/${request.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, note, decisions }),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string };
+      if (!r.ok || !j.ok) {
+        toast.error("Could not record decision", { description: j.error ?? `HTTP ${r.status}` });
+        return false;
+      }
+      return true;
+    } catch {
+      toast.error("Network error — decision not saved.");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function approve(kind: "partial" | "full" | "export") {
     if (!note.trim()) {
       toast.warning("Justification required", {
         description: "Document why each retained category is being kept and what was deleted.",
       });
       return;
     }
+    const status = kind === "export" ? "approved_full" : kind === "full" ? "approved_full" : "approved_partial";
+    if (!(await persist(status))) return;
     if (kind === "export") {
       toast.success("Export bundle queued", {
         description: `${request.patientName} · PDF + CSV · audit-logged`,
@@ -75,19 +101,22 @@ export function DecisionMatrix({ request }: { request: DeletionRequest }) {
       });
     }
     router.push("/compliance/deletion-requests");
+    router.refresh();
   }
 
-  function reject() {
+  async function reject() {
     if (!note.trim()) {
       toast.warning("Reason required", {
         description: "Rejections must record a reason for the requester.",
       });
       return;
     }
+    if (!(await persist("rejected"))) return;
     toast.info("Request rejected", {
       description: `${request.patientName} · notified · audit-logged`,
     });
     router.push("/compliance/deletion-requests");
+    router.refresh();
   }
 
   if (request.legalHold) {
@@ -141,6 +170,9 @@ export function DecisionMatrix({ request }: { request: DeletionRequest }) {
                     <td className="px-3 py-3 text-xs text-[var(--color-muted-foreground)]">
                       <p>{cat.retentionPolicy}</p>
                       <p className="mt-0.5 italic">{cat.reason}</p>
+                      {cat.patientExplanation && (
+                        <p className="mt-1 text-[10px] text-[var(--color-primary-700)]">Patient sees: {cat.patientExplanation}</p>
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex flex-wrap gap-1.5">
@@ -198,13 +230,13 @@ export function DecisionMatrix({ request }: { request: DeletionRequest }) {
         {/* Actions */}
         <div className="mt-4 flex flex-wrap gap-2">
           {isExport ? (
-            <Button size="sm" onClick={() => approve("export")}><Download /> Approve export</Button>
+            <Button size="sm" onClick={() => approve("export")} disabled={saving}><Download /> Approve export</Button>
           ) : (
             <>
-              <Button size="sm" onClick={() => approve(someKeep ? "partial" : "full")}>
+              <Button size="sm" onClick={() => approve(someKeep ? "partial" : "full")} disabled={saving}>
                 <CheckCircle2 /> {someKeep ? "Approve partial deletion" : "Approve full deletion"}
               </Button>
-              <Button variant="destructive" size="sm" onClick={reject}>
+              <Button variant="destructive" size="sm" onClick={reject} disabled={saving}>
                 <XCircle /> Reject
               </Button>
             </>

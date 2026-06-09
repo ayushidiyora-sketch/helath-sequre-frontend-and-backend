@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   Users,
@@ -14,6 +14,7 @@ import {
   BarChart3,
   Stethoscope,
   Receipt,
+  Loader2,
 } from "lucide-react";
 import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/role-sidebar";
 import { RoleHeader } from "@/components/shared/role-header";
@@ -42,9 +43,31 @@ const UTILITY: NavItem[] = [
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const [me, setMe] = useState<MeResponse["user"] | null>(null);
   const [tenant, setTenant] = useState<TenantResponse["tenant"] | null>(null);
   const [counts, setCounts] = useState<TenantResponse["counts"] | null>(null);
+  // Subscription access gate: null = checking, true = allowed, false = redirecting.
+  const [gate, setGate] = useState<null | boolean>(null);
+
+  // An Org Admin without an active subscription can't reach the dashboard — they
+  // must subscribe first. Force them to /pricing until the tenant is active.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/me/subscription", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { active: true }))
+      .then((data: { active?: boolean }) => {
+        if (cancelled) return;
+        if (data.active === false) {
+          setGate(false);
+          router.replace("/pricing");
+        } else {
+          setGate(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setGate(true); });
+    return () => { cancelled = true; };
+  }, [router]);
 
   // Header user comes from the session — fetch once on mount.
   useEffect(() => {
@@ -113,6 +136,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     initials: me?.initials ?? "··",
     email: me?.email ?? "",
   };
+
+  // Block the admin UI until the subscription gate resolves (no flash of the
+  // dashboard for an unsubscribed tenant).
+  if (gate !== true) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[var(--color-background)]">
+        <div className="flex flex-col items-center gap-3 text-sm text-[var(--color-muted-foreground)]">
+          <Loader2 className="size-5 animate-spin" />
+          {gate === false ? "Redirecting to plans — choose a subscription to continue…" : "Loading…"}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <AdminStoreProvider>

@@ -11,9 +11,10 @@ import {
   signSession,
   verifyPending,
 } from "@/lib/auth";
-import { roleHome } from "@/lib/auth";
+import { roleHome, isDbUid } from "@/lib/auth";
 import { lookupUserByUid } from "@/lib/user-lookup";
 import { prisma } from "@/lib/prisma";
+import { orgHasActiveSubscription } from "@/lib/billing";
 import { issueSession } from "@/lib/session-store";
 import {
   recordChallengeAttempt,
@@ -153,10 +154,25 @@ export async function POST(req: Request): Promise<NextResponse> {
   // after sign-in. Staff roles already have MFA mandated by /mfa-setup at
   // invite time, so they skip the prompt and land on their role home.
   const home = roleHome(user.role);
-  const redirect =
+  let redirect =
     user.role === "Patient"
       ? `/mfa-prompt?next=${encodeURIComponent(home)}`
       : home;
+  // A freshly-onboarded Org Admin with no active subscription is sent to Pricing
+  // to pick a plan (soft redirect — the dashboard isn't hard-gated).
+  if (user.role === "Org Admin" && user.source === "database" && isDbUid(user.uid)) {
+    try {
+      const rows = await prisma.$queryRaw<{ organizationId: string | null }[]>`
+        SELECT "organizationId" FROM users WHERE id = ${user.uid}::uuid LIMIT 1
+      `;
+      const orgId = rows[0]?.organizationId;
+      if (orgId && !(await orgHasActiveSubscription(orgId))) {
+        redirect = "/pricing";
+      }
+    } catch (err) {
+      console.error("[verify-otp] subscription check failed:", err);
+    }
+  }
   const res = NextResponse.json({ ok: true, redirect });
   res.cookies.delete(PENDING_COOKIE);
   res.cookies.set(SESSION_COOKIE, session, {

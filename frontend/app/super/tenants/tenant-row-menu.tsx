@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { MoreHorizontal, Eye, Settings2, PauseCircle, PlayCircle, Loader2 } from "lucide-react";
+import { MoreHorizontal, Eye, Settings2, PauseCircle, PlayCircle, Loader2, Receipt } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label } from "@/components/ui/input";
@@ -48,6 +49,7 @@ const SELECT_CLASS =
 
 /** Per-row tenant actions — opens a details, configure, or suspend dialog. */
 export function TenantRowMenu({ tenant, onChanged }: TenantRowMenuProps) {
+  const router = useRouter();
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -142,6 +144,9 @@ export function TenantRowMenu({ tenant, onChanged }: TenantRowMenuProps) {
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={openConfigure}>
             <Settings2 /> Configure
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => router.push(`/super/tenants/${encodeURIComponent(tenant.id)}/billing`)}>
+            <Receipt /> Billing &amp; invoices
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

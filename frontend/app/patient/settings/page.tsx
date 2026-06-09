@@ -55,6 +55,7 @@ import { VaccinationsManager } from "../vaccinations/vaccinations-manager";
 import { usePatientStore, type Profile, type Session } from "@/lib/patient-store";
 import { validateName } from "@/lib/validate-name";
 import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
+import { CATEGORY_TEMPLATES, CATEGORY_ORDER } from "@/app/compliance/deletion-requests/deletion-requests-data";
 
 export default function SettingsPage() {
   return (
@@ -851,7 +852,32 @@ function SessionsTab() {
 function DataTab() {
   const { state } = usePatientStore();
 
-  function exportPhi() {
+  // Log a data request (deletion/export) to the Compliance queue.
+  async function submitDataRequest(type: "deletion" | "export"): Promise<boolean> {
+    try {
+      const r = await fetch("/api/patient/data-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string; alreadyOpen?: boolean };
+      if (!r.ok || !j.ok) {
+        toast.error("Could not submit request", { description: j.error ?? `HTTP ${r.status}` });
+        return false;
+      }
+      if (type === "deletion") {
+        toast.warning(j.alreadyOpen ? "Deletion request already pending" : "Deletion request submitted", {
+          description: "Your Compliance Manager will review it · audit-logged",
+        });
+      }
+      return true;
+    } catch {
+      toast.error("Network error — could not submit request.");
+      return false;
+    }
+  }
+
+  async function exportPhi() {
     // Bundle every entity from the store as a single JSON payload — this
     // mirrors what a real HIPAA right-of-access export would include, just
     // as a one-file download instead of a signed S3 link.
@@ -877,6 +903,8 @@ function DataTab() {
     toast.success("PHI export downloaded", {
       description: `${state.appointments.length} appointments · ${state.documents.length} docs · ${state.consents.length} consents`,
     });
+    // Also log the right-of-access request to the Compliance queue.
+    void submitDataRequest("export");
   }
 
   return (
@@ -908,6 +936,22 @@ function DataTab() {
           HIPAA / GDPR right-to-be-forgotten. Some clinical records may be retained
           for legal compliance — your Compliance Manager will review.
         </p>
+        <div className="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]/60 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+            This request covers
+          </p>
+          <ul className="mt-1.5 grid gap-1 text-xs text-[var(--color-foreground)]/85 sm:grid-cols-2">
+            {CATEGORY_ORDER.map((k) => (
+              <li key={k} className="flex items-center gap-1.5">
+                <span className="size-1 shrink-0 rounded-full bg-[var(--color-muted-foreground)]" />
+                {CATEGORY_TEMPLATES[k].label}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-[var(--color-muted-foreground)]">
+            Your Compliance Manager reviews each category against the retention policy — some may be kept for legal compliance and you&apos;ll be told why.
+          </p>
+        </div>
         <div className="mt-4 flex items-start gap-2 text-xs text-[var(--color-muted-foreground)]">
           <AlertTriangle className="mt-0.5 size-3.5 text-[var(--color-warning)]" />
           Irreversible. All active sessions will be terminated.
@@ -921,9 +965,7 @@ function DataTab() {
             confirmLabel: "Submit deletion request",
             variant: "destructive",
           }}
-          toastMessage="Deletion request submitted"
-          toastDescription="Compliance Manager has been notified · you'll get an email when it's reviewed"
-          toastVariant="warning"
+          onClick={() => void submitDataRequest("deletion")}
         >
           Request deletion
         </ActionButton>

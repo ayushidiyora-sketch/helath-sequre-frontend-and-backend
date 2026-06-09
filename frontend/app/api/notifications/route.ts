@@ -59,27 +59,130 @@ function fmtScopes(raw: Prisma.JsonValue): string {
 async function patientFeed(uid: string): Promise<Notification[]> {
   const out: Notification[] = [];
 
-  // Pending + recent consent requests this patient has received.
-  const reqs = await prisma.$queryRaw<
-    {
-      id: string;
-      status: string;
-      scopes: Prisma.JsonValue;
-      requestedAt: Date;
-      decidedAt: Date | null;
-      clinicianFirstName: string;
-      clinicianLastName: string;
-    }[]
-  >`
-    SELECT cr.id, cr.status, cr.scopes, cr."requestedAt", cr."decidedAt",
-           u."firstName" AS "clinicianFirstName",
-           u."lastName"  AS "clinicianLastName"
-    FROM consent_requests cr
-    JOIN users u ON u.id = cr."clinicianId"
-    WHERE cr."patientId" = ${uid}::uuid
-    ORDER BY cr."requestedAt" DESC
-    LIMIT 20
-  `;
+  // Date windows used across the queries (hoisted so all queries can run in parallel).
+  const now = new Date();
+  const horizon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 15);
+  const rejectedSince = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
+  const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
+
+  // All five feeds are independent → fire them in one parallel batch so the
+  // total wall-clock is ~1 DB round-trip instead of 5 (big win on a remote DB).
+  const [reqs, appts, rejected, reminders, rx, dataReqs] = await Promise.all([
+    prisma.$queryRaw<
+      {
+        id: string;
+        status: string;
+        scopes: Prisma.JsonValue;
+        requestedAt: Date;
+        decidedAt: Date | null;
+        clinicianFirstName: string;
+        clinicianLastName: string;
+      }[]
+    >`
+      SELECT cr.id, cr.status, cr.scopes, cr."requestedAt", cr."decidedAt",
+             u."firstName" AS "clinicianFirstName",
+             u."lastName"  AS "clinicianLastName"
+      FROM consent_requests cr
+      JOIN users u ON u.id = cr."clinicianId"
+      WHERE cr."patientId" = ${uid}::uuid
+      ORDER BY cr."requestedAt" DESC
+      LIMIT 20
+    `,
+    prisma.$queryRaw<
+      { id: string; startsAt: Date; status: string; clinicianFirstName: string; clinicianLastName: string }[]
+    >`
+      SELECT a.id, a."startsAt", a.status::text AS status,
+             c."firstName" AS "clinicianFirstName",
+             c."lastName"  AS "clinicianLastName"
+      FROM appointments a
+      JOIN users me ON me.id = ${uid}::uuid
+      JOIN users c  ON c.id  = a."clinicianId"
+      WHERE a."deletedAt" IS NULL
+        AND a."patientEmail" = me.email
+        AND a."startsAt" >= ${now}
+        AND a."startsAt" <  ${horizon}
+        AND a.status::text NOT IN ('cancelled','no_show','rejected')
+      ORDER BY a."startsAt" ASC
+      LIMIT 10
+    `,
+    prisma.$queryRaw<
+      { id: string; startsAt: Date; updatedAt: Date; clinicianFirstName: string; clinicianLastName: string }[]
+    >`
+      SELECT a.id, a."startsAt", a."updatedAt",
+             c."firstName" AS "clinicianFirstName",
+             c."lastName"  AS "clinicianLastName"
+      FROM appointments a
+      JOIN users me ON me.id = ${uid}::uuid
+      JOIN users c  ON c.id  = a."clinicianId"
+      WHERE a."deletedAt" IS NULL
+        AND a."patientEmail" = me.email
+        AND a.status::text = 'rejected'
+        AND a."updatedAt" >= ${rejectedSince}
+      ORDER BY a."updatedAt" DESC
+      LIMIT 10
+    `,
+    prisma.$queryRaw<
+      { kind: string; sentAt: Date; startsAt: Date; clinicianFirstName: string; clinicianLastName: string; appointmentId: string }[]
+    >`
+      SELECT r.kind, r."sentAt", a."startsAt", a.id AS "appointmentId",
+             c."firstName" AS "clinicianFirstName",
+             c."lastName"  AS "clinicianLastName"
+      FROM appointment_reminders r
+      JOIN appointments a ON a.id = r."appointmentId"
+      JOIN users me ON me.id = ${uid}::uuid
+      JOIN users c  ON c.id  = a."clinicianId"
+      WHERE r."sentAt" IS NOT NULL
+        AND r."sentAt" >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000)}
+        AND a."patientEmail" = me.email
+        AND a."deletedAt" IS NULL
+      ORDER BY r."sentAt" DESC
+      LIMIT 10
+    `,
+    prisma.$queryRaw<
+      { id: string; drugName: string; createdAt: Date; clinicianFirstName: string; clinicianLastName: string }[]
+    >`
+      SELECT p.id, p."drugName", p."createdAt",
+             c."firstName" AS "clinicianFirstName",
+             c."lastName"  AS "clinicianLastName"
+      FROM prescriptions p
+      JOIN users c ON c.id = p."clinicianId"
+      WHERE p."patientId" = ${uid}::uuid
+        AND p.status = 'finalized'
+        AND p."createdAt" >= ${past}
+      ORDER BY p."createdAt" DESC
+      LIMIT 10
+    `,
+    // Outcome of the patient's own data (deletion/export) requests.
+    prisma.$queryRaw<
+      { id: string; type: string; status: string; decisionNote: string | null; decidedAt: Date | null }[]
+    >`
+      SELECT id, type, status, "decisionNote", "decidedAt"
+      FROM data_requests
+      WHERE "patientId" = ${uid}::uuid
+        AND status IN ('approved_partial','approved_full','rejected')
+        AND "decidedAt" >= ${past}
+      ORDER BY "decidedAt" DESC
+      LIMIT 10
+    `,
+  ]);
+
+  for (const d of dataReqs) {
+    const kindLabel = d.type === "export" ? "data export" : "data deletion";
+    const title =
+      d.status === "rejected"
+        ? `Your ${kindLabel} request was declined`
+        : `Your ${kindLabel} request was reviewed`;
+    out.push({
+      id: `dr-${d.id}`,
+      category: "system",
+      title,
+      body: d.decisionNote ?? "Your Compliance Manager has reviewed your request.",
+      time: relativeTime(d.decidedAt ?? new Date()),
+      href: "/patient/settings",
+      critical: true,
+    });
+  }
+
   for (const r of reqs) {
     const doctor = `Dr. ${r.clinicianFirstName} ${r.clinicianLastName}`.trim();
     if (r.status === "pending") {
@@ -116,25 +219,6 @@ async function patientFeed(uid: string): Promise<Notification[]> {
   }
 
   // Upcoming appointments for this patient (next 14d).
-  const now = new Date();
-  const horizon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 15);
-  const appts = await prisma.$queryRaw<
-    { id: string; startsAt: Date; status: string; clinicianFirstName: string; clinicianLastName: string }[]
-  >`
-    SELECT a.id, a."startsAt", a.status::text AS status,
-           c."firstName" AS "clinicianFirstName",
-           c."lastName"  AS "clinicianLastName"
-    FROM appointments a
-    JOIN users me ON me.id = ${uid}::uuid
-    JOIN users c  ON c.id  = a."clinicianId"
-    WHERE a."deletedAt" IS NULL
-      AND a."patientEmail" = me.email
-      AND a."startsAt" >= ${now}
-      AND a."startsAt" <  ${horizon}
-      AND a.status::text NOT IN ('cancelled','no_show','rejected')
-    ORDER BY a."startsAt" ASC
-    LIMIT 10
-  `;
   for (const a of appts) {
     const doctor = `Dr. ${a.clinicianFirstName} ${a.clinicianLastName}`.trim();
     const when = a.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -162,23 +246,6 @@ async function patientFeed(uid: string): Promise<Notification[]> {
   }
 
   // Recently rejected appointment requests (last 14d) — the clinician declined.
-  const rejectedSince = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
-  const rejected = await prisma.$queryRaw<
-    { id: string; startsAt: Date; updatedAt: Date; clinicianFirstName: string; clinicianLastName: string }[]
-  >`
-    SELECT a.id, a."startsAt", a."updatedAt",
-           c."firstName" AS "clinicianFirstName",
-           c."lastName"  AS "clinicianLastName"
-    FROM appointments a
-    JOIN users me ON me.id = ${uid}::uuid
-    JOIN users c  ON c.id  = a."clinicianId"
-    WHERE a."deletedAt" IS NULL
-      AND a."patientEmail" = me.email
-      AND a.status::text = 'rejected'
-      AND a."updatedAt" >= ${rejectedSince}
-    ORDER BY a."updatedAt" DESC
-    LIMIT 10
-  `;
   for (const a of rejected) {
     const doctor = `Dr. ${a.clinicianFirstName} ${a.clinicianLastName}`.trim();
     out.push({
@@ -192,23 +259,6 @@ async function patientFeed(uid: string): Promise<Notification[]> {
   }
 
   // Appointment reminders dispatched in the last 24h (T-24h / T-1h).
-  const reminders = await prisma.$queryRaw<
-    { kind: string; sentAt: Date; startsAt: Date; clinicianFirstName: string; clinicianLastName: string; appointmentId: string }[]
-  >`
-    SELECT r.kind, r."sentAt", a."startsAt", a.id AS "appointmentId",
-           c."firstName" AS "clinicianFirstName",
-           c."lastName"  AS "clinicianLastName"
-    FROM appointment_reminders r
-    JOIN appointments a ON a.id = r."appointmentId"
-    JOIN users me ON me.id = ${uid}::uuid
-    JOIN users c  ON c.id  = a."clinicianId"
-    WHERE r."sentAt" IS NOT NULL
-      AND r."sentAt" >= ${new Date(now.getTime() - 24 * 60 * 60 * 1000)}
-      AND a."patientEmail" = me.email
-      AND a."deletedAt" IS NULL
-    ORDER BY r."sentAt" DESC
-    LIMIT 10
-  `;
   for (const r of reminders) {
     const doctor = `Dr. ${r.clinicianFirstName} ${r.clinicianLastName}`.trim();
     const lead = r.kind === "t_24h" ? "in 24 hours" : r.kind === "t_1h" ? "in 1 hour" : "soon";
@@ -224,21 +274,6 @@ async function patientFeed(uid: string): Promise<Notification[]> {
   }
 
   // Recently finalized prescriptions (last 14d).
-  const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
-  const rx = await prisma.$queryRaw<
-    { id: string; drugName: string; createdAt: Date; clinicianFirstName: string; clinicianLastName: string }[]
-  >`
-    SELECT p.id, p."drugName", p."createdAt",
-           c."firstName" AS "clinicianFirstName",
-           c."lastName"  AS "clinicianLastName"
-    FROM prescriptions p
-    JOIN users c ON c.id = p."clinicianId"
-    WHERE p."patientId" = ${uid}::uuid
-      AND p.status = 'finalized'
-      AND p."createdAt" >= ${past}
-    ORDER BY p."createdAt" DESC
-    LIMIT 10
-  `;
   for (const p of rx) {
     out.push({
       id: `rx-${p.id}`,
@@ -258,30 +293,58 @@ async function clinicianFeed(uid: string): Promise<Notification[]> {
   const now = new Date();
   const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
 
+  // All three feeds are independent → fetch in parallel (one DB round-trip).
+  const [decided, appts, assigns] = await Promise.all([
+    prisma.$queryRaw<
+      {
+        id: string;
+        status: string;
+        scopes: Prisma.JsonValue;
+        decidedAt: Date | null;
+        patientFirstName: string;
+        patientLastName: string;
+        patientId: string;
+      }[]
+    >`
+      SELECT cr.id, cr.status, cr.scopes, cr."decidedAt",
+             u."firstName" AS "patientFirstName",
+             u."lastName"  AS "patientLastName",
+             cr."patientId"
+      FROM consent_requests cr
+      JOIN users u ON u.id = cr."patientId"
+      WHERE cr."clinicianId" = ${uid}::uuid
+        AND cr."decidedAt" IS NOT NULL
+        AND cr."decidedAt" >= ${past}
+      ORDER BY cr."decidedAt" DESC
+      LIMIT 20
+    `,
+    prisma.$queryRaw<
+      { id: string; startsAt: Date; createdAt: Date; patientName: string }[]
+    >`
+      SELECT id, "startsAt", "createdAt", "patientName"
+      FROM appointments
+      WHERE "clinicianId" = ${uid}::uuid
+        AND "deletedAt" IS NULL
+        AND "createdAt" >= ${past}
+        AND status::text NOT IN ('cancelled','no_show')
+      ORDER BY "createdAt" DESC
+      LIMIT 15
+    `,
+    prisma.$queryRaw<
+      { startedAt: Date; firstName: string; lastName: string; id: string }[]
+    >`
+      SELECT pa."startedAt", u."firstName", u."lastName", u.id
+      FROM patient_assignments pa
+      JOIN users u ON u.id = pa."patientId"
+      WHERE pa."clinicianId" = ${uid}::uuid
+        AND pa."endedAt" IS NULL
+        AND pa."startedAt" >= ${past}
+      ORDER BY pa."startedAt" DESC
+      LIMIT 10
+    `,
+  ]);
+
   // Decided consent requests where I'm the requesting clinician (last 14d).
-  const decided = await prisma.$queryRaw<
-    {
-      id: string;
-      status: string;
-      scopes: Prisma.JsonValue;
-      decidedAt: Date | null;
-      patientFirstName: string;
-      patientLastName: string;
-      patientId: string;
-    }[]
-  >`
-    SELECT cr.id, cr.status, cr.scopes, cr."decidedAt",
-           u."firstName" AS "patientFirstName",
-           u."lastName"  AS "patientLastName",
-           cr."patientId"
-    FROM consent_requests cr
-    JOIN users u ON u.id = cr."patientId"
-    WHERE cr."clinicianId" = ${uid}::uuid
-      AND cr."decidedAt" IS NOT NULL
-      AND cr."decidedAt" >= ${past}
-    ORDER BY cr."decidedAt" DESC
-    LIMIT 20
-  `;
   for (const r of decided) {
     const patient = `${r.patientFirstName} ${r.patientLastName}`.trim();
     const verb = r.status === "approved" ? "approved" : "declined";
@@ -296,18 +359,6 @@ async function clinicianFeed(uid: string): Promise<Notification[]> {
   }
 
   // New appointments booked with me in the last 14 days, looking forward.
-  const appts = await prisma.$queryRaw<
-    { id: string; startsAt: Date; createdAt: Date; patientName: string }[]
-  >`
-    SELECT id, "startsAt", "createdAt", "patientName"
-    FROM appointments
-    WHERE "clinicianId" = ${uid}::uuid
-      AND "deletedAt" IS NULL
-      AND "createdAt" >= ${past}
-      AND status::text NOT IN ('cancelled','no_show')
-    ORDER BY "createdAt" DESC
-    LIMIT 15
-  `;
   for (const a of appts) {
     out.push({
       id: `ap-${a.id}`,
@@ -320,18 +371,6 @@ async function clinicianFeed(uid: string): Promise<Notification[]> {
   }
 
   // Newly assigned patients (last 14d).
-  const assigns = await prisma.$queryRaw<
-    { startedAt: Date; firstName: string; lastName: string; id: string }[]
-  >`
-    SELECT pa."startedAt", u."firstName", u."lastName", u.id
-    FROM patient_assignments pa
-    JOIN users u ON u.id = pa."patientId"
-    WHERE pa."clinicianId" = ${uid}::uuid
-      AND pa."endedAt" IS NULL
-      AND pa."startedAt" >= ${past}
-    ORDER BY pa."startedAt" DESC
-    LIMIT 10
-  `;
   for (const a of assigns) {
     const patient = `${a.firstName} ${a.lastName}`.trim();
     out.push({
@@ -359,19 +398,46 @@ async function adminFeed(uid: string): Promise<Notification[]> {
   const orgId = meRows[0]?.organizationId;
   if (!orgId) return out;
 
+  // The two tenant feeds are independent → fetch in parallel.
+  const [users, assigns] = await Promise.all([
+    prisma.$queryRaw<
+      { id: string; firstName: string; lastName: string; roleKind: string; createdAt: Date }[]
+    >`
+      SELECT id, "firstName", "lastName", "roleKind"::text AS "roleKind", "createdAt"
+      FROM users
+      WHERE "organizationId" = ${orgId}::uuid
+        AND "deletedAt" IS NULL
+        AND "createdAt" >= ${past}
+        AND id <> ${uid}::uuid
+      ORDER BY "createdAt" DESC
+      LIMIT 20
+    `,
+    prisma.$queryRaw<
+      {
+        startedAt: Date;
+        patientFirstName: string;
+        patientLastName: string;
+        clinicianFirstName: string;
+        clinicianLastName: string;
+        patientId: string;
+      }[]
+    >`
+      SELECT pa."startedAt",
+             p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName",
+             pa."patientId"
+      FROM patient_assignments pa
+      JOIN users p ON p.id = pa."patientId"
+      JOIN users c ON c.id = pa."clinicianId"
+      WHERE p."organizationId" = ${orgId}::uuid
+        AND pa."endedAt" IS NULL
+        AND pa."startedAt" >= ${past}
+      ORDER BY pa."startedAt" DESC
+      LIMIT 15
+    `,
+  ]);
+
   // New users in my tenant (patients + staff) in last 14d.
-  const users = await prisma.$queryRaw<
-    { id: string; firstName: string; lastName: string; roleKind: string; createdAt: Date }[]
-  >`
-    SELECT id, "firstName", "lastName", "roleKind"::text AS "roleKind", "createdAt"
-    FROM users
-    WHERE "organizationId" = ${orgId}::uuid
-      AND "deletedAt" IS NULL
-      AND "createdAt" >= ${past}
-      AND id <> ${uid}::uuid
-    ORDER BY "createdAt" DESC
-    LIMIT 20
-  `;
   for (const u of users) {
     const name = `${u.firstName} ${u.lastName}`.trim();
     const isPatient = u.roleKind === "patient";
@@ -386,29 +452,6 @@ async function adminFeed(uid: string): Promise<Notification[]> {
   }
 
   // New patient assignments in the tenant.
-  const assigns = await prisma.$queryRaw<
-    {
-      startedAt: Date;
-      patientFirstName: string;
-      patientLastName: string;
-      clinicianFirstName: string;
-      clinicianLastName: string;
-      patientId: string;
-    }[]
-  >`
-    SELECT pa."startedAt",
-           p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
-           c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName",
-           pa."patientId"
-    FROM patient_assignments pa
-    JOIN users p ON p.id = pa."patientId"
-    JOIN users c ON c.id = pa."clinicianId"
-    WHERE p."organizationId" = ${orgId}::uuid
-      AND pa."endedAt" IS NULL
-      AND pa."startedAt" >= ${past}
-    ORDER BY pa."startedAt" DESC
-    LIMIT 15
-  `;
   for (const a of assigns) {
     const patient = `${a.patientFirstName} ${a.patientLastName}`.trim();
     const doctor = `Dr. ${a.clinicianFirstName} ${a.clinicianLastName}`.trim();
@@ -436,29 +479,57 @@ async function complianceFeed(uid: string): Promise<Notification[]> {
   const orgId = meRows[0]?.organizationId;
   if (!orgId) return out;
 
+  // Both tenant feeds are independent → fetch in parallel.
+  const [pending, decided] = await Promise.all([
+    prisma.$queryRaw<
+      {
+        id: string;
+        scopes: Prisma.JsonValue;
+        requestedAt: Date;
+        patientFirstName: string;
+        patientLastName: string;
+        clinicianFirstName: string;
+        clinicianLastName: string;
+      }[]
+    >`
+      SELECT cr.id, cr.scopes, cr."requestedAt",
+             p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
+      FROM consent_requests cr
+      JOIN users p ON p.id = cr."patientId"
+      JOIN users c ON c.id = cr."clinicianId"
+      WHERE cr."organizationId" = ${orgId}::uuid
+        AND cr.status = 'pending'
+      ORDER BY cr."requestedAt" DESC
+      LIMIT 20
+    `,
+    prisma.$queryRaw<
+      {
+        id: string;
+        status: string;
+        scopes: Prisma.JsonValue;
+        decidedAt: Date;
+        patientFirstName: string;
+        patientLastName: string;
+        clinicianFirstName: string;
+        clinicianLastName: string;
+      }[]
+    >`
+      SELECT cr.id, cr.status, cr.scopes, cr."decidedAt",
+             p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
+      FROM consent_requests cr
+      JOIN users p ON p.id = cr."patientId"
+      JOIN users c ON c.id = cr."clinicianId"
+      WHERE cr."organizationId" = ${orgId}::uuid
+        AND cr.status IN ('approved','declined')
+        AND cr."decidedAt" >= ${past}
+      ORDER BY cr."decidedAt" DESC
+      LIMIT 20
+    `,
+  ]);
+
   // Pending consent requests in tenant (anything not yet decided).
-  const pending = await prisma.$queryRaw<
-    {
-      id: string;
-      scopes: Prisma.JsonValue;
-      requestedAt: Date;
-      patientFirstName: string;
-      patientLastName: string;
-      clinicianFirstName: string;
-      clinicianLastName: string;
-    }[]
-  >`
-    SELECT cr.id, cr.scopes, cr."requestedAt",
-           p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
-           c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
-    FROM consent_requests cr
-    JOIN users p ON p.id = cr."patientId"
-    JOIN users c ON c.id = cr."clinicianId"
-    WHERE cr."organizationId" = ${orgId}::uuid
-      AND cr.status = 'pending'
-    ORDER BY cr."requestedAt" DESC
-    LIMIT 20
-  `;
   for (const r of pending) {
     const patient = `${r.patientFirstName} ${r.patientLastName}`.trim();
     const doctor = `Dr. ${r.clinicianFirstName} ${r.clinicianLastName}`.trim();
@@ -474,30 +545,6 @@ async function complianceFeed(uid: string): Promise<Notification[]> {
   }
 
   // Recent consent decisions (audit signal).
-  const decided = await prisma.$queryRaw<
-    {
-      id: string;
-      status: string;
-      scopes: Prisma.JsonValue;
-      decidedAt: Date;
-      patientFirstName: string;
-      patientLastName: string;
-      clinicianFirstName: string;
-      clinicianLastName: string;
-    }[]
-  >`
-    SELECT cr.id, cr.status, cr.scopes, cr."decidedAt",
-           p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
-           c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
-    FROM consent_requests cr
-    JOIN users p ON p.id = cr."patientId"
-    JOIN users c ON c.id = cr."clinicianId"
-    WHERE cr."organizationId" = ${orgId}::uuid
-      AND cr.status IN ('approved','declined')
-      AND cr."decidedAt" >= ${past}
-    ORDER BY cr."decidedAt" DESC
-    LIMIT 20
-  `;
   for (const r of decided) {
     const patient = `${r.patientFirstName} ${r.patientLastName}`.trim();
     const doctor = `Dr. ${r.clinicianFirstName} ${r.clinicianLastName}`.trim();
@@ -525,31 +572,49 @@ async function auditorFeed(uid: string): Promise<Notification[]> {
   const orgId = meRows[0]?.organizationId;
   if (!orgId) return out;
 
+  // Both tenant feeds are independent → fetch in parallel.
+  const [decided, appts] = await Promise.all([
+    prisma.$queryRaw<
+      {
+        id: string;
+        status: string;
+        scopes: Prisma.JsonValue;
+        decidedAt: Date;
+        patientFirstName: string;
+        patientLastName: string;
+        clinicianFirstName: string;
+        clinicianLastName: string;
+      }[]
+    >`
+      SELECT cr.id, cr.status, cr.scopes, cr."decidedAt",
+             p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
+      FROM consent_requests cr
+      JOIN users p ON p.id = cr."patientId"
+      JOIN users c ON c.id = cr."clinicianId"
+      WHERE cr."organizationId" = ${orgId}::uuid
+        AND cr."decidedAt" IS NOT NULL
+        AND cr."decidedAt" >= ${past}
+      ORDER BY cr."decidedAt" DESC
+      LIMIT 25
+    `,
+    prisma.$queryRaw<
+      { id: string; startsAt: Date; createdAt: Date; patientName: string; clinicianFirstName: string; clinicianLastName: string }[]
+    >`
+      SELECT a.id, a."startsAt", a."createdAt", a."patientName",
+             c."firstName" AS "clinicianFirstName",
+             c."lastName"  AS "clinicianLastName"
+      FROM appointments a
+      JOIN users c ON c.id = a."clinicianId"
+      WHERE a."organizationId" = ${orgId}::uuid
+        AND a."deletedAt" IS NULL
+        AND a."createdAt" >= ${past}
+      ORDER BY a."createdAt" DESC
+      LIMIT 15
+    `,
+  ]);
+
   // Consent decisions feed.
-  const decided = await prisma.$queryRaw<
-    {
-      id: string;
-      status: string;
-      scopes: Prisma.JsonValue;
-      decidedAt: Date;
-      patientFirstName: string;
-      patientLastName: string;
-      clinicianFirstName: string;
-      clinicianLastName: string;
-    }[]
-  >`
-    SELECT cr.id, cr.status, cr.scopes, cr."decidedAt",
-           p."firstName" AS "patientFirstName",  p."lastName" AS "patientLastName",
-           c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
-    FROM consent_requests cr
-    JOIN users p ON p.id = cr."patientId"
-    JOIN users c ON c.id = cr."clinicianId"
-    WHERE cr."organizationId" = ${orgId}::uuid
-      AND cr."decidedAt" IS NOT NULL
-      AND cr."decidedAt" >= ${past}
-    ORDER BY cr."decidedAt" DESC
-    LIMIT 25
-  `;
   for (const r of decided) {
     const patient = `${r.patientFirstName} ${r.patientLastName}`.trim();
     const doctor = `Dr. ${r.clinicianFirstName} ${r.clinicianLastName}`.trim();
@@ -564,20 +629,6 @@ async function auditorFeed(uid: string): Promise<Notification[]> {
   }
 
   // Recent appointments in tenant.
-  const appts = await prisma.$queryRaw<
-    { id: string; startsAt: Date; createdAt: Date; patientName: string; clinicianFirstName: string; clinicianLastName: string }[]
-  >`
-    SELECT a.id, a."startsAt", a."createdAt", a."patientName",
-           c."firstName" AS "clinicianFirstName",
-           c."lastName"  AS "clinicianLastName"
-    FROM appointments a
-    JOIN users c ON c.id = a."clinicianId"
-    WHERE a."organizationId" = ${orgId}::uuid
-      AND a."deletedAt" IS NULL
-      AND a."createdAt" >= ${past}
-    ORDER BY a."createdAt" DESC
-    LIMIT 15
-  `;
   for (const a of appts) {
     out.push({
       id: `aud-ap-${a.id}`,
@@ -597,14 +648,30 @@ async function superFeed(): Promise<Notification[]> {
   const now = new Date();
   const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
 
+  // Both feeds are independent → fetch in parallel.
+  const [tenants, admins] = await Promise.all([
+    prisma.$queryRaw<{ id: string; name: string; createdAt: Date }[]>`
+      SELECT id, name, "createdAt"
+      FROM organizations
+      WHERE "createdAt" >= ${past}
+      ORDER BY "createdAt" DESC
+      LIMIT 15
+    `,
+    prisma.$queryRaw<
+      { id: string; firstName: string; lastName: string; createdAt: Date; orgName: string | null }[]
+    >`
+      SELECT u.id, u."firstName", u."lastName", u."createdAt", o.name AS "orgName"
+      FROM users u
+      LEFT JOIN organizations o ON o.id = u."organizationId"
+      WHERE u."deletedAt" IS NULL
+        AND u."roleKind"::text = 'org_admin'
+        AND u."createdAt" >= ${past}
+      ORDER BY u."createdAt" DESC
+      LIMIT 15
+    `,
+  ]);
+
   // Recent tenants.
-  const tenants = await prisma.$queryRaw<{ id: string; name: string; createdAt: Date }[]>`
-    SELECT id, name, "createdAt"
-    FROM organizations
-    WHERE "createdAt" >= ${past}
-    ORDER BY "createdAt" DESC
-    LIMIT 15
-  `;
   for (const t of tenants) {
     out.push({
       id: `tn-${t.id}`,
@@ -617,18 +684,6 @@ async function superFeed(): Promise<Notification[]> {
   }
 
   // Recent org-admin signups (across all tenants).
-  const admins = await prisma.$queryRaw<
-    { id: string; firstName: string; lastName: string; createdAt: Date; orgName: string | null }[]
-  >`
-    SELECT u.id, u."firstName", u."lastName", u."createdAt", o.name AS "orgName"
-    FROM users u
-    LEFT JOIN organizations o ON o.id = u."organizationId"
-    WHERE u."deletedAt" IS NULL
-      AND u."roleKind"::text = 'org_admin'
-      AND u."createdAt" >= ${past}
-    ORDER BY u."createdAt" DESC
-    LIMIT 15
-  `;
   for (const a of admins) {
     const name = `${a.firstName} ${a.lastName}`.trim();
     out.push({

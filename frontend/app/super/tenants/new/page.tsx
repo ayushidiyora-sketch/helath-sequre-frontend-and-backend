@@ -23,7 +23,6 @@ import { Switch } from "@/components/ui/switch";
 import { RegionPicker } from "./region-picker";
 
 const TYPES = ["Clinic", "Hospital", "Diagnostic", "Telemedicine"] as const;
-const TIERS = ["Basic", "Pro", "Enterprise"] as const;
 
 interface IntegrationDef {
   key: "sendgrid" | "twilioSms" | "clamav" | "customSmtp";
@@ -54,10 +53,12 @@ export default function ProvisionTenantPage() {
   const [idDirty, setIdDirty] = useState(false);
   const [id, setId] = useState("");
   const [type, setType] = useState<(typeof TYPES)[number]>("Clinic");
-  const [tier, setTier] = useState<(typeof TIERS)[number]>("Basic");
   const [region, setRegion] = useState("ap-south-1");
   const [multiAz, setMultiAz] = useState(true);
   const [s3Replication, setS3Replication] = useState(false);
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactAddress, setContactAddress] = useState("");
   const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   // Per-tenant integration toggles. The welcome email path picks its transport
@@ -98,10 +99,14 @@ export default function ProvisionTenantPage() {
           name: name.trim(),
           id: computedId,
           type,
-          tier,
           region,
           multiAz,
           s3Replication,
+          contact: {
+            email: contactEmail.trim(),
+            phone: contactPhone.trim(),
+            address: contactAddress.trim(),
+          },
           adminName: adminName.trim(),
           adminEmail: adminEmail.trim(),
           integrations,
@@ -228,21 +233,47 @@ export default function ProvisionTenantPage() {
                   ))}
                 </select>
               </div>
+            </div>
+            <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
+              New tenants start on Basic. The plan is set when the Org Admin subscribes from the pricing page.
+            </p>
+          </div>
+
+          {/* Organization contact */}
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
+            <h2 className="text-sm font-semibold inline-flex items-center gap-2">
+              <Mail className="size-4" /> Organization contact
+            </h2>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label>Subscription tier</Label>
-                <select
-                  value={tier}
-                  onChange={(e) => setTier(e.target.value as (typeof TIERS)[number])}
-                  className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
-                >
-                  {TIERS.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
+                <Label>Contact email</Label>
+                <Input
+                  type="email"
+                  placeholder="billing@lakeside.health"
+                  value={contactEmail}
+                  onChange={(e) => setContactEmail(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Phone</Label>
+                <Input
+                  placeholder="+1 555 0100"
+                  value={contactPhone}
+                  onChange={(e) => setContactPhone(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label>Address</Label>
+                <Input
+                  placeholder="123 Care St, Suite 200, City, Country"
+                  value={contactAddress}
+                  onChange={(e) => setContactAddress(e.target.value)}
+                />
               </div>
             </div>
+            <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">
+              Optional. Pre-fills the tenant&apos;s Organization Profile and billing details.
+            </p>
           </div>
 
           {/* Region + infra */}
@@ -329,8 +360,8 @@ export default function ProvisionTenantPage() {
             <dl className="mt-3 space-y-2 text-xs">
               <Row label="Tenant ID" value={computedId || "—"} mono />
               <Row label="Region" value={region} />
-              <Row label="Tier" value={tier} />
               <Row label="Multi-AZ" value={multiAz ? "Yes" : "No"} />
+              {contactEmail.trim() && <Row label="Contact" value={contactEmail.trim()} />}
               <Row label="First admin" value={adminPreview} />
             </dl>
             <Button

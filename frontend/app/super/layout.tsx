@@ -11,6 +11,7 @@ import {
   Flame,
   Plug,
   AlertCircle,
+  Receipt,
 } from "lucide-react";
 import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/role-sidebar";
 import { RoleHeader } from "@/components/shared/role-header";
@@ -59,6 +60,7 @@ export default function SuperLayout({ children }: { children: React.ReactNode })
         items: [
           { href: "/super/dashboard", label: "Dashboard", icon: LayoutDashboard },
           { href: "/super/tenants", label: "Tenants", icon: Building2, count: tenantCount },
+          { href: "/super/billing", label: "Billing", icon: Receipt },
           { href: "/super/platform", label: "Configuration", icon: Plug },
         ],
       },

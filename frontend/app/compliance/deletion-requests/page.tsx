@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Trash2,
@@ -7,20 +10,51 @@ import {
   ArrowRight,
   ShieldCheck,
   AlertTriangle,
+  Loader2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
-import { DELETION_REQUESTS, type DeletionRequest } from "./deletion-requests-data";
+
+interface ListRequest {
+  id: string;
+  patientName: string;
+  patientMrn: string;
+  patientEmail: string;
+  type: "deletion" | "export";
+  status: string;
+  requestedAt: string; // ISO
+  channel: string;
+  legalHold: boolean;
+  legalHoldReason?: string | null;
+  decisionNote?: string | null;
+  decidedBy?: string | null;
+  decidedAt?: string | null;
+}
+
+function fmt(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "Asia/Kolkata" });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
+  return `${date} · ${time} IST`;
+}
 
 export default function DeletionRequestsPage() {
-  const open = DELETION_REQUESTS.filter((r) =>
-    ["pending", "in_progress", "blocked"].includes(r.status),
-  );
-  const decided = DELETION_REQUESTS.filter((r) =>
-    ["approved_partial", "approved_full", "rejected"].includes(r.status),
-  );
+  const [requests, setRequests] = useState<ListRequest[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/compliance/data-requests", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled && j?.ok) setRequests(j.requests as ListRequest[]); else if (!cancelled) setRequests([]); })
+      .catch(() => { if (!cancelled) setRequests([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const open = (requests ?? []).filter((r) => ["pending", "in_progress", "blocked"].includes(r.status));
+  const decided = (requests ?? []).filter((r) => ["approved_partial", "approved_full", "rejected"].includes(r.status));
 
   return (
     <>
@@ -30,29 +64,43 @@ export default function DeletionRequestsPage() {
         description="Patient-initiated export and deletion requests. Each one is reviewed against the active retention policy; full deletion is rare because HIPAA mandates minimum windows."
       />
 
-      <Tabs defaultValue="open">
-        <TabsList>
-          <TabsTrigger value="open">Open · {open.length}</TabsTrigger>
-          <TabsTrigger value="decided">Decided · {decided.length}</TabsTrigger>
-        </TabsList>
+      {requests === null ? (
+        <div className="flex items-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-sm text-[var(--color-muted-foreground)]">
+          <Loader2 className="size-4 animate-spin" /> Loading requests…
+        </div>
+      ) : (
+        <Tabs defaultValue="open">
+          <TabsList>
+            <TabsTrigger value="open">Open · {open.length}</TabsTrigger>
+            <TabsTrigger value="decided">Decided · {decided.length}</TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="open">
-          <div className="space-y-4">
-            {open.map((r) => <Row key={r.id} r={r} />)}
-          </div>
-        </TabsContent>
+          <TabsContent value="open">
+            <div className="space-y-4">
+              {open.length === 0 ? <Empty label="No open requests." /> : open.map((r) => <Row key={r.id} r={r} />)}
+            </div>
+          </TabsContent>
 
-        <TabsContent value="decided">
-          <div className="space-y-4">
-            {decided.map((r) => <Row key={r.id} r={r} />)}
-          </div>
-        </TabsContent>
-      </Tabs>
+          <TabsContent value="decided">
+            <div className="space-y-4">
+              {decided.length === 0 ? <Empty label="No decided requests yet." /> : decided.map((r) => <Row key={r.id} r={r} />)}
+            </div>
+          </TabsContent>
+        </Tabs>
+      )}
     </>
   );
 }
 
-function Row({ r }: { r: DeletionRequest }) {
+function Empty({ label }: { label: string }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
+      {label}
+    </div>
+  );
+}
+
+function Row({ r }: { r: ListRequest }) {
   const isExport = r.type === "export";
   return (
     <div
@@ -94,13 +142,13 @@ function Row({ r }: { r: DeletionRequest }) {
               {r.patientMrn} · {r.patientEmail}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-[var(--color-muted-foreground)]">
-              <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {r.requestedAt}</span>
+              <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {fmt(r.requestedAt)}</span>
               <span className="inline-flex items-center gap-1"><ShieldCheck className="size-3" /> {r.channel}</span>
               {r.legalHold && (
                 <span className="inline-flex items-center gap-1 text-[var(--color-danger)]"><AlertTriangle className="size-3" /> Blocked by litigation hold</span>
               )}
               {r.decidedAt && (
-                <span className="inline-flex items-center gap-1">Decided {r.decidedAt} by {r.decidedBy}</span>
+                <span className="inline-flex items-center gap-1">Decided {fmt(r.decidedAt)} by {r.decidedBy}</span>
               )}
             </div>
             {r.decisionNote && (
