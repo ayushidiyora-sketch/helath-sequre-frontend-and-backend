@@ -3,12 +3,13 @@ import { cookies } from "next/headers";
 import { AppointmentStatus, Prisma, RoleKind } from "@prisma/client";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkWorkingHours, readSchedule } from "@/lib/schedule-config";
 
 export const runtime = "nodejs";
 
 type Guard =
-  | { error: NextResponse; orgId?: never }
-  | { error?: never; orgId: string };
+  | { error: NextResponse; orgId?: never; orgSettings?: never }
+  | { error?: never; orgId: string; orgSettings: Prisma.JsonValue | null };
 
 async function requireOrgAdmin(): Promise<Guard> {
   const jar = await cookies();
@@ -18,9 +19,12 @@ async function requireOrgAdmin(): Promise<Guard> {
     return { error: NextResponse.json({ ok: false, error: "Forbidden — Org Admin only." }, { status: 403 }) };
   if (!claims.org)
     return { error: NextResponse.json({ ok: false, error: "No tenant on session" }, { status: 400 }) };
-  const org = await prisma.organization.findUnique({ where: { slug: claims.org }, select: { id: true } });
+  const org = await prisma.organization.findUnique({
+    where: { slug: claims.org },
+    select: { id: true, settings: true },
+  });
   if (!org) return { error: NextResponse.json({ ok: false, error: "Tenant not found" }, { status: 404 }) };
-  return { orgId: org.id };
+  return { orgId: org.id, orgSettings: org.settings ?? null };
 }
 
 interface BookBody {
@@ -32,6 +36,8 @@ interface BookBody {
   room?: string | null;
   status?: string;
   notes?: string | null;
+  /** Bypass conflict + working-hours rejection (org admin override). */
+  override?: boolean;
 }
 
 const ALLOWED_STATUSES: AppointmentStatus[] = [
@@ -228,6 +234,69 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Patient name is required." }, { status: 400 });
   }
 
+  // Conflict + working-hours guard. Org admin can override (per 3.5 requirement
+  // "Override scheduling conflicts") by re-submitting with `override: true`.
+  const override = body.override === true;
+  if (!override) {
+    const schedule = readSchedule(guard.orgSettings);
+    const hoursCheck = checkWorkingHours(schedule, startsAt, duration);
+    if (!hoursCheck.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          conflict: { kind: "working_hours", reason: hoursCheck.reason, window: hoursCheck.window, dayKey: hoursCheck.dayKey },
+          error: hoursCheck.reason + " Re-submit with override=true to book anyway.",
+        },
+        { status: 409 },
+      );
+    }
+
+    // Overlap detection — find any existing appointment for the same
+    // clinician whose [start, start+duration) intersects this one. `blocked`
+    // and `cancelled` slots are still considered conflicts so the admin gets
+    // a visible heads-up; only "completed" + "no_show" past entries are
+    // excluded (they're historical, not future load on the slot).
+    const candidateEnd = new Date(startsAt.getTime() + duration * 60_000);
+    const overlapping = await prisma.$queryRaw<
+      {
+        id: string;
+        startsAt: Date;
+        durationMinutes: number;
+        status: string;
+        patientName: string | null;
+      }[]
+    >`
+      SELECT id, "startsAt", "durationMinutes", status::text AS status, "patientName"
+      FROM appointments
+      WHERE "organizationId" = ${guard.orgId}::uuid
+        AND "clinicianId"    = ${clinician.id}::uuid
+        AND "deletedAt"      IS NULL
+        AND status::text NOT IN ('completed', 'no_show')
+        AND "startsAt"   <  ${candidateEnd}
+        AND ("startsAt" + ("durationMinutes" || ' minutes')::interval) > ${startsAt}
+      ORDER BY "startsAt" ASC
+      LIMIT 1
+    `;
+    if (overlapping.length > 0) {
+      const c = overlapping[0];
+      return NextResponse.json(
+        {
+          ok: false,
+          conflict: {
+            kind: "overlap",
+            existingAppointmentId: c.id,
+            startsAt: c.startsAt.toISOString(),
+            durationMinutes: c.durationMinutes,
+            status: c.status,
+            patientName: c.patientName,
+          },
+          error: `Slot conflicts with an existing appointment at ${c.startsAt.toISOString().slice(11, 16)} UTC. Re-submit with override=true to book anyway.`,
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   const created = await prisma.appointment.create({
     data: {
       organizationId: guard.orgId,
@@ -243,5 +312,8 @@ export async function POST(req: Request) {
     include: { clinician: { select: { id: true, firstName: true, lastName: true } } },
   });
 
-  return NextResponse.json({ ok: true, appointment: shape(created) }, { status: 201 });
+  return NextResponse.json(
+    { ok: true, appointment: shape(created), override },
+    { status: 201 },
+  );
 }

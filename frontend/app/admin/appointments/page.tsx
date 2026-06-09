@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
-  Calendar,
   Filter,
   ChevronRight,
   Check,
   Plus,
   Loader2,
-  Bell,
+  Settings as SettingsIcon,
+  AlertTriangle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,9 +31,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
   DialogClose,
 } from "@/components/ui/dialog";
+import { DAY_KEYS, SCHEDULE_DEFAULTS, type DayKey, type ScheduleShape } from "@/lib/schedule-config";
 interface PatientOption {
   key: string; // patient User.id
   name: string;
@@ -96,14 +96,32 @@ export default function AdminAppointmentsPage() {
     total: number;
     confirmed: number;
     noShows: number;
-    telehealth: number;
-  }>({ total: 0, confirmed: 0, noShows: 0, telehealth: 0 });
+  }>({ total: 0, confirmed: 0, noShows: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<Status | "all">("all");
   const [bookOpen, setBookOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [clinicians, setClinicians] = useState<Clinician[]>([]);
   const [patientOptions, setPatientOptions] = useState<PatientOption[]>([]);
+  // Schedule configuration (working hours / slot defaults / policies / reminders).
+  // Loaded once and refreshed after the settings dialog saves so the Book
+  // dialog's default-duration input reflects new tenant config without a reload.
+  const [scheduleConfig, setScheduleConfig] = useState<ScheduleShape>(SCHEDULE_DEFAULTS);
+
+  const loadScheduleConfig = useCallback(async () => {
+    try {
+      const r = await fetch("/api/admin/schedule-config", { cache: "no-store" });
+      const j = (await r.json()) as { ok?: boolean; schedule?: ScheduleShape };
+      if (r.ok && j.ok && j.schedule) setScheduleConfig(j.schedule);
+    } catch {
+      // Network blip — keep defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadScheduleConfig();
+  }, [loadScheduleConfig]);
 
   const refresh = useCallback(
     async (d: string) => {
@@ -119,7 +137,6 @@ export default function AdminAppointmentsPage() {
           total: data.counts.total,
           confirmed: data.counts.confirmed,
           noShows: data.counts.noShows,
-          telehealth: data.counts.telehealth,
         });
         setError(null);
       } catch (e) {
@@ -206,7 +223,9 @@ export default function AdminAppointmentsPage() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <ConfigureRemindersDialog />
+            <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true)}>
+              <SettingsIcon /> Schedule settings
+            </Button>
             <Button size="sm" onClick={() => setBookOpen(true)}>
               <Plus /> Book appointment
             </Button>
@@ -214,11 +233,10 @@ export default function AdminAppointmentsPage() {
         }
       />
 
-      <div className="grid gap-3 sm:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Stat label="Today total" value={counts.total} />
         <Stat label="Confirmed" value={counts.confirmed} good />
         <Stat label="No-shows so far" value={counts.noShows} warn />
-        <Stat label="Telehealth" value={counts.telehealth} />
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
@@ -263,7 +281,17 @@ export default function AdminAppointmentsPage() {
         clinicians={clinicians}
         patientOptions={patientOptions}
         date={date}
+        defaultDuration={scheduleConfig.defaultSlotMinutes}
         onCreated={() => refresh(date)}
+      />
+
+      <ScheduleSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        initial={scheduleConfig}
+        onSaved={(next) => {
+          setScheduleConfig(next);
+        }}
       />
     </>
   );
@@ -472,6 +500,7 @@ function BookAppointmentDialog({
   clinicians,
   patientOptions,
   date,
+  defaultDuration,
   onCreated,
 }: {
   open: boolean;
@@ -479,6 +508,7 @@ function BookAppointmentDialog({
   clinicians: Clinician[];
   patientOptions: PatientOption[];
   date: string;
+  defaultDuration: number;
   onCreated: () => void;
 }) {
   const [clinicianId, setClinicianId] = useState("");
@@ -487,11 +517,20 @@ function BookAppointmentDialog({
   const [patientName, setPatientName] = useState("");
   const [patientEmail, setPatientEmail] = useState("");
   const [time, setTime] = useState("09:30");
-  const [duration, setDuration] = useState(30);
+  const [duration, setDuration] = useState(defaultDuration);
   const [room, setRoom] = useState("");
   const [status, setStatus] = useState<Status>("confirmed");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when the server returns a 409 — surfaces conflict context and gates an
+  // "Override and book anyway" button (per 3.5 "Override scheduling conflicts").
+  const [conflict, setConflict] = useState<
+    | null
+    | {
+        reason: string;
+        detail?: string;
+      }
+  >(null);
 
   useEffect(() => {
     if (!open) {
@@ -500,15 +539,16 @@ function BookAppointmentDialog({
       setPatientName("");
       setPatientEmail("");
       setTime("09:30");
-      setDuration(30);
+      setDuration(defaultDuration);
       setRoom("");
       setStatus("confirmed");
       setError(null);
+      setConflict(null);
       setSubmitting(false);
     } else if (clinicians.length > 0 && !clinicianId) {
       setClinicianId(clinicians[0].id);
     }
-  }, [open, clinicians, clinicianId]);
+  }, [open, clinicians, clinicianId, defaultDuration]);
 
   // When a real patient is picked, auto-fill name + email; for "walk-in" leave
   // the fields editable; for empty selection clear them.
@@ -528,9 +568,11 @@ function BookAppointmentDialog({
     }
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
+  /**
+   * Book. `override=true` is passed only on the second attempt, after the
+   * server returned 409 and the user clicked "Override and book anyway".
+   */
+  async function postBooking(override: boolean) {
     if (!clinicianId) {
       setError("Select a clinician.");
       return;
@@ -540,7 +582,7 @@ function BookAppointmentDialog({
       return;
     }
     setSubmitting(true);
-    // Combine the date (from page) + time input into an ISO local string.
+    setError(null);
     const startsAt = new Date(`${date}T${time}:00`).toISOString();
     try {
       const r = await fetch("/api/admin/appointments", {
@@ -554,15 +596,36 @@ function BookAppointmentDialog({
           durationMinutes: duration,
           room: room.trim() || null,
           status,
+          override,
         }),
       });
       const data = await r.json();
+      if (r.status === 409 && data.conflict) {
+        // Surface the conflict in the dialog body. The submit button changes
+        // to "Override and book anyway" on this state.
+        const c = data.conflict as {
+          kind: "working_hours" | "overlap";
+          reason?: string;
+          patientName?: string | null;
+          startsAt?: string;
+          durationMinutes?: number;
+        };
+        setConflict({
+          reason: c.kind === "working_hours" ? (c.reason ?? "Outside working hours.") : "Slot overlaps an existing appointment.",
+          detail:
+            c.kind === "overlap" && c.startsAt
+              ? `Existing: ${formatTime(c.startsAt)} · ${c.durationMinutes}min · ${c.patientName ?? "Blocked"}`
+              : undefined,
+        });
+        setSubmitting(false);
+        return;
+      }
       if (!r.ok || !data.ok) {
         setError(data.error ?? "Could not book.");
         setSubmitting(false);
         return;
       }
-      toast.success(`${formatTime(data.appointment.startsAt)} booked`, {
+      toast.success(`${formatTime(data.appointment.startsAt)} booked${override ? " (override)" : ""}`, {
         description: `${data.appointment.clinicianName} · ${data.appointment.patientName ?? "Blocked"}`,
       });
       onCreated();
@@ -571,6 +634,14 @@ function BookAppointmentDialog({
       setError("Network error.");
       setSubmitting(false);
     }
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    // Any edit after a conflict clears the override warning so the user goes
+    // through a fresh validation cycle.
+    if (conflict) setConflict(null);
+    void postBooking(false);
   }
 
   return (
@@ -590,6 +661,25 @@ function BookAppointmentDialog({
               className="rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger-soft)] px-3.5 py-2.5 text-sm text-[var(--color-danger)]"
             >
               {error}
+            </div>
+          )}
+          {conflict && (
+            <div
+              role="alert"
+              className="rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning-soft)]/40 px-3.5 py-2.5 text-sm"
+            >
+              <p className="flex items-start gap-1.5 font-medium text-[var(--color-warning)]">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                {conflict.reason}
+              </p>
+              {conflict.detail && (
+                <p className="mt-0.5 pl-5 text-[12px] text-[var(--color-muted-foreground)]">
+                  {conflict.detail}
+                </p>
+              )}
+              <p className="mt-1.5 pl-5 text-[11px] text-[var(--color-muted-foreground)]">
+                As Org Admin you can override and book the slot anyway.
+              </p>
             </div>
           )}
           <div className="space-y-1.5">
@@ -718,17 +808,36 @@ function BookAppointmentDialog({
                 Cancel
               </Button>
             </DialogClose>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? (
-                <>
-                  <Loader2 className="animate-spin" /> Booking…
-                </>
-              ) : (
-                <>
-                  <Plus /> Book appointment
-                </>
-              )}
-            </Button>
+            {conflict ? (
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={submitting}
+                onClick={() => void postBooking(true)}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="animate-spin" /> Booking…
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle /> Override and book anyway
+                  </>
+                )}
+              </Button>
+            ) : (
+              <Button type="submit" disabled={submitting}>
+                {submitting ? (
+                  <>
+                    <Loader2 className="animate-spin" /> Booking…
+                  </>
+                ) : (
+                  <>
+                    <Plus /> Book appointment
+                  </>
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>
@@ -736,59 +845,262 @@ function BookAppointmentDialog({
   );
 }
 
-function ConfigureRemindersDialog() {
-  const [open, setOpen] = useState(false);
+/**
+ * Schedule settings — covers the four configurable bits in section 3.5:
+ *   1. Working hours (per day × open/close + enabled toggle)
+ *   2. Default slot duration (sets the Book dialog's initial value)
+ *   3. Reschedule / cancellation windows (min hours before slot)
+ *   4. Reminder timing (T-24h, T-1h, no-show follow-up)
+ *
+ * All values are persisted to `organizations.settings.schedule` via
+ * PATCH /api/admin/schedule-config. The form mirrors the saved state on
+ * load + after a successful save; Discard reverts to last-saved.
+ */
+function ScheduleSettingsDialog({
+  open,
+  onOpenChange,
+  initial,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  initial: ScheduleShape;
+  onSaved: (next: ScheduleShape) => void;
+}) {
+  const [config, setConfig] = useState<ScheduleShape>(initial);
+  const [saved, setSavedSnapshot] = useState<ScheduleShape>(initial);
+  const [saving, setSaving] = useState(false);
+
+  // Reset to the latest server-known state every time the dialog opens.
+  useEffect(() => {
+    if (open) {
+      setConfig(initial);
+      setSavedSnapshot(initial);
+    }
+  }, [open, initial]);
+
+  const dirty = JSON.stringify(config) !== JSON.stringify(saved);
+
+  async function save() {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const r = await fetch("/api/admin/schedule-config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      const j = (await r.json()) as { ok: boolean; error?: string; schedule?: ScheduleShape };
+      if (!r.ok || !j.ok || !j.schedule) {
+        toast.error("Could not save schedule settings", {
+          description: j.error ?? `HTTP ${r.status}`,
+        });
+        return;
+      }
+      setConfig(j.schedule);
+      setSavedSnapshot(j.schedule);
+      onSaved(j.schedule);
+      toast.success("Schedule settings saved", {
+        description: "Audit-logged · applies to future bookings.",
+      });
+    } catch (e) {
+      toast.error("Could not save", {
+        description: e instanceof Error ? e.message : "Network error",
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const updateDay = (day: DayKey, patch: Partial<ScheduleShape["workingHours"][DayKey]>) =>
+    setConfig((c) => ({
+      ...c,
+      workingHours: { ...c.workingHours, [day]: { ...c.workingHours[day], ...patch } },
+    }));
+
+  const DAY_LABEL: Record<DayKey, string> = {
+    mon: "Mon",
+    tue: "Tue",
+    wed: "Wed",
+    thu: "Thu",
+    fri: "Fri",
+    sat: "Sat",
+    sun: "Sun",
+  };
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm" variant="outline">
-          <Calendar /> Reminders
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[440px]">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-[640px]">
         <DialogHeader>
-          <DialogTitle>Reminder windows</DialogTitle>
+          <DialogTitle>Schedule settings</DialogTitle>
           <DialogDescription>
-            When automated appointment reminders are sent to patients.
+            Working hours, default slot length, reschedule / cancellation policies, and
+            reminder timing. Applied to all clinic-wide bookings.
           </DialogDescription>
         </DialogHeader>
-        <form
-          className="space-y-3 pt-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setOpen(false);
-            toast.success("Reminder settings saved");
-          }}
-        >
-          {[
-            { label: "T-24h reminder", desc: "One day before the appointment", on: true },
-            { label: "T-1h reminder", desc: "One hour before the appointment", on: true },
-            { label: "No-show follow-up", desc: "Sent if the patient misses the slot", on: false },
-          ].map((r) => (
-            <label
-              key={r.label}
-              className="flex items-center justify-between rounded-xl border border-[var(--color-border)] p-3.5"
-            >
-              <span>
-                <span className="block text-sm font-medium">{r.label}</span>
-                <span className="block text-[11px] text-[var(--color-muted-foreground)]">
-                  {r.desc}
+
+        <div className="space-y-6 pt-2">
+          {/* 1. Working hours */}
+          <section className="space-y-2">
+            <h4 className="text-sm font-semibold">Organization working hours</h4>
+            <p className="text-[11px] text-[var(--color-muted-foreground)]">
+              Bookings outside these windows are rejected unless the admin explicitly overrides.
+            </p>
+            <div className="rounded-xl border border-[var(--color-border)] divide-y divide-[var(--color-border)]">
+              {DAY_KEYS.map((day) => {
+                const h = config.workingHours[day];
+                return (
+                  <div key={day} className="grid grid-cols-12 items-center gap-3 px-3.5 py-2.5">
+                    <div className="col-span-2 text-sm font-medium">{DAY_LABEL[day]}</div>
+                    <div className="col-span-2">
+                      <Switch
+                        checked={h.enabled}
+                        onCheckedChange={(v) => updateDay(day, { enabled: v })}
+                      />
+                    </div>
+                    <div className="col-span-4">
+                      <Input
+                        type="time"
+                        value={h.open}
+                        onChange={(e) => updateDay(day, { open: e.target.value })}
+                        disabled={!h.enabled}
+                      />
+                    </div>
+                    <div className="col-span-4">
+                      <Input
+                        type="time"
+                        value={h.close}
+                        onChange={(e) => updateDay(day, { close: e.target.value })}
+                        disabled={!h.enabled}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* 2. Slot defaults */}
+          <section className="space-y-2">
+            <h4 className="text-sm font-semibold">Default slot template</h4>
+            <p className="text-[11px] text-[var(--color-muted-foreground)]">
+              The Book dialog uses this as the initial duration.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="cfg-default-duration">Default duration (minutes)</Label>
+                <select
+                  id="cfg-default-duration"
+                  className={SELECT_CLASS}
+                  value={config.defaultSlotMinutes}
+                  onChange={(e) =>
+                    setConfig((c) => ({ ...c, defaultSlotMinutes: Number(e.target.value) }))
+                  }
+                >
+                  {[15, 20, 30, 45, 60, 90].map((m) => (
+                    <option key={m} value={m}>
+                      {m} min
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </section>
+
+          {/* 3. Reschedule / cancellation windows */}
+          <section className="space-y-2">
+            <h4 className="text-sm font-semibold">Reschedule &amp; cancellation windows</h4>
+            <p className="text-[11px] text-[var(--color-muted-foreground)]">
+              Minimum advance notice (in hours) required before patients can reschedule or cancel a slot.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="cfg-reschedule">Reschedule (hours before)</Label>
+                <Input
+                  id="cfg-reschedule"
+                  type="number"
+                  min={0}
+                  max={168}
+                  value={config.reschedulePolicy.minHoursBefore}
+                  onChange={(e) =>
+                    setConfig((c) => ({
+                      ...c,
+                      reschedulePolicy: { minHoursBefore: parseInt(e.target.value, 10) || 0 },
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="cfg-cancel">Cancel (hours before)</Label>
+                <Input
+                  id="cfg-cancel"
+                  type="number"
+                  min={0}
+                  max={168}
+                  value={config.cancellationPolicy.minHoursBefore}
+                  onChange={(e) =>
+                    setConfig((c) => ({
+                      ...c,
+                      cancellationPolicy: { minHoursBefore: parseInt(e.target.value, 10) || 0 },
+                    }))
+                  }
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* 4. Reminders */}
+          <section className="space-y-2">
+            <h4 className="text-sm font-semibold">Reminder timing</h4>
+            <p className="text-[11px] text-[var(--color-muted-foreground)]">
+              Automated reminders sent to patients before / after their appointment.
+            </p>
+            {[
+              { key: "t24h" as const, label: "T-24h reminder", desc: "One day before the appointment" },
+              { key: "t1h" as const, label: "T-1h reminder", desc: "One hour before the appointment" },
+              {
+                key: "noShowFollowup" as const,
+                label: "No-show follow-up",
+                desc: "Sent if the patient misses the slot",
+              },
+            ].map((r) => (
+              <label
+                key={r.key}
+                className="flex items-center justify-between rounded-xl border border-[var(--color-border)] px-3.5 py-2.5"
+              >
+                <span>
+                  <span className="block text-sm font-medium">{r.label}</span>
+                  <span className="block text-[11px] text-[var(--color-muted-foreground)]">
+                    {r.desc}
+                  </span>
                 </span>
-              </span>
-              <Switch defaultChecked={r.on} />
-            </label>
-          ))}
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline">
-                Cancel
-              </Button>
-            </DialogClose>
-            <Button type="submit">
-              <Bell /> Save
+                <Switch
+                  checked={config.reminders[r.key]}
+                  onCheckedChange={(v) =>
+                    setConfig((c) => ({ ...c, reminders: { ...c.reminders, [r.key]: v } }))
+                  }
+                />
+              </label>
+            ))}
+          </section>
+        </div>
+
+        <DialogFooter className="mt-2">
+          <DialogClose asChild>
+            <Button variant="outline" disabled={saving}>
+              Close
             </Button>
-          </DialogFooter>
-        </form>
+          </DialogClose>
+          <Button onClick={save} disabled={!dirty || saving}>
+            {saving ? (
+              <>
+                <Loader2 className="animate-spin" /> Saving…
+              </>
+            ) : (
+              "Save changes"
+            )}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

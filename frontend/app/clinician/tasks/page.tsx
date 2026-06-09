@@ -1,13 +1,49 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { FileSignature, Pill, MessageSquare, FileImage, Clock, AlertCircle, CheckCircle2, type LucideIcon } from "lucide-react";
+import { FileSignature, Pill, MessageSquare, FileImage, FolderUp, Eye, Clock, AlertCircle, CheckCircle2, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/shared/page-header";
+import { DocumentPreviewDialog, type PreviewDoc } from "@/components/shared/document-preview-dialog";
 import { useClinicianStore, type ClinicianTask, type TaskType } from "@/lib/clinician-store";
+
+interface DocTask {
+  id: string;
+  name: string;
+  category: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  dataUrl: string | null;
+  uploadedAt: string;
+  patientId: string;
+  patientName: string;
+}
+
+const DOC_TASKS_DONE_KEY = "hs_clinician_doc_tasks_done";
+function loadDoneDocTasks(): Set<string> {
+  try {
+    return new Set(JSON.parse(window.localStorage.getItem(DOC_TASKS_DONE_KEY) ?? "[]") as string[]);
+  } catch {
+    return new Set();
+  }
+}
+function saveDoneDocTasks(s: Set<string>): void {
+  try {
+    window.localStorage.setItem(DOC_TASKS_DONE_KEY, JSON.stringify([...s]));
+  } catch {
+    // ignore
+  }
+}
+
+function relAge(iso: string): string {
+  const h = Math.round((Date.now() - new Date(iso).getTime()) / 3_600_000);
+  if (h < 1) return "just now";
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
 
 const TYPE_META: Record<TaskType, { title: string; icon: LucideIcon }> = {
   sign_note: { title: "Awaiting your signature", icon: FileSignature },
@@ -19,6 +55,39 @@ const TYPE_META: Record<TaskType, { title: string; icon: LucideIcon }> = {
 export default function TasksPage() {
   const { state, completeTask } = useClinicianStore();
   const [showCompleted, setShowCompleted] = useState(false);
+
+  // Patient-uploaded documents (across the clinician's panel) → review tasks.
+  const [docTasks, setDocTasks] = useState<DocTask[]>([]);
+  const [preview, setPreview] = useState<PreviewDoc | null>(null);
+  const [doneDocs, setDoneDocs] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setDoneDocs(loadDoneDocTasks());
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/clinician/document-tasks", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.ok && Array.isArray(data.tasks)) setDocTasks(data.tasks);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openDocTasks = useMemo(
+    () => docTasks.filter((d) => !doneDocs.has(d.id)),
+    [docTasks, doneDocs],
+  );
+
+  function markDocDone(id: string, name: string) {
+    const next = new Set(doneDocs);
+    next.add(id);
+    saveDoneDocTasks(next);
+    setDoneDocs(next);
+    toast.success("Document reviewed", { description: name });
+  }
 
   const open = state.tasks.filter((t) => !t.completedAt);
   const done = state.tasks.filter((t) => !!t.completedAt);
@@ -69,23 +138,72 @@ export default function TasksPage() {
       />
 
       <div className="grid gap-3 sm:grid-cols-4">
-        <Stat label="Open tasks" value={open.length} icon={Clock} />
+        <Stat label="Open tasks" value={open.length + openDocTasks.length} icon={Clock} />
         <Stat label="Urgent" value={urgentCount} icon={AlertCircle} accent="danger" />
         <Stat label="Done total" value={done.length} icon={CheckCircle2} accent="success" />
         <Stat label="Median age" value={medianAgeLabel} icon={Clock} />
       </div>
 
-      {groups.length === 0 ? (
+      {/* Patient-uploaded documents needing review (open view only). */}
+      {!showCompleted && openDocTasks.length > 0 && (
+        <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
+          <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
+            <div className="flex items-center gap-2">
+              <span className="flex size-9 items-center justify-center rounded-lg bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
+                <FolderUp className="size-4" />
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold">Patient document uploads</h2>
+                <p className="text-[11px] text-[var(--color-muted-foreground)]">{openDocTasks.length} to review</p>
+              </div>
+            </div>
+          </div>
+          <ul className="divide-y divide-[var(--color-border)]">
+            {openDocTasks.map((d) => (
+              <li key={d.id} className="flex items-center gap-3 p-4 hover:bg-[var(--color-muted)]/40">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--color-muted)] text-[var(--color-muted-foreground)]">
+                  <FileImage className="size-4" />
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPreview({ id: d.id, name: d.name, category: d.category, mimeType: d.mimeType, dataUrl: d.dataUrl, sizeBytes: d.sizeBytes })}
+                  className="min-w-0 flex-1 text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-xs font-medium underline-offset-2 hover:underline">{d.name}</p>
+                    <Badge variant="muted" size="sm">{d.category}</Badge>
+                  </div>
+                  <p className="text-[10px] text-[var(--color-muted-foreground)]">
+                    {d.patientName} · uploaded {relAge(d.uploadedAt)} · click to preview
+                  </p>
+                </button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setPreview({ id: d.id, name: d.name, category: d.category, mimeType: d.mimeType, dataUrl: d.dataUrl, sizeBytes: d.sizeBytes })}
+                >
+                  <Eye /> Preview
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => markDocDone(d.id, d.name)}>
+                  <CheckCircle2 /> Done
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(showCompleted ? groups.length === 0 : groups.length === 0 && openDocTasks.length === 0) ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)] p-12 text-center">
           <CheckCircle2 className="size-7 text-[var(--color-success)]" />
           <p className="text-sm font-semibold">{showCompleted ? "No completed tasks yet" : "All caught up — no pending tasks"}</p>
           <p className="max-w-md text-xs text-[var(--color-muted-foreground)]">
             {showCompleted
               ? "Tasks you complete will land here for reference."
-              : "New tasks appear here when notes await signing, prescriptions need approval, or messages come in."}
+              : "New tasks appear here when notes await signing, prescriptions need approval, messages come in, or a patient uploads a document."}
           </p>
         </div>
-      ) : (
+      ) : groups.length === 0 ? null : (
         <div className="grid gap-4 lg:grid-cols-2">
           {groups.map((g) => {
             const Icon = TYPE_META[g.type].icon;
@@ -142,6 +260,12 @@ export default function TasksPage() {
           })}
         </div>
       )}
+
+      <DocumentPreviewDialog
+        doc={preview}
+        open={!!preview}
+        onOpenChange={(o) => !o && setPreview(null)}
+      />
     </>
   );
 }

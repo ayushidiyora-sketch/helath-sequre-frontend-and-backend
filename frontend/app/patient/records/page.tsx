@@ -12,6 +12,8 @@ import {
   Beaker,
   Pill,
   FileImage,
+  FileBadge,
+  IdCard,
   ClipboardList,
   FileText,
   Calendar,
@@ -32,13 +34,16 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { RECORDS, type Category, type RecordDetail } from "./records-data";
+import { type Category, type RecordDetail } from "./records-data";
 
 const LAB = "from-[oklch(0.65_0.13_195)] to-[oklch(0.5_0.12_205)]";
 const RX = "from-[oklch(0.7_0.13_320)] to-[oklch(0.55_0.13_330)]";
 const IMG = "from-[oklch(0.62_0.14_235)] to-[oklch(0.48_0.13_245)]";
 const NOTE = "from-[oklch(0.72_0.14_75)] to-[oklch(0.58_0.13_55)]";
 const DIS = "from-[oklch(0.68_0.14_158)] to-[oklch(0.52_0.12_160)]";
+const INS = "from-[oklch(0.72_0.14_75)] to-[oklch(0.58_0.13_55)]";
+const IDP = "from-[oklch(0.68_0.14_158)] to-[oklch(0.52_0.12_160)]";
+const OTH = "from-[oklch(0.6_0.04_250)] to-[oklch(0.45_0.04_250)]";
 
 const META: Record<Category, { icon: typeof Beaker; accent: string }> = {
   "Lab Report": { icon: Beaker, accent: LAB },
@@ -46,6 +51,9 @@ const META: Record<Category, { icon: typeof Beaker; accent: string }> = {
   Imaging: { icon: FileImage, accent: IMG },
   "Clinical Note": { icon: FileText, accent: NOTE },
   Discharge: { icon: ClipboardList, accent: DIS },
+  Insurance: { icon: FileBadge, accent: INS },
+  "ID Proof": { icon: IdCard, accent: IDP },
+  Other: { icon: FileText, accent: OTH },
 };
 
 const CATEGORIES: { key: "all" | Category; name: string; icon: typeof Beaker }[] = [
@@ -55,6 +63,9 @@ const CATEGORIES: { key: "all" | Category; name: string; icon: typeof Beaker }[]
   { key: "Imaging", name: "Imaging", icon: FileImage },
   { key: "Clinical Note", name: "Clinical Notes", icon: FileText },
   { key: "Discharge", name: "Discharge", icon: ClipboardList },
+  { key: "Insurance", name: "Insurance", icon: FileBadge },
+  { key: "ID Proof", name: "ID Proof", icon: IdCard },
+  { key: "Other", name: "Other", icon: FileText },
 ];
 
 // Clinician filter list is now populated dynamically from the patient's real
@@ -74,7 +85,7 @@ const RANGES: { key: string; label: string; days: number | null }[] = [
 const PAGE_SIZE = 6;
 const TODAY = new Date("2026-05-21");
 
-const CATEGORY_KEYS: Category[] = ["Lab Report", "Prescription", "Imaging", "Clinical Note", "Discharge"];
+const CATEGORY_KEYS: Category[] = ["Lab Report", "Prescription", "Imaging", "Clinical Note", "Discharge", "Insurance", "ID Proof", "Other"];
 
 export default function RecordsPage() {
   return (
@@ -117,19 +128,18 @@ function RecordsPageInner() {
     };
   }, []);
 
-  // Real medical records — pulls finalized prescriptions + clinical notes +
-  // discharge summaries from the DB, merged into a single MedicalRecord[]
-  // shape. Empty arrays mean "no records yet"; UI renders the empty state.
-  // Seeded with the demo Lab/Imaging records (no backend table yet) so the
-  // viewer surface is reachable; DB-backed rx/notes/discharge are merged in.
-  const [records, setRecords] = useState<RecordDetail[]>(RECORDS);
+  // Real medical records ONLY — finalized prescriptions + clinical notes +
+  // discharge summaries from the DB for the signed-in patient. No demo seed,
+  // so each patient sees just their own care team's records. Empty array →
+  // the UI renders the empty state.
+  const [records, setRecords] = useState<RecordDetail[]>([]);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/patient/records", { cache: "no-store" })
       .then(async (r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data?.ok) return;
-        setRecords([...RECORDS, ...(data.records as RecordDetail[])]);
+        setRecords(data.records as RecordDetail[]);
       })
       .catch(() => {});
     return () => {

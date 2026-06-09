@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/shared/page-header";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { NotificationPreferences } from "@/components/shared/notification-preferences";
+import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
 
 interface AuditorProfile {
   name: string;
@@ -122,6 +123,8 @@ export default function AuditorSettings() {
           <Button variant="ghost" size="sm" disabled>Locked</Button>
         </div>
       </div>
+
+      <LoginOtpToggle />
 
       <ChangePasswordCard />
 

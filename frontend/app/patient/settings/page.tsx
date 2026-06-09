@@ -53,6 +53,8 @@ import { EmergencyManager } from "../emergency/emergency-manager";
 import { InsuranceManager } from "../insurance/insurance-manager";
 import { VaccinationsManager } from "../vaccinations/vaccinations-manager";
 import { usePatientStore, type Profile, type Session } from "@/lib/patient-store";
+import { validateName } from "@/lib/validate-name";
+import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
 
 export default function SettingsPage() {
   return (
@@ -80,7 +82,10 @@ export default function SettingsPage() {
           <PersonalTab />
         </TabsContent>
         <TabsContent value="security">
-          <SecurityTab />
+          <div className="space-y-5">
+            <LoginOtpToggle />
+            <SecurityTab />
+          </div>
         </TabsContent>
         <TabsContent value="notifications">
           <NotificationsTab />
@@ -183,6 +188,12 @@ function ProfileTab() {
     setDraft((prev) => ({ ...prev, [key]: value }));
 
   async function handleSave() {
+    const fnErr = validateName(draft.firstName, "First name");
+    const lnErr = validateName(draft.lastName, "Last name");
+    if (fnErr || lnErr) {
+      toast.error(fnErr ?? lnErr ?? "Please fix the highlighted fields.");
+      return;
+    }
     setSaving(true);
     try {
       const r = await fetch("/api/patient/profile", {
@@ -270,8 +281,8 @@ function ProfileTab() {
       <div className="space-y-5">
         <Section title="Personal information" desc="Your name and identity are used across the portal and on records.">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} />
-            <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} />
+            <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} error={validateName(draft.firstName, "First name")} />
+            <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} error={validateName(draft.lastName, "Last name")} />
             <Field id="email" label="Email" value={draft.email} leadingIcon={<Mail />} readOnly />
             <Field id="phone" label="Phone" value={draft.phone} onChange={(v) => update("phone", v)} leadingIcon={<Phone />} />
             <Field id="dob" label="Date of birth" value={draft.dob} onChange={(v) => update("dob", v)} leadingIcon={<CalendarDays />} />
@@ -306,7 +317,10 @@ function ProfileTab() {
 
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={handleDiscard} disabled={saving}>Discard</Button>
-          <Button onClick={handleSave} disabled={saving}>
+          <Button
+            onClick={handleSave}
+            disabled={saving || !!validateName(draft.firstName, "First name") || !!validateName(draft.lastName, "Last name")}
+          >
             {saving ? (
               <>
                 <Loader2 className="size-3.5 animate-spin" /> Saving…
@@ -951,6 +965,7 @@ function Field({
   type = "text",
   readOnly,
   mono,
+  error,
 }: {
   id: string;
   label: string;
@@ -960,6 +975,7 @@ function Field({
   type?: string;
   readOnly?: boolean;
   mono?: boolean;
+  error?: string | null;
 }) {
   return (
     <div className="space-y-1.5">
@@ -971,8 +987,12 @@ function Field({
         onChange={onChange ? (e) => onChange(e.target.value) : undefined}
         leadingIcon={leadingIcon}
         readOnly={readOnly}
-        className={`${mono ? "font-mono" : ""} ${readOnly ? "bg-[var(--color-muted)]" : ""}`}
+        aria-invalid={error ? true : undefined}
+        className={`${mono ? "font-mono" : ""} ${readOnly ? "bg-[var(--color-muted)]" : ""} ${
+          error ? "border-[var(--color-danger)] focus:border-[var(--color-danger)] focus:ring-[var(--color-danger)]/15" : ""
+        }`}
       />
+      {error ? <p className="text-xs text-[var(--color-danger)]">{error}</p> : null}
     </div>
   );
 }

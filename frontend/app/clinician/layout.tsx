@@ -16,6 +16,7 @@ import { RoleSidebar, type NavGroup, type NavItem } from "@/components/shared/ro
 import { RoleHeader } from "@/components/shared/role-header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
 import { OnboardingTour } from "@/components/shared/onboarding-tour";
+import { AppointmentReminder } from "@/components/shared/appointment-reminder";
 import { ClinicianStoreProvider } from "@/lib/clinician-store";
 import { useMessagesUnread } from "@/lib/use-messages-unread";
 
@@ -132,6 +133,7 @@ export default function ClinicianLayout({ children }: { children: React.ReactNod
       <div className="flex h-screen overflow-hidden bg-[var(--color-background)]">
         <IdleTimeout />
         <OnboardingTour role="clinician" />
+        <AppointmentReminder role="clinician" />
         <RoleSidebar groups={groups} utility={UTILITY} />
         <div className="flex min-w-0 flex-1 flex-col">
           <RoleHeader

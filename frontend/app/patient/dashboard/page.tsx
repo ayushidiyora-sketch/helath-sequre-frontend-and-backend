@@ -463,7 +463,7 @@ function RecentRecords() {
       ) : records.length === 0 ? (
         <div className="flex flex-col items-center gap-2 p-8 text-center">
           <FileText className="size-6 text-[var(--color-muted-foreground)]" />
-          <p className="text-xs text-[var(--color-muted-foreground)]">No records yet — your clinicians' finalized notes and prescriptions will appear here.</p>
+          <p className="text-xs text-[var(--color-muted-foreground)]">No records yet — your clinicians&apos; finalized notes and prescriptions will appear here.</p>
         </div>
       ) : (
         <ul className="divide-y divide-[var(--color-border)]">

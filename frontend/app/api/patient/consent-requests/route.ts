@@ -18,6 +18,7 @@ interface RequestRow {
   status: string;
   requestedAt: Date;
   decidedAt: Date | null;
+  expiresAt: Date | null;
   decisionNote: string | null;
   clinicianFirstName: string;
   clinicianLastName: string;
@@ -54,6 +55,7 @@ function shape(r: RequestRow) {
     status: r.status,
     requestedAt: r.requestedAt.toISOString(),
     decidedAt: r.decidedAt ? r.decidedAt.toISOString() : null,
+    expiresAt: r.expiresAt ? r.expiresAt.toISOString() : null,
     decisionNote: r.decisionNote,
   };
 }
@@ -65,7 +67,7 @@ export async function GET() {
   const rows = await prisma.$queryRaw<RequestRow[]>`
     SELECT cr.id, cr."patientId", cr."clinicianId", cr.scopes,
            cr."durationHours", cr.reason, cr.status,
-           cr."requestedAt", cr."decidedAt", cr."decisionNote",
+           cr."requestedAt", cr."decidedAt", cr."expiresAt", cr."decisionNote",
            u."firstName"   AS "clinicianFirstName",
            u."lastName"    AS "clinicianLastName",
            u.department    AS "clinicianDepartment",

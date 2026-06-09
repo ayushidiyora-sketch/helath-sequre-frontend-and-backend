@@ -12,6 +12,8 @@ import { SecurityBadge } from "@/components/shared/security-badge";
 import { ActionButton } from "@/components/shared/action-button";
 import { NotificationPreferences } from "@/components/shared/notification-preferences";
 import { useClinicianStore, type ClinicianProfile } from "@/lib/clinician-store";
+import { validateName } from "@/lib/validate-name";
+import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
 
 export default function ClinicianSettings() {
   const { state, updateProfile } = useClinicianStore();
@@ -24,7 +26,14 @@ export default function ClinicianSettings() {
   const update = <K extends keyof ClinicianProfile>(key: K, value: ClinicianProfile[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
 
+  const firstNameError = validateName(draft.firstName, "First name");
+  const lastNameError = validateName(draft.lastName, "Last name");
+
   function handleSave() {
+    if (firstNameError || lastNameError) {
+      toast.error(firstNameError ?? lastNameError ?? "Please fix the highlighted fields.");
+      return;
+    }
     updateProfile(draft);
     toast.success("Profile saved", { description: "audit-logged · user.update" });
   }
@@ -50,8 +59,8 @@ export default function ClinicianSettings() {
             <div className="space-y-5">
               <Section title="Profile" desc="Visible to your patients and care team.">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} />
-                  <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} />
+                  <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} error={firstNameError} />
+                  <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} error={lastNameError} />
                   <Field id="spec" label="Specialty" value={draft.specialization} onChange={(v) => update("specialization", v)} />
                   <Field id="lic" label="License number" value={draft.licenseNumber} onChange={(v) => update("licenseNumber", v)} mono readOnly />
                   <Field id="email" label="Email" value={draft.email} onChange={(v) => update("email", v)} readOnly />
@@ -68,7 +77,7 @@ export default function ClinicianSettings() {
               </Section>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={handleDiscard}>Discard</Button>
-                <Button onClick={handleSave}>Save changes</Button>
+                <Button onClick={handleSave} disabled={!!firstNameError || !!lastNameError}>Save changes</Button>
               </div>
             </div>
             <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
@@ -107,6 +116,9 @@ export default function ClinicianSettings() {
         </TabsContent>
 
         <TabsContent value="security">
+          <div className="mb-5">
+            <LoginOtpToggle />
+          </div>
           <Section title="Mandatory MFA" desc="Required by Org Admin policy for all clinical roles.">
             <div className="rounded-xl border border-[var(--color-success)]/30 bg-[var(--color-success-soft)]/30 p-4 text-sm">
               TOTP active · Google Authenticator · last used 12 m ago
@@ -199,6 +211,7 @@ function Field({
   leadingIcon,
   readOnly,
   mono,
+  error,
 }: {
   id: string;
   label: string;
@@ -207,6 +220,7 @@ function Field({
   leadingIcon?: React.ReactNode;
   readOnly?: boolean;
   mono?: boolean;
+  error?: string | null;
 }) {
   return (
     <div className="space-y-1.5">
@@ -217,8 +231,12 @@ function Field({
         onChange={(e) => onChange(e.target.value)}
         leadingIcon={leadingIcon}
         readOnly={readOnly}
-        className={`${mono ? "font-mono" : ""} ${readOnly ? "bg-[var(--color-muted)]" : ""}`}
+        aria-invalid={error ? true : undefined}
+        className={`${mono ? "font-mono" : ""} ${readOnly ? "bg-[var(--color-muted)]" : ""} ${
+          error ? "border-[var(--color-danger)] focus:border-[var(--color-danger)] focus:ring-[var(--color-danger)]/15" : ""
+        }`}
       />
+      {error ? <p className="text-xs text-[var(--color-danger)]">{error}</p> : null}
     </div>
   );
 }

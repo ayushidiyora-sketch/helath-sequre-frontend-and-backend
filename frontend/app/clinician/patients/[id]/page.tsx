@@ -44,7 +44,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { SecurityBadge } from "@/components/shared/security-badge";
-import { ConsentDeniedCard } from "@/components/shared/consent-denied-card";
 import {
   useClinicianStore,
   hasEffectiveConsent,
@@ -75,7 +74,6 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
     state,
     setAppointmentStatus,
     toggleConsent,
-    uploadDocument,
     reconcileRemoteRequest,
   } = useClinicianStore();
 
@@ -83,6 +81,16 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
   const [requestInitialScope, setRequestInitialScope] = useState<ConsentScope | undefined>(undefined);
   const [apiPatient, setApiPatient] = useState<AssignedPatient | null>(null);
   const [apiResolved, setApiResolved] = useState<"pending" | "found" | "missing">("pending");
+  // Controlled tab so a granted consent card can jump to the matching data view,
+  // and so a redirect (e.g. after uploading a document) can deep-link a tab via
+  // ?tab=documents.
+  const [tab, setTab] = useState<string>("timeline");
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && ["timeline", "records", "prescriptions", "documents", "consents"].includes(t)) {
+      setTab(t);
+    }
+  }, []);
 
   // DB-backed prescriptions for this patient. Refetched whenever the chart
   // remounts and after every onNew/onFinalize so the list reflects Postgres.
@@ -127,6 +135,29 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
   useEffect(() => {
     void reloadRxs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // DB-backed documents for this patient (shared from patient + clinician uploads).
+  interface ApiDoc {
+    id: string;
+    name: string;
+    category: string;
+    sizeBytes: number;
+    uploadedAt: string;
+    uploaderName: string;
+  }
+  const [apiDocs, setApiDocs] = useState<ApiDoc[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/clinician/patients/${id}/documents`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.ok && Array.isArray(data.documents)) setApiDocs(data.documents);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   // DB-backed appointments for this patient — feeds the EncounterCard today /
@@ -297,7 +328,6 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
     todayAppointmentDb ??
     myAppointments.find((a) => a.date === _todayIso && a.status !== "completed" && a.status !== "cancelled");
   const myNotes = state.notes.filter((n) => n.patientId === patient.id);
-  const myDocs = state.documents.filter((d) => d.patientId === patient.id);
 
   const showRevokedBanner = patient.consentStatus === "revoked";
 
@@ -439,7 +469,7 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
         <ApprovedAccessBanner request={activeGrant} />
       )}
 
-      <Tabs defaultValue="timeline">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex-wrap">
           <TabsTrigger value="timeline"><Activity /> Timeline</TabsTrigger>
           <TabsTrigger value="records"><FileText /> Records</TabsTrigger>
@@ -461,95 +491,66 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
           </div>
         </TabsContent>
         <TabsContent value="records">
-          {hasEffectiveConsent(state, patient.id, "notes") || hasEffectiveConsent(state, patient.id, "lab") ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-end">
-                <Button asChild variant="ghost" size="sm">
-                  <Link href={`/clinician/patients/${patient.id}/records`}>
-                    Open full records view <ArrowLeft className="rotate-180" />
-                  </Link>
-                </Button>
-              </div>
-              <RecordsList notes={myNotes} />
+          {/* Records show directly — consent is managed from the Consents tab. */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-end">
+              <Button asChild variant="ghost" size="sm">
+                <Link href={`/clinician/patients/${patient.id}/records`}>
+                  Open full records view <ArrowLeft className="rotate-180" />
+                </Link>
+              </Button>
             </div>
-          ) : (
-            <ConsentDeniedCard
-              category="Records"
-              onRequestAccess={pending ? undefined : () => openRequestDialog("notes")}
-            />
-          )}
+            <RecordsList notes={myNotes} />
+          </div>
         </TabsContent>
         <TabsContent value="prescriptions">
-          {hasEffectiveConsent(state, patient.id, "prescriptions") ? (
-            <Prescriptions
-              rxs={dbRxs}
-              onNew={async () => {
-                const r = await fetch("/api/clinician/prescriptions", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ patientId: patient.id }),
-                });
-                const data = await r.json();
-                if (!r.ok || !data.ok) {
-                  toast.error(data.error ?? "Could not create draft.");
-                  return;
-                }
-                toast.success("Draft prescription created", { description: "Fill in the details and finalize" });
-                await reloadRxs();
-                router.push(`/clinician/prescriptions/${data.prescription.id}`);
-              }}
-              onFinalize={async (rxId) => {
-                const r = await fetch(`/api/clinician/prescriptions/${rxId}`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ status: "finalized" }),
-                });
-                const data = await r.json();
-                if (!r.ok || !data.ok) {
-                  toast.error(data.error ?? "Could not finalize.");
-                  return;
-                }
-                toast.success("Prescription finalized", { description: `${patient.name} · audit-logged` });
-                await reloadRxs();
-              }}
-            />
-          ) : (
-            <ConsentDeniedCard
-              category="Prescriptions"
-              onRequestAccess={pending ? undefined : () => openRequestDialog("prescriptions")}
-            />
-          )}
+          <Prescriptions
+            rxs={dbRxs}
+            onNew={async () => {
+              const r = await fetch("/api/clinician/prescriptions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ patientId: patient.id }),
+              });
+              const data = await r.json();
+              if (!r.ok || !data.ok) {
+                toast.error(data.error ?? "Could not create draft.");
+                return;
+              }
+              toast.success("Draft prescription created", { description: "Fill in the details and finalize" });
+              await reloadRxs();
+              router.push(`/clinician/prescriptions/${data.prescription.id}`);
+            }}
+            onFinalize={async (rxId) => {
+              const r = await fetch(`/api/clinician/prescriptions/${rxId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "finalized" }),
+              });
+              const data = await r.json();
+              if (!r.ok || !data.ok) {
+                toast.error(data.error ?? "Could not finalize.");
+                return;
+              }
+              toast.success("Prescription finalized", { description: `${patient.name} · audit-logged` });
+              await reloadRxs();
+            }}
+          />
         </TabsContent>
         <TabsContent value="documents">
-          {hasEffectiveConsent(state, patient.id, "imaging") || hasEffectiveConsent(state, patient.id, "lab") ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-end">
-                <Button asChild variant="ghost" size="sm">
-                  <Link href={`/clinician/patients/${patient.id}/documents`}>
-                    Open full documents view <ArrowLeft className="rotate-180" />
-                  </Link>
-                </Button>
-              </div>
-              <DocumentsList
-                docs={myDocs}
-                onUpload={(file, category) => {
-                  uploadDocument({
-                    patientId: patient.id,
-                    name: file.name,
-                    category,
-                    sizeBytes: file.size,
-                    uploaderName: "Dr. Mehta",
-                  });
-                  toast.success("Document uploaded", { description: `${file.name} · scanned · clean` });
-                }}
-              />
+          <div className="space-y-3">
+            <div className="flex items-center justify-end">
+              <Button asChild variant="ghost" size="sm">
+                <Link href={`/clinician/patients/${patient.id}/documents`}>
+                  Open full documents view <ArrowLeft className="rotate-180" />
+                </Link>
+              </Button>
             </div>
-          ) : (
-            <ConsentDeniedCard
-              category="Documents"
-              onRequestAccess={pending ? undefined : () => openRequestDialog("imaging")}
+            <DocumentsList
+              docs={apiDocs}
+              uploadHref={`/clinician/patients/${patient.id}/documents/upload`}
             />
-          )}
+          </div>
         </TabsContent>
         <TabsContent value="consents">
           <PatientConsents
@@ -572,6 +573,7 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
                 openRequestDialog(scope);
               }
             }}
+            onOpen={(scope) => setTab(scope === "prescriptions" ? "prescriptions" : "documents")}
           />
         </TabsContent>
       </Tabs>
@@ -963,36 +965,17 @@ function Prescriptions({
 
 function DocumentsList({
   docs,
-  onUpload,
+  uploadHref,
 }: {
   docs: { id: string; name: string; category: string; sizeBytes: number; uploadedAt: string; uploaderName: string }[];
-  onUpload: (f: File, category: "Lab Report" | "Imaging" | "Discharge" | "Other") => void;
+  uploadHref: string;
 }) {
-  function pickFile() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".pdf,.jpg,.jpeg,.png,.dcm,.doc,.docx";
-    input.onchange = () => {
-      const f = input.files?.[0];
-      if (!f) return;
-      const cat = /ecg|x-?ray|mri|scan|imag/i.test(f.name)
-        ? "Imaging"
-        : /lab|panel|blood/i.test(f.name)
-          ? "Lab Report"
-          : /discharge/i.test(f.name)
-            ? "Discharge"
-            : "Other";
-      onUpload(f, cat as "Lab Report" | "Imaging" | "Discharge" | "Other");
-    };
-    input.click();
-  }
-
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
       <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
         <h2 className="text-sm font-semibold">Documents</h2>
-        <Button size="sm" onClick={pickFile}>
-          <Upload /> Upload document
+        <Button asChild size="sm">
+          <Link href={uploadHref}><Upload /> Upload document</Link>
         </Button>
       </div>
       {docs.length === 0 ? (
@@ -1029,9 +1012,12 @@ function DocumentsList({
 function PatientConsents({
   isGranted,
   onToggle,
+  onOpen,
 }: {
   isGranted: (scope: ConsentScope) => boolean;
   onToggle: (scope: ConsentScope) => void;
+  /** Called when a granted scope card is clicked — jumps to the data view. */
+  onOpen?: (scope: ConsentScope) => void;
 }) {
   // Document-category-driven scope grid — matches the 6 toggles the patient
   // sees on /patient/consents/grant. Insurance / ID Proof / Lab Report /
@@ -1049,12 +1035,26 @@ function PatientConsents({
     <div className="grid gap-4 sm:grid-cols-2">
       {all.map((scope) => {
         const granted = isGranted(scope);
+        const openTarget = scope === "prescriptions" ? "prescriptions" : "documents";
         return (
           <div
             key={scope}
+            role={granted ? "button" : undefined}
+            tabIndex={granted ? 0 : undefined}
+            onClick={granted ? () => onOpen?.(scope) : undefined}
+            onKeyDown={
+              granted
+                ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpen?.(scope);
+                    }
+                  }
+                : undefined
+            }
             className={`rounded-2xl border p-5 ${
               granted
-                ? "border-[var(--color-success)]/30 bg-[var(--color-success-soft)]/30"
+                ? "cursor-pointer border-[var(--color-success)]/30 bg-[var(--color-success-soft)]/30 transition-all hover:-translate-y-0.5 hover:shadow-[var(--shadow-card)]"
                 : "border-dashed border-[var(--color-border)] bg-[var(--color-muted)]/30"
             }`}
           >
@@ -1066,14 +1066,17 @@ function PatientConsents({
             <p className="mt-2 text-sm font-semibold">{CONSENT_SCOPE_LABEL[scope]}</p>
             <p className="text-[11px] text-[var(--color-muted-foreground)]">
               {granted
-                ? `Patient granted access`
+                ? `Patient granted access · click to open ${openTarget}`
                 : `Patient has not granted access`}
             </p>
             <Button
               size="sm"
               variant={granted ? "ghost" : "outline"}
               className="mt-3"
-              onClick={() => onToggle(scope)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggle(scope);
+              }}
             >
               {granted ? "Simulate revoke" : "Request access"}
             </Button>

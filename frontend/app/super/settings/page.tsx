@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { AddRangeDialog } from "./add-range-dialog";
 import { NotificationPreferences } from "@/components/shared/notification-preferences";
+import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
 
 export default function SuperSettings() {
   return (
@@ -23,6 +24,9 @@ export default function SuperSettings() {
         </TabsList>
 
         <TabsContent value="security">
+          <div className="mb-4">
+            <LoginOtpToggle />
+          </div>
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6 space-y-4">
             <div className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] p-4">
               <KeyRound className="size-5 text-[var(--color-primary-700)]" />

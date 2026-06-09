@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -34,11 +34,36 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import {
-  usePatientStore,
   type DocumentCategory,
   type DocumentScanStatus,
   type PatientDocument,
 } from "@/lib/patient-store";
+
+/** Shape returned by GET /api/patient/documents. */
+interface ApiDoc {
+  id: string;
+  name: string;
+  category: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  scanStatus: string;
+  dataUrl: string | null;
+  uploadedAt: string;
+}
+
+function toDoc(d: ApiDoc): PatientDocument {
+  return {
+    id: d.id,
+    name: d.name,
+    category: d.category as DocumentCategory,
+    sizeBytes: d.sizeBytes,
+    scanStatus: d.scanStatus as DocumentScanStatus,
+    uploadedBy: "patient",
+    dataUrl: d.dataUrl ?? undefined,
+    mimeType: d.mimeType ?? undefined,
+    uploadedAt: d.uploadedAt,
+  };
+}
 
 const TYPE_META: Record<DocumentCategory, { icon: typeof FileText; color: string }> = {
   Insurance: { icon: FileBadge, color: "from-[oklch(0.72_0.14_75)] to-[oklch(0.58_0.13_55)]" },
@@ -69,24 +94,42 @@ function formatDate(iso: string): string {
 }
 
 export default function DocumentsPage() {
-  const { state, deleteDocument } = usePatientStore();
   const [tag, setTag] = useState<DocumentCategory | "All">("All");
   const [search, setSearch] = useState("");
   const [scanFilter, setScanFilter] = useState<DocumentScanStatus | "all">("all");
   const [preview, setPreview] = useState<PatientDocument | null>(null);
 
-  const docs = state.documents;
-  const totalBytes = docs.reduce((sum, d) => sum + d.sizeBytes, 0);
+  // Documents come ONLY from the DB for the signed-in patient — no localStorage
+  // demo seed — so each patient sees just their own uploaded files.
+  const [docs, setDocs] = useState<PatientDocument[] | null>(null);
+  async function loadDocs() {
+    try {
+      const r = await fetch("/api/patient/documents", { cache: "no-store" });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        setDocs([]);
+        return;
+      }
+      setDocs((data.documents as ApiDoc[]).map(toDoc));
+    } catch {
+      setDocs([]);
+    }
+  }
+  useEffect(() => {
+    void loadDocs();
+  }, []);
+
+  const totalBytes = (docs ?? []).reduce((sum, d) => sum + d.sizeBytes, 0);
 
   const tags = useMemo(
     () => [
-      { label: "All" as const, count: docs.length },
-      ...TYPES.map((t) => ({ label: t, count: docs.filter((d) => d.category === t).length })),
+      { label: "All" as const, count: (docs ?? []).length },
+      ...TYPES.map((t) => ({ label: t, count: (docs ?? []).filter((d) => d.category === t).length })),
     ],
     [docs],
   );
 
-  const visible = docs.filter((d) => {
+  const visible = (docs ?? []).filter((d) => {
     if (tag !== "All" && d.category !== tag) return false;
     if (scanFilter !== "all" && d.scanStatus !== scanFilter) return false;
     const q = search.trim().toLowerCase();
@@ -184,12 +227,23 @@ export default function DocumentsPage() {
     toast.success("Download started · audit-logged", { description: `${d.name} · signed URL expires in 5 min` });
   }
 
-  function handleDelete(d: PatientDocument) {
-    deleteDocument(d.id);
+  async function handleDelete(d: PatientDocument) {
+    try {
+      const r = await fetch(`/api/patient/documents?id=${encodeURIComponent(d.id)}`, { method: "DELETE" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data?.ok) {
+        toast.error(data?.error ?? "Could not delete document.");
+        return;
+      }
+    } catch {
+      toast.error("Network error — document not deleted.");
+      return;
+    }
     toast.success("Document deleted", { description: `${d.name} · removed · audit-logged` });
+    await loadDocs();
   }
 
-  if (!state.hydrated) {
+  if (docs === null) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
   }
 

@@ -25,7 +25,6 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Progress } from "@/components/ui/progress";
 import { InviteUserDialog, InvitePatientDialog } from "@/components/shared/form-dialogs";
-import { ReportsWidget } from "@/components/shared/reports-widget";
 import {
   useAdminStore,
   fullName,
@@ -105,7 +104,6 @@ export default function AdminDashboard() {
         departments={state.departments.length}
         pendingInvites={state.staff.filter((s) => s.invitationStatus === "pending").length + state.patients.filter((p) => p.invitationStatus === "pending").length}
       />
-      <ReportsWidget preset="admin" />
       <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-5">
           <RecentActivity audit={state.audit.slice(0, 8)} />

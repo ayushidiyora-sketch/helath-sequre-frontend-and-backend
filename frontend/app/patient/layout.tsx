@@ -1,6 +1,7 @@
 import { PatientSidebar } from "@/components/patient/sidebar";
 import { PatientHeader } from "@/components/patient/header";
 import { IdleTimeout } from "@/components/shared/idle-timeout";
+import { AppointmentReminder } from "@/components/shared/appointment-reminder";
 import { PatientStoreProvider } from "@/lib/patient-store";
 
 export default function PatientLayout({ children }: { children: React.ReactNode }) {
@@ -8,6 +9,7 @@ export default function PatientLayout({ children }: { children: React.ReactNode 
     <PatientStoreProvider>
       <div className="flex h-screen overflow-hidden bg-[var(--color-background)]">
         <IdleTimeout />
+        <AppointmentReminder role="patient" />
         <PatientSidebar />
         <div className="flex min-w-0 flex-1 flex-col">
           <PatientHeader />

@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { RoleKind } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { validateName } from "@/lib/validate-name";
 
 export const runtime = "nodejs";
 
@@ -147,12 +148,14 @@ export async function PATCH(req: Request) {
   const data: Record<string, unknown> = {};
   if (typeof body.firstName === "string") {
     const v = body.firstName.trim();
-    if (!v) return NextResponse.json({ ok: false, error: "First name is required." }, { status: 400 });
+    const err = validateName(v, "First name");
+    if (err) return NextResponse.json({ ok: false, error: err }, { status: 400 });
     data.firstName = v;
   }
   if (typeof body.lastName === "string") {
     const v = body.lastName.trim();
-    if (!v) return NextResponse.json({ ok: false, error: "Last name is required." }, { status: 400 });
+    const err = validateName(v, "Last name");
+    if (err) return NextResponse.json({ ok: false, error: err }, { status: 400 });
     data.lastName = v;
   }
   if (body.phone !== undefined) {

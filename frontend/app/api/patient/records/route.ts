@@ -47,6 +47,16 @@ interface NoteRow {
  * patient records page's existing `RecordDetail` so the UI can render without
  * a refactor: id, title, category, clinician, date, status, subtitle, etc.
  */
+interface DocRow {
+  id: string;
+  name: string;
+  category: string;
+  uploadedAt: Date;
+  uploaderFirst: string | null;
+  uploaderLast: string | null;
+  tenantName: string | null;
+}
+
 export async function GET() {
   const jar = await cookies();
   const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
@@ -55,7 +65,7 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Forbidden — Patient only." }, { status: 403 });
   if (!isDbUid(claims.uid)) return NextResponse.json({ ok: true, records: [] });
 
-  const [rxs, notes] = await Promise.all([
+  const [rxs, notes, docs] = await Promise.all([
     prisma.$queryRaw<RxRow[]>`
       SELECT p.id, p."drugName", p.strength, p.route, p.frequency, p.duration,
              p.refills, p."patientInstructions", p."finalizedAt", p."createdAt",
@@ -83,6 +93,24 @@ export async function GET() {
         AND m."deletedAt" IS NULL
         AND m.status = 'finalized'
       ORDER BY m."finalizedAt" DESC NULLS LAST, m."createdAt" DESC
+    `,
+    // Clinician-uploaded clinical documents shared with the patient. These
+    // populate the Lab Reports / Imaging / Discharge categories on the patient's
+    // Medical Records page (patient's own uploads stay on the Documents page).
+    prisma.$queryRaw<DocRow[]>`
+      SELECT d.id, d.name, d.category, d."uploadedAt",
+             u."firstName" AS "uploaderFirst",
+             u."lastName"  AS "uploaderLast",
+             o.name        AS "tenantName"
+      FROM patient_documents d
+      LEFT JOIN users u ON u.id = d."uploadedById"
+      LEFT JOIN organizations o ON o.id = d."organizationId"
+      WHERE d."patientId" = ${claims.uid}::uuid
+        AND d."deletedAt" IS NULL
+        AND d."sharedWithPatient" = TRUE
+        AND d."uploadedById" <> ${claims.uid}::uuid
+        AND d.category IN ('Lab Report', 'Imaging', 'Discharge', 'Insurance', 'ID Proof', 'Prescription', 'Other')
+      ORDER BY d."uploadedAt" DESC
     `,
   ]);
 
@@ -137,7 +165,23 @@ export async function GET() {
     };
   });
 
+  const docRecords = docs.map((d) => {
+    const ts = d.uploadedAt.toISOString();
+    const uploader = `${d.uploaderFirst ?? ""} ${d.uploaderLast ?? ""}`.trim();
+    return {
+      id: d.id,
+      kind: "document" as const,
+      title: d.name,
+      subtitle: `${d.category} · uploaded by your care team`,
+      category: d.category as "Lab Report" | "Imaging" | "Discharge" | "Insurance" | "ID Proof" | "Prescription" | "Other",
+      clinician: uploader ? `Dr. ${uploader}` : "Care team",
+      facility: d.tenantName ?? "",
+      date: ts.slice(0, 10),
+      status: "Finalized" as const,
+    };
+  });
+
   // Merge + sort by date desc.
-  const records = [...rxRecords, ...noteRecords].sort((a, b) => b.date.localeCompare(a.date));
+  const records = [...rxRecords, ...noteRecords, ...docRecords].sort((a, b) => b.date.localeCompare(a.date));
   return NextResponse.json({ ok: true, records });
 }

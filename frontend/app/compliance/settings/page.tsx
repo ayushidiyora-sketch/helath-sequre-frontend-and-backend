@@ -9,6 +9,7 @@ import { NotificationPreferences } from "@/components/shared/notification-prefer
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ActionButton } from "@/components/shared/action-button";
+import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
 
 type Thresholds = {
   offStart: string;
@@ -98,6 +99,9 @@ export default function ComplianceSettings() {
         </TabsContent>
 
         <TabsContent value="security">
+          <div className="mb-4">
+            <LoginOtpToggle />
+          </div>
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6 space-y-3">
             <p className="text-sm">MFA · TOTP active. IP allowlist enforced (3 ranges).</p>
             <ActionButton variant="outline" size="sm" toastMessage="IP allowlist editor opened" toastVariant="info">

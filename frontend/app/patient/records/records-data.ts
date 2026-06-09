@@ -14,7 +14,10 @@ export type Category =
   | "Prescription"
   | "Imaging"
   | "Clinical Note"
-  | "Discharge";
+  | "Discharge"
+  | "Insurance"
+  | "ID Proof"
+  | "Other";
 
 export interface MedicalRecord {
   id: string;
@@ -59,7 +62,20 @@ export interface ImagingImage {
   src?: string;
 }
 
+/** One entry in a record's real access trail (from `record_access_log` + the
+ *  record's own lifecycle timestamps). */
+export interface AccessEvent {
+  actor: string;
+  /** e.g. "record.create" | "record.finalize" | "record.upload" | "record.view" | "record.download" */
+  action: string;
+  ip: string | null;
+  /** ISO timestamp */
+  at: string;
+}
+
 export interface RecordDetail extends MedicalRecord {
+  /** Source table — "prescription" | "note" | "document". Absent for demo records. */
+  kind?: string;
   subtitle: string;
   facility: string;
   collectionDate: string;
@@ -77,6 +93,12 @@ export interface RecordDetail extends MedicalRecord {
   noteBody?: string;
   /** Closing clinician note shown under the body */
   clinicianNote?: string;
+  /** Uploaded clinical documents — the original file (base64 data URL) for preview/download. */
+  fileUrl?: string | null;
+  mimeType?: string | null;
+  sizeBytes?: number;
+  /** Real per-record access trail (DB-backed). Absent for demo records. */
+  accessLog?: AccessEvent[];
 }
 
 export const RECORDS: RecordDetail[] = [

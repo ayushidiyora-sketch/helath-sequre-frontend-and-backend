@@ -14,28 +14,69 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/** Total idle time before the session is auto-expired. */
-const IDLE_MS = 15 * 60 * 1000; // 15 minutes
+/**
+ * Fallback idle window when the policy endpoint hasn't replied yet (or fails).
+ * Clinical roles default to 15 min, patients to 30 — the endpoint will overwrite
+ * this with the tenant's actual configured value once it loads.
+ */
+const FALLBACK_IDLE_MS = 15 * 60 * 1000;
 /** How long before expiry the warning dialog appears. */
-const WARN_MS = 30 * 1000; // 30 seconds
+const WARN_MS = 30 * 1000;
 
 /**
  * Idle-timeout guard for the authenticated dashboards.
  *
- * Watches for user activity (mouse, keyboard, scroll, touch). After 15 minutes
- * with no activity it signs the user out. A warning dialog appears 30 seconds
- * before that, with a live countdown and a "Stay signed in" button.
+ * Watches for user activity (mouse, keyboard, scroll, touch). When the
+ * configured idle window elapses with no activity, signs the user out.
+ * A warning dialog appears 30 seconds before that, with a live countdown
+ * and a "Stay signed in" button.
+ *
+ * The idle window itself is loaded from `/api/me/idle-policy`, which derives
+ * it from `organizations.settings.policy.{patientSessionMinutes |
+ * clinicalSessionMinutes}` based on the signed-in user's role. Until the
+ * endpoint resolves, FALLBACK_IDLE_MS is used.
  */
 export function IdleTimeout() {
   const router = useRouter();
   const pathname = usePathname();
   const [warnOpen, setWarnOpen] = useState(false);
+  const [idleMs, setIdleMs] = useState<number>(FALLBACK_IDLE_MS);
   const [secondsLeft, setSecondsLeft] = useState(Math.round(WARN_MS / 1000));
   const [signingOut, setSigningOut] = useState(false);
 
   const lastActivity = useRef(Date.now());
   const warnOpenRef = useRef(false);
   const doneRef = useRef(false);
+  const idleMsRef = useRef(FALLBACK_IDLE_MS);
+
+  // Keep a ref of the current idleMs so the interval below always reads the
+  // latest value without needing to re-bind on every change.
+  useEffect(() => {
+    idleMsRef.current = idleMs;
+  }, [idleMs]);
+
+  // Fetch tenant policy once on mount. If it fails or returns a bad value,
+  // the fallback stays in place — the dashboard remains usable.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/me/idle-policy", { cache: "no-store" });
+        if (!r.ok) return;
+        const j = (await r.json()) as { ok?: boolean; minutes?: number };
+        if (cancelled || !j?.ok) return;
+        const m = typeof j.minutes === "number" ? j.minutes : NaN;
+        if (Number.isFinite(m) && m >= 1 && m <= 720) {
+          setIdleMs(Math.floor(m) * 60_000);
+        }
+      } catch {
+        // Quiet failure — keep the fallback window.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const logout = useCallback(async () => {
     if (doneRef.current) return;
@@ -68,16 +109,17 @@ export function IdleTimeout() {
 
     const tick = setInterval(() => {
       if (doneRef.current) return;
+      const limit = idleMsRef.current;
       const idle = Date.now() - lastActivity.current;
 
-      if (idle >= IDLE_MS) {
+      if (idle >= limit) {
         logout();
-      } else if (idle >= IDLE_MS - WARN_MS) {
+      } else if (idle >= limit - WARN_MS) {
         if (!warnOpenRef.current) {
           warnOpenRef.current = true;
           setWarnOpen(true);
         }
-        setSecondsLeft(Math.ceil((IDLE_MS - idle) / 1000));
+        setSecondsLeft(Math.ceil((limit - idle) / 1000));
       }
     }, 1000);
 

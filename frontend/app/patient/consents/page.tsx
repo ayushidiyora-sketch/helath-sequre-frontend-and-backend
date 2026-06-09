@@ -61,24 +61,46 @@ interface PendingRequest {
   reason: string;
   status: string;
   requestedAt: string;
+  decidedAt: string | null;
+  expiresAt: string | null;
+}
+
+/** Map a DB consent request → the Consent card shape. */
+function toConsent(r: PendingRequest): Consent {
+  return {
+    id: r.id,
+    clinician: r.clinicianName,
+    department: r.clinicianDepartment,
+    scopes: r.scopes as ConsentScope[],
+    policyVersion: "v2.4",
+    grantedAt: r.decidedAt ?? r.requestedAt,
+    expiresAt: r.expiresAt,
+    status: r.status === "approved" ? "active" : "revoked",
+    revokedAt: r.status === "approved" ? undefined : r.decidedAt ?? undefined,
+  };
 }
 
 export default function ConsentsPage() {
-  const { state, revokeConsent, addConsent, addNotification } = usePatientStore();
+  const { addNotification } = usePatientStore();
 
-  // Real consent requests from the DB. Replaces the previous hardcoded
-  // "Dr. Neha Kapoor requested access to Imaging" banner. When the clinician
-  // hits Submit in their RequestAccessDialog, that POST creates a row here
-  // which this fetch surfaces as a Pending banner with real reviewer + scopes.
-  const [pending, setPending] = useState<PendingRequest[]>([]);
+  // Consents are sourced ENTIRELY from the DB for the signed-in patient — the
+  // `consent_requests` rows where patientId = me. (No localStorage demo seed,
+  // so a real patient only ever sees consents they actually granted.)
+  //   pending  → status "pending"  (clinician asked, awaiting patient)
+  //   active   → status "approved"
+  //   history  → status "revoked" / "declined"
+  const [requests, setRequests] = useState<PendingRequest[] | null>(null);
   async function loadRequests() {
     try {
       const r = await fetch("/api/patient/consent-requests", { cache: "no-store" });
       const data = await r.json();
-      if (!r.ok || !data.ok) return;
-      setPending((data.requests as PendingRequest[]).filter((req) => req.status === "pending"));
+      if (!r.ok || !data.ok) {
+        setRequests([]);
+        return;
+      }
+      setRequests(data.requests as PendingRequest[]);
     } catch {
-      // silent — pending banner just won't show
+      setRequests([]);
     }
   }
   useEffect(() => {
@@ -97,20 +119,11 @@ export default function ConsentsPage() {
       return;
     }
     if (decision === "approved") {
-      // Mirror into the local store so the new consent appears in the Active
-      // tab without a refetch. Cast each API scope key to ConsentScope.
-      const con = addConsent({
-        clinician: req.clinicianName,
-        department: req.clinicianDepartment,
-        scopes: req.scopes as ConsentScope[],
-        policyVersion: "v2.4",
-        expiresAt: null,
-      });
       addNotification({
         title: "Consent granted",
         body: `${req.clinicianName} · ${req.scopes.join(", ")}`,
         type: "consent",
-        href: `/patient/consents/${con.id}`,
+        href: `/patient/consents/${id}`,
       });
       toast.success("Consent granted · audit-logged", {
         description: `${req.clinicianName} can now read: ${req.scopes.join(", ")}`,
@@ -121,12 +134,15 @@ export default function ConsentsPage() {
     await loadRequests();
   }
 
-  if (!state.hydrated) {
+  if (requests === null) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
   }
 
-  const active = state.consents.filter((c) => c.status === "active");
-  const history = state.consents.filter((c) => c.status === "revoked");
+  const pending = requests.filter((req) => req.status === "pending");
+  const active = requests.filter((req) => req.status === "approved").map(toConsent);
+  const history = requests
+    .filter((req) => req.status === "revoked" || req.status === "declined")
+    .map(toConsent);
 
   return (
     <>
@@ -210,24 +226,25 @@ export default function ConsentsPage() {
                   key={c.id}
                   c={c}
                   onRevoke={async () => {
-                    revokeConsent(c.id);
+                    // Revoke on the server (source of truth), then refetch.
+                    try {
+                      const res = await fetch(`/api/patient/consents?id=${encodeURIComponent(c.id)}`, { method: "DELETE" });
+                      const data = await res.json().catch(() => ({}));
+                      if (!res.ok || !data?.ok) {
+                        toast.error(data?.error ?? "Could not revoke consent.");
+                        return;
+                      }
+                    } catch {
+                      toast.error("Network error — consent not revoked.");
+                      return;
+                    }
                     addNotification({
                       title: "Consent revoked",
                       body: `${c.clinician} · access removed`,
                       type: "consent",
                     });
                     toast.warning("Consent revoked", { description: `${c.clinician} · effective on next API call` });
-                    // Mirror the revoke to the server so the Compliance feed
-                    // flips this row from "active" to "revoked". Best-effort
-                    // — the local-store call above keeps the UI consistent
-                    // even if the network mirror fails.
-                    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(c.id)) {
-                      try {
-                        await fetch(`/api/patient/consents?id=${encodeURIComponent(c.id)}`, { method: "DELETE" });
-                      } catch (err) {
-                        console.error("[consents] revoke mirror failed:", err);
-                      }
-                    }
+                    await loadRequests();
                   }}
                 />
               ))}

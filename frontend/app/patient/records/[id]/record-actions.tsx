@@ -23,28 +23,147 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { RecordDetail } from "../records-data";
 
-/** Share + Download actions for a finalized medical record. */
-export function RecordActions({ recordId, title }: { recordId: string; title: string }) {
+/** Fire-and-forget access-log POST so the record's trail reflects the action. */
+function logAccess(recordId: string, action: string, kind?: string) {
+  void fetch(`/api/patient/records/${recordId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, kind }),
+  }).catch(() => {});
+}
+
+function safeFile(s: string): string {
+  return s.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 60) || "record";
+}
+
+/** Download the original uploaded file (data URL) as-is. */
+function downloadOriginal(fileUrl: string, name: string) {
+  const a = document.createElement("a");
+  a.href = fileUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+/** Render a content-rich PDF from the record's real fields. */
+function buildRecordPdf(record: RecordDetail) {
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 48;
+  let y = margin;
+
+  // Brand header band
+  doc.setFillColor(15, 91, 102);
+  doc.rect(0, 0, pageWidth, 64, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.text("HealthSecure Portal", margin, 30);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(record.category, margin, 48);
+  doc.text(`Downloaded ${new Date().toLocaleString()}`, pageWidth - margin, 48, { align: "right" });
+  y = 96;
+
+  doc.setTextColor(20, 20, 20);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  const titleLines = doc.splitTextToSize(record.title, pageWidth - margin * 2);
+  doc.text(titleLines, margin, y);
+  y += titleLines.length * 18 + 6;
+
+  const meta = (label: string, value: string) => {
+    if (!value) return;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text(label.toUpperCase(), margin, y);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(20, 20, 20);
+    doc.text(value, margin + 130, y);
+    y += 18;
+  };
+  meta("Clinician", record.clinician);
+  meta("Facility", record.facility);
+  meta("Date", record.date);
+  meta("Status", record.status);
+  meta("Record ID", record.id);
+
+  y += 8;
+  const section = (heading: string) => {
+    doc.setDrawColor(220, 220, 220);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 16;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(20, 20, 20);
+    doc.text(heading, margin, y);
+    y += 18;
+  };
+  const para = (text: string) => {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(60, 60, 60);
+    const wrapped = doc.splitTextToSize(text, pageWidth - margin * 2);
+    doc.text(wrapped, margin, y);
+    y += wrapped.length * 14 + 10;
+  };
+
+  if (record.prescription) {
+    section("Prescription");
+    const p = record.prescription;
+    para(
+      [
+        `Medication: ${p.drug}`,
+        p.strength && `Strength: ${p.strength}`,
+        `Form: ${p.form}`,
+        p.frequency && `Frequency: ${p.frequency}`,
+        p.duration && `Duration: ${p.duration}`,
+        `Refills: ${p.refills}`,
+      ].filter(Boolean).join("\n"),
+    );
+    if (p.instructions) { section("Instructions"); para(p.instructions); }
+  }
+  if (record.results && record.results.length) {
+    section("Results");
+    para(record.results.map((r) => `${r.marker}: ${r.result}  (ref ${r.reference})${r.ok ? "" : "  *"}`).join("\n"));
+  }
+  if (record.findings) { section("Findings"); para(record.findings); }
+  if (record.impression) { section("Impression"); para(record.impression); }
+  if (record.noteBody) { section(record.category === "Discharge" ? "Discharge summary" : "Note"); para(record.noteBody); }
+  if (record.clinicianNote) { section("Clinician notes"); para(record.clinicianNote); }
+
+  // Footer
+  const ph = doc.internal.pageSize.getHeight();
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(8);
+  doc.setTextColor(120, 120, 120);
+  doc.text(`HealthSecure Portal · ${record.title} · audit-logged as record.download`, margin, ph - 24);
+
+  doc.save(`${safeFile(record.title)}.pdf`);
+}
+
+/** Share + Download actions for a medical record. */
+export function RecordActions({ record }: { record: RecordDetail }) {
   const [open, setOpen] = useState(false);
 
   function download() {
-    const doc = new jsPDF();
-    doc.setFontSize(16);
-    doc.text(`HealthSecure Portal — ${title}`, 14, 20);
-    doc.setFontSize(10);
-    doc.setTextColor(110);
-    doc.text(`Record ${recordId} · finalized · immutable`, 14, 28);
-    doc.text(`Downloaded ${new Date().toDateString()}`, 14, 34);
-    doc.setTextColor(20);
-    doc.setFontSize(11);
-    doc.text("This is a patient copy of a finalized clinical record.", 14, 50);
-    doc.text("The authoring clinician's signature and checksum are on file.", 14, 57);
-    doc.text("Every download is audit-logged as record.download.", 14, 64);
-    doc.save(`${recordId}.pdf`);
-    toast.success("Download started", {
-      description: "PDF generated · audit-logged as record.download",
-    });
+    // Uploaded documents (with an original file) download the file as-is;
+    // structured records (rx / note / labs / imaging) render a content PDF.
+    if (record.fileUrl) {
+      const ext = record.mimeType === "application/pdf" ? "pdf" : "";
+      const name = /\.[a-z0-9]+$/i.test(record.title) ? record.title : `${safeFile(record.title)}${ext ? "." + ext : ""}`;
+      downloadOriginal(record.fileUrl, name);
+      toast.success("Download started", { description: "Original file · audit-logged as record.download" });
+    } else {
+      buildRecordPdf(record);
+      toast.success("Download started", { description: "PDF generated · audit-logged as record.download" });
+    }
+    logAccess(record.id, "record.download", record.kind);
   }
 
   return (
@@ -54,15 +173,16 @@ export function RecordActions({ recordId, title }: { recordId: string; title: st
           <Share2 /> Share
         </Button>
         <Button size="sm" onClick={download}>
-          <Download /> Download PDF
+          <Download /> {record.fileUrl ? "Download" : "Download PDF"}
         </Button>
       </div>
       <ShareDialog
         open={open}
         onOpenChange={setOpen}
-        recordId={recordId}
-        title={title}
+        recordId={record.id}
+        title={record.title}
         onDownload={download}
+        onShare={() => logAccess(record.id, "record.share", record.kind)}
       />
     </>
   );
@@ -77,12 +197,14 @@ function ShareDialog({
   onOpenChange,
   title,
   onDownload,
+  onShare,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   recordId: string;
   title: string;
   onDownload: () => void;
+  onShare?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const recordUrl = typeof window !== "undefined" ? window.location.href : "";
@@ -112,6 +234,7 @@ function ShareDialog({
   }
 
   function shareWithClinician() {
+    onShare?.();
     toast.success("Sent via secure messaging", {
       description: `${title} · audit-logged as record.share`,
     });
@@ -126,6 +249,7 @@ function ShareDialog({
         `— Sent from HealthSecure Portal`,
     );
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    onShare?.();
     toast.success("Email draft opened", { description: "audit-logged as record.share" });
     onOpenChange(false);
   }

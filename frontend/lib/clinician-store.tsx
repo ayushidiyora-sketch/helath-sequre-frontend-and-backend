@@ -767,6 +767,14 @@ export function activeApprovedRequest(
 export function pendingRequest(
   state: Pick<ClinicianState, "accessRequests">,
   patientId: string,
+  /** When given, only matches a pending request that covers this scope, so each
+   *  category tab can show its own Request-access button independently. */
+  scope?: ConsentScope,
 ): AccessRequest | undefined {
-  return state.accessRequests.find((r) => r.patientId === patientId && r.status === "pending");
+  return state.accessRequests.find(
+    (r) =>
+      r.patientId === patientId &&
+      r.status === "pending" &&
+      (scope ? r.scopes.includes(scope) : true),
+  );
 }

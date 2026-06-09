@@ -12,8 +12,14 @@ async function guard() {
   const jar = await cookies();
   const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
   if (!claims) return { error: NextResponse.json({ ok: false, error: "Not signed in" }, { status: 401 }) } as const;
-  if (claims.role !== "Auditor" && claims.role !== "Compliance Manager")
-    return { error: NextResponse.json({ ok: false, error: "Forbidden — Auditor / Compliance only." }, { status: 403 }) } as const;
+  // Org Admin also writes here from the /admin/reports page — every role that
+  // can pull a report on a tenant should be allowed to log the download.
+  if (
+    claims.role !== "Auditor" &&
+    claims.role !== "Compliance Manager" &&
+    claims.role !== "Org Admin"
+  )
+    return { error: NextResponse.json({ ok: false, error: "Forbidden — Auditor / Compliance / Org Admin only." }, { status: 403 }) } as const;
   if (!isDbUid(claims.uid))
     return { error: NextResponse.json({ ok: true, count: 0, recent: [] }) } as const;
   const rows = await prisma.$queryRaw<{ organizationId: string | null }[]>`

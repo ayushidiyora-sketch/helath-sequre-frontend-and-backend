@@ -39,8 +39,12 @@ interface Patient {
   status: "active" | "invited" | "suspended" | "deactivated";
   createdAt: string;
   mrn: string;
-  /** False for self-registered patients who haven't picked a clinic yet. */
+  /** True when the patient has at least one active patient_assignments row. */
   assigned: boolean;
+  /** "Dr. Priya Shah" — primary clinician on file, null if no active assignment. */
+  assignedDoctor: string | null;
+  assignedDoctorDesignation: string | null;
+  assignedDoctorsCount: number;
 }
 
 type StatusKey = "active" | "deactivated";
@@ -114,7 +118,13 @@ export default function AdminPatientsPage() {
         if (statusFilters.includes("active") && !statusFilters.includes("deactivated") && !isActive) return false;
         if (statusFilters.includes("deactivated") && !statusFilters.includes("active") && !isDeact) return false;
       }
-      if (q && !`${p.name} ${p.email} ${p.phone ?? ""} ${p.mrn}`.toLowerCase().includes(q)) return false;
+      if (
+        q &&
+        !`${p.name} ${p.email} ${p.phone ?? ""} ${p.mrn} ${p.assignedDoctor ?? ""}`
+          .toLowerCase()
+          .includes(q)
+      )
+        return false;
       return true;
     });
   }, [patients, query, statusFilters]);
@@ -203,7 +213,7 @@ export default function AdminPatientsPage() {
           <div className="col-span-4">Patient</div>
           <div className="col-span-2">MRN</div>
           <div className="col-span-2">Enrolled</div>
-          <div className="col-span-3">Contact</div>
+          <div className="col-span-3">Assigned doctor</div>
           <div className="col-span-1 text-right">Status</div>
         </div>
         {loading ? (
@@ -313,8 +323,23 @@ function PatientRow({ patient }: { patient: Patient }) {
           {formatEnrolled(patient.createdAt)}
         </div>
         <div className="col-span-3 min-w-0 space-y-0.5 text-xs">
-          <p className="truncate text-[var(--color-muted-foreground)]">{patient.email}</p>
-          {patient.phone && <p className="truncate text-[var(--color-muted-foreground)]">{patient.phone}</p>}
+          {patient.assignedDoctor ? (
+            <>
+              <p className="truncate font-medium text-[var(--color-foreground)]">
+                {patient.assignedDoctor}
+              </p>
+              <p className="truncate text-[10px] text-[var(--color-muted-foreground)]">
+                {patient.assignedDoctorDesignation ?? "Clinician"}
+                {patient.assignedDoctorsCount > 1
+                  ? ` · +${patient.assignedDoctorsCount - 1} more`
+                  : ""}
+              </p>
+            </>
+          ) : (
+            <p className="truncate italic text-[var(--color-muted-foreground)]">
+              No clinician assigned
+            </p>
+          )}
         </div>
         <div className="col-span-1 flex items-center justify-end gap-1">
           {!patient.assigned && (
