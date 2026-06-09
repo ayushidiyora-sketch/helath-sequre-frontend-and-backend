@@ -596,7 +596,6 @@ function TemplateEditor({
     // Bound to the prop via closure
     // (the surrounding component's onRestore handler).
     // Forwards the call to onRestore prop.
-    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     void id;
   }
 }

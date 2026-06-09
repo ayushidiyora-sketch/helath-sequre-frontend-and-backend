@@ -254,7 +254,7 @@ export async function POST(req: Request) {
           region,
           multiAzEnabled: body.multiAz ?? true,
           crossRegionS3: body.s3Replication ?? false,
-          settings: { integrations, contact } as Prisma.InputJsonValue,
+          settings: { integrations, contact } as unknown as Prisma.InputJsonValue,
         },
       });
       const role = await tx.role.create({
