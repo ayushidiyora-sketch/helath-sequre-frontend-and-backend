@@ -113,21 +113,12 @@ function dbAppointmentToAppointment(d: DbAppointment): Appointment {
   };
 }
 
-/**
- * Merge DB rows with local-store rows. DB rows are authoritative — when the
- * patient has any DB-backed appointments, drop ALL local-store mirrors so
- * stale duplicates can't reappear after a reschedule moves the DB row's
- * date/time (previously they kept showing the OLD "requested" status under
- * the slug id `apt-xxx`). Local-store entries only surface for users who
- * have never booked through the API (legacy demo data).
- */
+// Appointments are DB-authoritative: the page shows ONLY the signed-in
+// patient's real rows from /api/patient/appointments. The localStorage demo
+// seed is never displayed (it previously leaked in when the API returned an
+// empty list, showing fake "demo" appointments to brand-new patients).
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isDbId(id: string): boolean { return UUID_RE.test(id); }
-
-function mergeAppointments(db: Appointment[], local: Appointment[]): Appointment[] {
-  if (db.length > 0) return db;
-  return local;
-}
 
 interface DbExtras { proposedStartsAt: string | null; proposedNote: string | null; startsAt: string }
 
@@ -167,10 +158,8 @@ export default function AppointmentsPage() {
     return () => { alive = false; };
   }, [reloadKey]);
 
-  const allAppointments = useMemo(
-    () => mergeAppointments(dbAppointments, state.appointments),
-    [dbAppointments, state.appointments],
-  );
+  // DB rows are the only source of truth — never fall back to the demo store.
+  const allAppointments = dbAppointments;
 
   function toggleStatus(s: StatusFilter) {
     setStatusFilters((curr) => (curr.includes(s) ? curr.filter((x) => x !== s) : [...curr, s]));
@@ -275,8 +264,8 @@ export default function AppointmentsPage() {
         <TabsContent value="upcoming">
           {upcoming.length === 0 ? (
             <EmptyState
-              title={state.appointments.length === 0 ? "No appointments yet" : "No upcoming appointments match your filters"}
-              hint={state.appointments.length === 0 ? "Book your first appointment to get started." : undefined}
+              title={dbAppointments.length === 0 ? "No appointments yet" : "No upcoming appointments match your filters"}
+              hint={dbAppointments.length === 0 ? "Book your first appointment to get started." : undefined}
             />
           ) : (
             <div className="grid gap-4 lg:grid-cols-2">

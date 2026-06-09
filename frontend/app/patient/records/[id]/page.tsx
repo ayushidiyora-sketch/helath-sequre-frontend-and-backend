@@ -206,7 +206,7 @@ export default function RecordDetailPage({
                     {record.category === "Discharge" ? "Discharge summary" : "Note"}
                   </SectionTitle>
                   <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)]/30 p-4 text-sm leading-relaxed">
-                    {record.noteBody}
+                    <NoteBody body={record.noteBody} />
                   </div>
                 </>
               )}
@@ -323,6 +323,52 @@ function RecordNotFound({ id }: { id: string }) {
         </p>
       </div>
     </>
+  );
+}
+
+/**
+ * Render a clinical note. SOAP notes arrive as one string with the section
+ * labels inline ("Subjective: … Objective: … Assessment: … Plan: …", sometimes
+ * with the sections collapsed onto a single line). This splits the text on the
+ * four canonical labels and renders each as its own paragraph with the label in
+ * **bold** — so the on-screen note matches the exported PDF. Text with no SOAP
+ * labels (e.g. a free-form discharge summary) renders as a single block with
+ * its line breaks preserved.
+ */
+const SOAP_LABEL_RE = /\b(Subjective|Objective|Assessment|Plan)\b\s*:/g;
+
+function parseSoap(body: string): { label?: string; text: string }[] {
+  const matches: { label: string; start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  SOAP_LABEL_RE.lastIndex = 0;
+  while ((m = SOAP_LABEL_RE.exec(body)) !== null) {
+    matches.push({ label: m[1], start: m.index, end: m.index + m[0].length });
+  }
+  if (matches.length === 0) return [{ text: body.trim() }];
+
+  const out: { label?: string; text: string }[] = [];
+  const preamble = body.slice(0, matches[0].start).trim();
+  if (preamble) out.push({ text: preamble });
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i];
+    const next = matches[i + 1];
+    const text = body.slice(cur.end, next ? next.start : body.length).trim();
+    out.push({ label: cur.label, text });
+  }
+  return out;
+}
+
+function NoteBody({ body }: { body: string }) {
+  const sections = parseSoap(body);
+  return (
+    <div className="space-y-2.5 whitespace-pre-line">
+      {sections.map((s, i) => (
+        <p key={i}>
+          {s.label && <span className="font-semibold text-[var(--color-foreground)]">{s.label}: </span>}
+          {s.text}
+        </p>
+      ))}
+    </div>
   );
 }
 

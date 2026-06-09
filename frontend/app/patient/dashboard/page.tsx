@@ -19,7 +19,6 @@ import {
   Plus,
   Sparkles,
   Clock3,
-  CheckCircle2,
   ScrollText,
   DownloadCloud,
   CalendarPlus,
@@ -29,10 +28,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SecurityBadge } from "@/components/shared/security-badge";
-import { CancelAppointmentDialog, RescheduleDialog } from "@/components/shared/form-dialogs";
 import { CompleteProfileCard } from "./complete-profile-card";
 import { ReConsentBanner } from "@/components/patient/re-consent-banner";
-import { usePatientStore, type Appointment, type MessageThread } from "@/lib/patient-store";
+import { usePatientStore, type Appointment } from "@/lib/patient-store";
 import { useMessagesUnread } from "@/lib/use-messages-unread";
 
 function initials(name: string): string {
@@ -54,7 +52,44 @@ function daysUntil(iso: string): number {
 }
 
 function isPast(a: Appointment): boolean {
-  return a.status === "completed" || a.status === "cancelled" || a.status === "no-show";
+  return a.status === "completed" || a.status === "cancelled" || a.status === "no-show" || a.status === "rejected";
+}
+
+interface DbAppt {
+  id: string;
+  clinicianName: string;
+  clinicianDepartment: string | null;
+  startsAt: string;
+  date: string;
+  time: string;
+  status: string;
+  notes: string | null;
+  mode?: "in-person" | "telehealth";
+}
+function mapApptStatus(s: string): Appointment["status"] {
+  if (s === "completed") return "completed";
+  if (s === "cancelled") return "cancelled";
+  if (s === "no_show") return "no-show";
+  if (s === "requested") return "requested";
+  if (s === "reschedule_requested") return "reschedule-requested";
+  if (s === "arrived") return "arrived";
+  if (s === "in_progress") return "in-progress";
+  if (s === "rejected") return "rejected";
+  return "confirmed";
+}
+function toAppt(d: DbAppt): Appointment {
+  return {
+    id: d.id,
+    clinician: d.clinicianName,
+    department: d.clinicianDepartment ?? "Care team",
+    date: d.date,
+    time: d.time,
+    mode: d.mode ?? "in-person",
+    status: mapApptStatus(d.status),
+    reason: d.notes ?? "Visit",
+    documentIds: [],
+    createdAt: d.startsAt,
+  };
 }
 
 interface ApiNext {
@@ -86,6 +121,7 @@ export default function PatientDashboard() {
   const liveUnread = useMessagesUnread();
   const [api, setApi] = useState<ApiDashboard | null>(null);
   const [apiLoading, setApiLoading] = useState(true);
+  const [dbAppts, setDbAppts] = useState<Appointment[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,56 +135,44 @@ export default function PatientDashboard() {
       .finally(() => {
         if (!cancelled) setApiLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
+  }, []);
+
+  // Appointments come from the DB (the demo store is never displayed).
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/patient/appointments", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok || !Array.isArray(data.appointments)) return;
+        setDbAppts((data.appointments as DbAppt[]).map(toAppt));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   if (!state.hydrated || apiLoading) {
     return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
   }
 
-  const upcoming = state.appointments
+  const upcoming = dbAppts
     .filter((a) => !isPast(a))
     .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   const next = upcoming[0];
-  const pendingConsents = 0; // pending consent requests are demo-only, not in the store
-  // Prefer the live DB-backed unread count (sum of unread per thread from
-  // /api/messages/threads); fall back to the local store for offline cases.
-  const unreadThreads = liveUnread || state.threads.filter((t) => t.unread).length;
+  const unreadThreads = liveUnread; // live DB-backed unread count
 
-  // Real-data overlays: prefer API values where available.
   const greetingFirstName = api?.profile.firstName ?? state.profile.firstName;
-  const apiNext: Appointment | undefined = api?.next
-    ? {
-        id: api.next.id,
-        clinician: api.next.clinician,
-        department: api.next.clinicianDepartment ?? "Care team",
-        date: api.next.date,
-        time: api.next.time,
-        mode: "in-person",
-        status: "confirmed",
-        reason: api.next.notes ?? "Visit",
-        documentIds: [],
-        createdAt: api.next.date,
-      }
-    : undefined;
-  const heroNext = apiNext ?? next;
-  const baseStats = api?.stats ?? {
+  const stats = {
     upcomingCount: upcoming.length,
-    careTeamSize: 0,
-    documents: state.documents.length,
-    activeConsents: state.consents.filter((c) => c.status === "active").length,
+    activeConsents: api?.stats.activeConsents ?? 0,
+    documents: api?.stats.documents ?? 0,
     unreadMessages: unreadThreads,
   };
-  // Always overlay the live DB-backed unread count — the /api/patient/dashboard
-  // stats payload uses the legacy local-store count.
-  const stats = { ...baseStats, unreadMessages: unreadThreads };
 
   return (
     <>
       <ReConsentBanner />
-      <GreetingHero firstName={greetingFirstName} next={heroNext} unread={stats.unreadMessages} pending={pendingConsents} />
+      <GreetingHero firstName={greetingFirstName} next={next} unread={stats.unreadMessages} pending={0} />
       <QuickStats
         appointments={stats.upcomingCount}
         consents={stats.activeConsents}
@@ -163,7 +187,7 @@ export default function PatientDashboard() {
         <div className="space-y-5">
           <CompleteProfileCard />
           <PendingConsents />
-          <UnreadMessages threads={state.threads} />
+          <RecentMessages />
           <ActivityFeed />
         </div>
       </div>
@@ -318,7 +342,6 @@ function QuickStats({ appointments, consents, documents, unread }: { appointment
 }
 
 function UpcomingAppointments({ appts }: { appts: Appointment[] }) {
-  const { rescheduleAppointment, cancelAppointment } = usePatientStore();
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
       <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
@@ -366,29 +389,9 @@ function UpcomingAppointments({ appts }: { appts: Appointment[] }) {
                   <span className="inline-flex items-center gap-1"><Stethoscope className="size-3.5" />{a.mode === "telehealth" ? "Telehealth" : "In-person"}</span>
                 </div>
               </div>
-              <div className="hidden flex-col gap-1.5 sm:flex">
-                <RescheduleDialog
-                  triggerProps={{ variant: "outline", size: "sm" }}
-                  appointment={{ id: a.id, doctor: a.clinician, date: dateLabel(a.date), time: a.time }}
-                  onConfirm={(slot) => {
-                    rescheduleAppointment(a.id, a.date, slot);
-                    toast.success("Appointment rescheduled", { description: `New slot: ${slot}` });
-                  }}
-                />
-                <CancelAppointmentDialog
-                  triggerLabel="Cancel"
-                  triggerProps={{
-                    variant: "ghost",
-                    size: "sm",
-                    className: "text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]",
-                  }}
-                  appointment={{ id: a.id, reason: a.reason, date: dateLabel(a.date), time: a.time, doctor: a.clinician }}
-                  onConfirm={() => {
-                    cancelAppointment(a.id);
-                    toast.warning("Appointment cancelled");
-                  }}
-                />
-              </div>
+              <Button asChild variant="outline" size="sm" className="hidden sm:inline-flex">
+                <Link href={`/patient/appointments/${a.id}`}>Manage</Link>
+              </Button>
             </li>
           ))}
         </ul>
@@ -639,13 +642,33 @@ function PendingConsents() {
   );
 }
 
-function UnreadMessages({ threads }: { threads: MessageThread[] }) {
-  const unread = threads.filter((t) => t.unread);
-  const recent = threads
-    .slice()
-    .sort((a, b) => b.lastActivity.localeCompare(a.lastActivity))
-    .slice(0, 2);
-  const display = unread.length > 0 ? unread.slice(0, 2) : recent;
+interface DbThread {
+  otherUserId: string;
+  otherName: string;
+  otherInitials: string;
+  lastBody: string;
+  lastSentAt: string;
+  unread: number;
+}
+
+function RecentMessages() {
+  const [threads, setThreads] = useState<DbThread[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/messages/threads", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setThreads(Array.isArray(data.threads) ? (data.threads as DbThread[]) : []);
+      })
+      .catch(() => { if (!cancelled) setThreads([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const unread = (threads ?? []).filter((t) => t.unread > 0);
+  const display = (unread.length > 0 ? unread : (threads ?? [])).slice(0, 2);
+
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
       <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
@@ -656,7 +679,9 @@ function UnreadMessages({ threads }: { threads: MessageThread[] }) {
           <Badge variant="muted" size="sm">Inbox clear</Badge>
         )}
       </div>
-      {display.length === 0 ? (
+      {threads === null ? (
+        <p className="p-8 text-center text-xs text-[var(--color-muted-foreground)]">Loading…</p>
+      ) : display.length === 0 ? (
         <div className="flex flex-col items-center gap-2 p-8 text-center">
           <Inbox className="size-6 text-[var(--color-muted-foreground)]" />
           <p className="text-xs text-[var(--color-muted-foreground)]">No conversations yet</p>
@@ -666,41 +691,59 @@ function UnreadMessages({ threads }: { threads: MessageThread[] }) {
         </div>
       ) : (
         <ul className="divide-y divide-[var(--color-border)]">
-          {display.map((t) => {
-            const last = t.messages[t.messages.length - 1];
-            return (
-              <li key={t.id}>
-                <Link
-                  href={`/patient/messages/${t.id}`}
-                  className="flex items-start gap-3 p-4 transition-colors hover:bg-[var(--color-muted)]/40"
-                >
-                  <Avatar className="size-8">
-                    <AvatarFallback>{initials(t.with)}</AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <p className="truncate text-sm font-semibold">{t.with}</p>
-                      <span className="text-[10px] text-[var(--color-muted-foreground)]">{new Date(t.lastActivity).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
-                    </div>
-                    <p className="line-clamp-2 text-xs text-[var(--color-muted-foreground)]">{last?.body ?? "No messages yet"}</p>
+          {display.map((t) => (
+            <li key={t.otherUserId}>
+              <Link
+                href="/patient/messages"
+                className="flex items-start gap-3 p-4 transition-colors hover:bg-[var(--color-muted)]/40"
+              >
+                <Avatar className="size-8">
+                  <AvatarFallback>{t.otherInitials || initials(t.otherName)}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="truncate text-sm font-semibold">{t.otherName}</p>
+                    <span className="text-[10px] text-[var(--color-muted-foreground)]">{new Date(t.lastSentAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
                   </div>
-                </Link>
-              </li>
-            );
-          })}
+                  <p className="line-clamp-2 text-xs text-[var(--color-muted-foreground)]">{t.lastBody || "No messages yet"}</p>
+                </div>
+              </Link>
+            </li>
+          ))}
         </ul>
       )}
     </div>
   );
 }
 
+interface ActivityItem { id: string; category: string; title: string; body: string; time: string }
+
+const ACT_META: Record<string, { icon: typeof Activity; color: string }> = {
+  consent:     { icon: Shield, color: "text-[var(--color-success)] bg-[var(--color-success-soft)]" },
+  appointment: { icon: Calendar, color: "text-[var(--color-info)] bg-[var(--color-info-soft)]" },
+  record:      { icon: FileText, color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]" },
+  message:     { icon: MessageSquare, color: "text-[var(--color-info)] bg-[var(--color-info-soft)]" },
+  security:    { icon: Activity, color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]" },
+  approval:    { icon: Shield, color: "text-[oklch(0.5_0.14_75)] bg-[var(--color-warning-soft)]" },
+  audit:       { icon: ScrollText, color: "text-[var(--color-muted-foreground)] bg-[var(--color-muted)]" },
+  system:      { icon: ScrollText, color: "text-[var(--color-muted-foreground)] bg-[var(--color-muted)]" },
+};
+
 function ActivityFeed() {
-  const events = [
-    { icon: CheckCircle2, t: "Consent granted to Dr. Shah", sub: "scope: lab + prescriptions", color: "text-[var(--color-success)] bg-[var(--color-success-soft)]" },
-    { icon: DownloadCloud, t: "Downloaded lipid panel PDF", sub: "audit-logged", color: "text-[var(--color-info)] bg-[var(--color-info-soft)]" },
-    { icon: Activity, t: "Signed in from Chrome · Mumbai", sub: "4 active sessions", color: "text-[var(--color-primary-700)] bg-[var(--color-primary-50)]" },
-    { icon: ScrollText, t: "Reviewed policy v2.4", sub: "May 17", color: "text-[var(--color-muted-foreground)] bg-[var(--color-muted)]" },
-  ];
+  const [items, setItems] = useState<ActivityItem[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/notifications", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setItems(Array.isArray(data.items) ? (data.items as ActivityItem[]).slice(0, 5) : []);
+      })
+      .catch(() => { if (!cancelled) setItems([]); });
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
       <div className="flex items-center justify-between border-b border-[var(--color-border)] p-5">
@@ -709,22 +752,29 @@ function ActivityFeed() {
           <Sparkles className="size-3 text-[var(--color-primary)]" /> Audit-tracked
         </span>
       </div>
-      <ul className="space-y-3 p-5">
-        {events.map((e, i) => {
-          const Icon = e.icon;
-          return (
-            <li key={i} className="flex items-start gap-3">
-              <span className={`mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg ${e.color}`}>
-                <Icon className="size-3.5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium">{e.t}</p>
-                <p className="text-[11px] text-[var(--color-muted-foreground)]">{e.sub}</p>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      {items === null ? (
+        <p className="p-8 text-center text-xs text-[var(--color-muted-foreground)]">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="p-8 text-center text-xs text-[var(--color-muted-foreground)]">No recent activity yet.</p>
+      ) : (
+        <ul className="space-y-3 p-5">
+          {items.map((e) => {
+            const meta = ACT_META[e.category] ?? ACT_META.audit;
+            const Icon = meta.icon;
+            return (
+              <li key={e.id} className="flex items-start gap-3">
+                <span className={`mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg ${meta.color}`}>
+                  <Icon className="size-3.5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium">{e.title}</p>
+                  <p className="text-[11px] text-[var(--color-muted-foreground)]">{e.body || e.time}</p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

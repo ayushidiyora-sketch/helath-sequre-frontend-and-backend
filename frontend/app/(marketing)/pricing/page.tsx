@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageHero } from "@/components/marketing/page-hero";
 import { getTiers } from "@/lib/tiers";
+import { currentUserActiveTierId } from "@/lib/billing";
 
 export const metadata = {
   title: "Pricing",
@@ -132,7 +133,8 @@ const FAQ: { q: string; a: string }[] = [
 ];
 
 export default async function PricingPage() {
-  const tiers: Tier[] = (await getTiers()).map((t) => ({
+  const [rawTiers, currentTierId] = await Promise.all([getTiers(), currentUserActiveTierId()]);
+  const tiers: Tier[] = rawTiers.map((t) => ({
     ...t,
     icon: TIER_ICONS[t.icon] ?? Stethoscope,
   }));
@@ -156,7 +158,7 @@ export default async function PricingPage() {
 
       <section className="mx-auto max-w-7xl px-6 py-16 sm:py-20">
         <div className="grid gap-5 lg:grid-cols-3">
-          {tiers.map((t) => <TierCard key={t.id} t={t} />)}
+          {tiers.map((t) => <TierCard key={t.id} t={t} current={t.id === currentTierId} />)}
         </div>
         <p className="mt-6 text-center text-xs text-[var(--color-muted-foreground)]">
           Prices in USD · billed monthly unless annual is selected · GST / VAT exclusive
@@ -274,21 +276,27 @@ export default async function PricingPage() {
   );
 }
 
-function TierCard({ t }: { t: Tier }) {
+function TierCard({ t, current = false }: { t: Tier; current?: boolean }) {
   const Icon = t.icon;
   return (
     <div
       className={`relative overflow-hidden rounded-3xl border p-7 transition-all duration-200 ${
-        t.featured
-          ? "border-[var(--color-primary)]/50 bg-gradient-to-br from-[var(--color-card)] via-[var(--color-card)] to-[oklch(0.96_0.025_200)] shadow-[var(--shadow-lift)] lg:-translate-y-2"
-          : "border-[var(--color-border)] bg-[var(--color-card)] hover:-translate-y-1 hover:border-[var(--color-primary)]/40"
+        current
+          ? "border-[var(--color-success)]/60 bg-gradient-to-br from-[var(--color-card)] via-[var(--color-card)] to-[var(--color-success-soft)]/40 shadow-[var(--shadow-lift)] ring-1 ring-[var(--color-success)]/30"
+          : t.featured
+            ? "border-[var(--color-primary)]/50 bg-gradient-to-br from-[var(--color-card)] via-[var(--color-card)] to-[oklch(0.96_0.025_200)] shadow-[var(--shadow-lift)] lg:-translate-y-2"
+            : "border-[var(--color-border)] bg-[var(--color-card)] hover:-translate-y-1 hover:border-[var(--color-primary)]/40"
       }`}
     >
-      {t.featured && (
+      {current ? (
+        <span className="absolute right-5 top-5">
+          <Badge variant="success" size="sm" dot>Current plan</Badge>
+        </span>
+      ) : t.featured ? (
         <span className="absolute right-5 top-5">
           <Badge variant="info" size="sm" dot>Most popular</Badge>
         </span>
-      )}
+      ) : null}
       <span
         className={`flex size-11 items-center justify-center rounded-xl shadow-sm ${
           t.featured
@@ -328,9 +336,9 @@ function TierCard({ t }: { t: Tier }) {
         )}
       </div>
 
-      <Button asChild size="lg" variant={t.featured ? "default" : "outline"} className="mt-6 w-full">
-        <Link href={t.ctaHref}>
-          {t.ctaLabel} <ArrowRight />
+      <Button asChild size="lg" variant={current ? "outline" : t.featured ? "default" : "outline"} className="mt-6 w-full">
+        <Link href={current ? "/admin/billing" : t.ctaHref}>
+          {current ? <>Manage plan <ArrowRight /></> : <>{t.ctaLabel} <ArrowRight /></>}
         </Link>
       </Button>
 

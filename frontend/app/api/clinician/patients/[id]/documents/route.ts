@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, sendActionEmail } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -156,5 +157,47 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     RETURNING id, name, category, "mimeType", "sizeBytes", "scanStatus", "dataUrl", "uploadedAt",
               NULL::text AS "uploaderFirst", NULL::text AS "uploaderLast"
   `;
+
+  // Notify the patient that a new document is available (best-effort).
+  const notifyCtx = await prisma.$queryRaw<{
+    patientEmail: string | null;
+    patientFirst: string | null;
+    clinicianFirst: string | null;
+    clinicianLast: string | null;
+    orgName: string | null;
+  }[]>`
+    SELECT p.email AS "patientEmail", p."firstName" AS "patientFirst",
+           c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
+           o.name AS "orgName"
+    FROM users p
+    LEFT JOIN users c         ON c.id = ${g.uid}::uuid
+    LEFT JOIN organizations o ON o.id = ${g.orgId}::uuid
+    WHERE p.id = ${id}::uuid LIMIT 1
+  `;
+  const c = notifyCtx[0];
+  if (c?.patientEmail) {
+    const clinicianName =
+      `Dr. ${[c.clinicianFirst, c.clinicianLast].filter(Boolean).join(" ")}`.trim();
+    const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    await sendActionEmail({
+      orgId: g.orgId,
+      to: c.patientEmail,
+      slug: "new-record-available",
+      vars: {
+        "patient.first_name": c.patientFirst?.trim() || "there",
+        "clinician.name": clinicianName,
+        "record.category": category,
+        "record.date": today,
+        "organization.name": c.orgName ?? "HealthSecure",
+        action_url: `${appBaseUrl()}/patient/documents`,
+      },
+      fallbackSubject: `A new ${category} document is available in your portal`,
+      fallbackText:
+        `Hi ${c.patientFirst?.trim() || "there"},\n\n` +
+        `${clinicianName} added a new ${category} document ("${name}") to your records on ${today}.\n\n` +
+        `Open your portal to view it: ${appBaseUrl()}/patient/documents\n\n— ${c.orgName ?? "HealthSecure"}`,
+    });
+  }
+
   return NextResponse.json({ ok: true, document: shape(inserted[0]) }, { status: 201 });
 }

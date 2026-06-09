@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, scopeLabels, sendActionEmail } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -147,8 +148,26 @@ export async function DELETE(req: Request) {
   if (!UUID_RE.test(id))
     return NextResponse.json({ ok: false, error: "Invalid id." }, { status: 400 });
 
-  const existing = await prisma.$queryRaw<{ patientId: string; status: string }[]>`
-    SELECT "patientId", status FROM consent_requests WHERE id = ${id}::uuid LIMIT 1
+  const existing = await prisma.$queryRaw<{
+    patientId: string;
+    status: string;
+    organizationId: string | null;
+    scopes: unknown;
+    clinicianEmail: string | null;
+    clinicianFirst: string | null;
+    clinicianLast: string | null;
+    patientName: string | null;
+    orgName: string | null;
+  }[]>`
+    SELECT cr."patientId", cr.status, cr."organizationId"::text AS "organizationId", cr.scopes,
+           c.email AS "clinicianEmail", c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
+           TRIM(CONCAT(p."firstName", ' ', p."lastName")) AS "patientName",
+           o.name AS "orgName"
+    FROM consent_requests cr
+    LEFT JOIN users c         ON c.id = cr."clinicianId"
+    LEFT JOIN users p         ON p.id = cr."patientId"
+    LEFT JOIN organizations o ON o.id = cr."organizationId"
+    WHERE cr.id = ${id}::uuid LIMIT 1
   `;
   if (!existing[0] || existing[0].patientId !== g.uid)
     return NextResponse.json({ ok: false, error: "Consent not found." }, { status: 404 });
@@ -164,5 +183,35 @@ export async function DELETE(req: Request) {
       "updatedAt"    = NOW()
     WHERE id = ${id}::uuid AND "patientId" = ${g.uid}::uuid
   `;
+
+  // Notify the clinician that the patient revoked access (best-effort).
+  const row = existing[0];
+  if (row.organizationId && row.clinicianEmail) {
+    const scopes = Array.isArray(row.scopes)
+      ? row.scopes.filter((s): s is string => typeof s === "string")
+      : [];
+    const clinicianName =
+      `Dr. ${[row.clinicianFirst, row.clinicianLast].filter(Boolean).join(" ")}`.trim();
+    const patientLabel = (row.patientName ?? "").trim() || "A patient";
+    await sendActionEmail({
+      orgId: row.organizationId,
+      to: row.clinicianEmail,
+      slug: "consent-revoked",
+      vars: {
+        "clinician.name": clinicianName,
+        "patient.name": patientLabel,
+        "consent.scope": scopeLabels(scopes),
+        "organization.name": row.orgName ?? "HealthSecure",
+        action_url: `${appBaseUrl()}/clinician/patients`,
+      },
+      fallbackSubject: `Consent revoked: ${patientLabel} withdrew access to ${scopeLabels(scopes)}`,
+      fallbackText:
+        `Hi ${clinicianName || "Doctor"},\n\n` +
+        `${patientLabel} has revoked your access to their ${scopeLabels(scopes)} records.\n\n` +
+        `Any active sessions relying on this consent will no longer have access. ` +
+        `You can request consent again from the patient's chart if clinically necessary.\n\n— ${row.orgName ?? "HealthSecure"}`,
+    });
+  }
+
   return NextResponse.json({ ok: true });
 }

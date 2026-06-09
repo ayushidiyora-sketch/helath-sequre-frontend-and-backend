@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, scopeLabels, sendActionEmail } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -129,10 +130,13 @@ export async function POST(req: Request) {
 
   // Validate clinician has an org + patient is real.
   const clinicianRows = await prisma.$queryRaw<
-    { organizationId: string | null; roleKind: string }[]
+    { organizationId: string | null; roleKind: string; firstName: string | null; lastName: string | null; orgName: string | null }[]
   >`
-    SELECT "organizationId", "roleKind"::text AS "roleKind"
-    FROM users WHERE id = ${g.claims.uid}::uuid AND "deletedAt" IS NULL LIMIT 1
+    SELECT u."organizationId", u."roleKind"::text AS "roleKind",
+           u."firstName", u."lastName", o.name AS "orgName"
+    FROM users u
+    LEFT JOIN organizations o ON o.id = u."organizationId"
+    WHERE u.id = ${g.claims.uid}::uuid AND u."deletedAt" IS NULL LIMIT 1
   `;
   const clinician = clinicianRows[0];
   if (!clinician || clinician.roleKind !== "clinician")
@@ -140,8 +144,10 @@ export async function POST(req: Request) {
   if (!clinician.organizationId)
     return NextResponse.json({ ok: false, error: "Clinician has no tenant." }, { status: 400 });
 
-  const patientRows = await prisma.$queryRaw<{ id: string; roleKind: string }[]>`
-    SELECT id, "roleKind"::text AS "roleKind"
+  const patientRows = await prisma.$queryRaw<
+    { id: string; roleKind: string; email: string | null; firstName: string | null }[]
+  >`
+    SELECT id, "roleKind"::text AS "roleKind", email, "firstName"
     FROM users WHERE id = ${patientId}::uuid AND "deletedAt" IS NULL LIMIT 1
   `;
   if (!patientRows[0] || patientRows[0].roleKind !== "patient")
@@ -173,6 +179,30 @@ export async function POST(req: Request) {
        ${durationHours}, ${reason}, 'pending', NOW(), NOW(), NOW())
     RETURNING id, "requestedAt"
   `;
+
+  // Email the patient that a clinician is requesting consent (best-effort).
+  const clinicianName =
+    `Dr. ${[clinician.firstName, clinician.lastName].filter(Boolean).join(" ")}`.trim();
+  await sendActionEmail({
+    orgId: clinician.organizationId,
+    to: patientRows[0].email,
+    slug: "consent-request",
+    vars: {
+      "patient.first_name": patientRows[0].firstName?.trim() || "there",
+      "clinician.name": clinicianName,
+      "consent.scope": scopeLabels(scopes),
+      "consent.policy_version": "v2.4",
+      "organization.name": clinician.orgName ?? "HealthSecure",
+      action_url: `${appBaseUrl()}/patient/consents`,
+    },
+    fallbackSubject: `${clinicianName} is requesting access to your ${scopeLabels(scopes)}`,
+    fallbackText:
+      `Hi ${patientRows[0].firstName?.trim() || "there"},\n\n` +
+      `${clinicianName} has requested access to your ${scopeLabels(scopes)} records.\n\n` +
+      `Reason: ${reason}\n\n` +
+      `Review and approve or decline this request in your portal: ${appBaseUrl()}/patient/consents\n\n` +
+      `You can revoke any consent at any time.\n\n— ${clinician.orgName ?? "HealthSecure"}`,
+  });
 
   return NextResponse.json(
     {

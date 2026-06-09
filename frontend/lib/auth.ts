@@ -165,13 +165,16 @@ export interface ResetClaims {
 }
 
 /** Sign a short-lived password-reset JWT (30 min). */
-export async function signResetToken(claims: ResetClaims): Promise<string> {
+export async function signResetToken(claims: ResetClaims, ttlSeconds: number = RESET_TTL_SECONDS): Promise<string> {
   return new SignJWT({ ...claims })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime(`${RESET_TTL_SECONDS}s`)
+    .setExpirationTime(`${Math.max(60, Math.floor(ttlSeconds))}s`)
     .sign(secret());
 }
+
+/** Invitation links live longer than a password reset — 72 hours. */
+export const INVITE_TTL_SECONDS = 72 * 60 * 60;
 
 /** Verify a password-reset JWT. Returns null on any failure (expired, tampered, missing). */
 export async function verifyResetToken(token: string | undefined): Promise<ResetClaims | null> {

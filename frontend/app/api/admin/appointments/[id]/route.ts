@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { AppointmentStatus, Prisma, RoleKind } from "@prisma/client";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { sendAppointmentEmail } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -145,6 +146,14 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       LIMIT 1
     `;
     const updated = rows[0];
+
+    // Email the patient when an Org Admin confirms the appointment. (This route
+    // writes via prisma.update rather than transitionStatus, so the email leg
+    // lives here too — see lib/notify.ts.)
+    if (body.status === "confirmed") {
+      await sendAppointmentEmail(appointmentId, "confirmed");
+    }
+
     return NextResponse.json({
       ok: true,
       appointment: {

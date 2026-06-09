@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { LogoutButton } from "@/components/shared/logout-button";
 import { useEffect, useState } from "react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { NavSearch, type NavSearchItem } from "@/components/shared/nav-search";
 import { RoleMobileNav } from "@/components/shared/role-mobile-nav";
@@ -76,6 +76,7 @@ interface PatientHeaderUser {
   initials: string;
   tenantName: string | null;
   mrn: string;
+  avatarUrl: string | null;
 }
 
 export function PatientHeader() {
@@ -111,6 +112,7 @@ export function PatientHeader() {
           initials: data.profile.initials,
           tenantName: data.profile.tenantName,
           mrn: data.profile.mrn,
+          avatarUrl: data.profile.profilePhotoUrl ?? null,
         });
       })
       .catch(() => {});
@@ -159,6 +161,7 @@ export function PatientHeader() {
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-2.5 rounded-lg p-1 pr-2 text-left hover:bg-[var(--color-muted)]">
               <Avatar className="size-8 ring-2 ring-[var(--color-card)]">
+                {user?.avatarUrl && <AvatarImage src={user.avatarUrl} alt={user?.name ?? "Profile"} />}
                 <AvatarFallback>{user?.initials ?? "··"}</AvatarFallback>
               </Avatar>
               <div className="hidden text-left sm:block">

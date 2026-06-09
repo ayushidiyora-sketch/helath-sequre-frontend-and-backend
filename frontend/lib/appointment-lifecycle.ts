@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { sendAppointmentEmail } from "@/lib/notify";
 
 /**
  * Single source of truth for the appointment lifecycle. Every status change
@@ -126,6 +127,15 @@ export async function transitionStatus(input: TransitionInput): Promise<{
     reason: input.reason ?? null,
     metadata: input.metadata ?? {},
   });
+
+  // Patient-facing email leg (best-effort — never blocks the transition).
+  if (
+    input.newStatus === "confirmed" ||
+    input.newStatus === "rejected" ||
+    input.newStatus === "reschedule_requested"
+  ) {
+    await sendAppointmentEmail(input.appointmentId, input.newStatus);
+  }
 
   return { ok: true, previous: row.status, next: input.newStatus };
 }

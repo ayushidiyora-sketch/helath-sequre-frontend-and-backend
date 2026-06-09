@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -13,7 +13,6 @@ import {
   Phone,
   Building2,
   ClipboardList,
-  FileText,
   Bell,
   CheckCircle2,
   Video,
@@ -24,9 +23,27 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { AddToCalendar } from "@/components/shared/add-to-calendar";
-import { RescheduleDialog, CancelAppointmentDialog } from "@/components/shared/form-dialogs";
-import { usePatientStore, type Appointment, type PatientDocument } from "@/lib/patient-store";
+import { RescheduleAppointmentDialog } from "@/components/shared/reschedule-appointment-dialog";
+import { CancelAppointmentDialog } from "@/components/shared/form-dialogs";
 import { toEventStart } from "@/lib/calendar-export";
+
+/** Shape returned by GET /api/patient/appointments (DB-backed). */
+interface DbAppointment {
+  id: string;
+  clinicianId: string;
+  clinicianName: string;
+  clinicianDepartment: string;
+  startsAt: string;
+  date: string; // YYYY-MM-DD
+  time: string; // "9:30 AM"
+  durationMinutes: number;
+  room: string | null;
+  notes: string | null;
+  status: string;
+  mode: "in-person" | "telehealth";
+  proposedStartsAt?: string | null;
+  proposedNote?: string | null;
+}
 
 function initials(name: string): string {
   return name
@@ -52,21 +69,55 @@ function daysUntil(iso: string): number {
   return Math.round(ms / 86_400_000);
 }
 
+const PAST_STATUSES = new Set(["completed", "cancelled", "no_show", "rejected"]);
+
 export default function AppointmentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { state, rescheduleAppointment, cancelAppointment, addNotification } = usePatientStore();
 
-  if (!state.hydrated) {
-    return <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</div>;
+  const [apt, setApt] = useState<DbAppointment | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const reload = () => setReloadKey((k) => k + 1);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const r = await fetch("/api/patient/appointments", { cache: "no-store" });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!alive || !data?.ok) return;
+        const match = (data.appointments as DbAppointment[]).find((a) => a.id === id) ?? null;
+        setApt(match);
+      } catch (err) {
+        console.error("[patient/appointments/:id] fetch", err);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [id, reloadKey]);
+
+  if (loading) {
+    return (
+      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-10 text-center text-sm text-[var(--color-muted-foreground)]">
+        Loading…
+      </div>
+    );
   }
-
-  const apt = state.appointments.find((a) => a.id === id);
   if (!apt) return <NotFound id={id} />;
 
-  const docs = state.documents.filter((d) => apt.documentIds.includes(d.id));
   const days = daysUntil(apt.date);
-  const isPast = apt.status === "completed" || apt.status === "cancelled" || apt.status === "no-show" || apt.status === "rejected";
+  const isPast = PAST_STATUSES.has(apt.status);
+  const location =
+    apt.mode === "telehealth" ? "Telehealth · video link 1h before" : `${apt.clinicianDepartment} Wing`;
+  const reason = apt.notes ?? "Visit";
+  const hasProposal = apt.status === "reschedule_requested" && apt.proposedStartsAt;
 
   const statusBadge =
     apt.status === "confirmed" ? (
@@ -75,6 +126,12 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
       </Badge>
     ) : apt.status === "requested" ? (
       <Badge variant="warning" size="sm" dot>Requested</Badge>
+    ) : apt.status === "reschedule_requested" ? (
+      <Badge variant="warning" size="sm" dot>Reschedule proposed</Badge>
+    ) : apt.status === "arrived" ? (
+      <Badge variant="warning" size="sm" dot>Arrived</Badge>
+    ) : apt.status === "in_progress" ? (
+      <Badge variant="success" size="sm" dot>In progress</Badge>
     ) : apt.status === "completed" ? (
       <Badge variant="success" size="sm" dot>Completed</Badge>
     ) : apt.status === "cancelled" ? (
@@ -84,6 +141,21 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
     ) : (
       <Badge variant="danger" size="sm" dot>No-show</Badge>
     );
+
+  async function patch(body: Record<string, unknown>, ok: () => void) {
+    const r = await fetch("/api/patient/appointments", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, appointmentId: id }),
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.ok) {
+      toast.error(j?.error ?? "Action failed");
+      return false;
+    }
+    ok();
+    return true;
+  }
 
   return (
     <>
@@ -102,15 +174,15 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
             <div className="pointer-events-none absolute -right-20 -top-12 size-48 rounded-full bg-gradient-to-br from-[oklch(0.7_0.15_235)] to-transparent opacity-25 blur-3xl" />
             <div className="relative flex items-start gap-4">
               <Avatar className="size-14">
-                <AvatarFallback>{initials(apt.clinician)}</AvatarFallback>
+                <AvatarFallback>{initials(apt.clinicianName)}</AvatarFallback>
               </Avatar>
               <div className="flex-1">
                 {statusBadge}
                 <h1 className="mt-2 text-xl font-semibold tracking-tight">
-                  {apt.clinician} · {apt.department}
+                  {apt.clinicianName} · {apt.clinicianDepartment}
                 </h1>
                 <p className="text-sm text-[var(--color-muted-foreground)]">
-                  {apt.reason} · 15-minute slot
+                  {reason} · {apt.durationMinutes}-minute slot
                 </p>
               </div>
             </div>
@@ -120,31 +192,82 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
               <Box
                 icon={apt.mode === "telehealth" ? Video : MapPin}
                 label="Location"
-                value={apt.mode === "telehealth" ? "Telehealth · video link 1h before" : `${apt.department} Wing`}
+                value={apt.mode === "telehealth" ? "Telehealth · video link 1h before" : `${apt.clinicianDepartment} Wing`}
               />
             </div>
+
+            {hasProposal && (
+              <div className="mt-4 rounded-xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-soft)]/30 px-4 py-3 text-xs">
+                <p className="font-semibold text-[oklch(0.45_0.14_75)] dark:text-[oklch(0.85_0.13_80)]">
+                  {apt.clinicianName} proposed a new slot
+                </p>
+                <p className="mt-0.5 text-[var(--color-muted-foreground)]">
+                  {new Date(apt.proposedStartsAt!).toLocaleString("en-IN", { hour12: false })}
+                  {apt.proposedNote ? ` · ${apt.proposedNote}` : ""}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      patch({ action: "accept_reschedule" }, () => {
+                        toast.success("New slot confirmed · reminders scheduled");
+                        reload();
+                      })
+                    }
+                  >
+                    Accept new slot
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      patch({ action: "decline_reschedule" }, () => {
+                        toast.info("Proposal declined · clinician notified");
+                        reload();
+                      })
+                    }
+                  >
+                    Decline
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {!isPast && (
               <div className="mt-4 flex flex-wrap gap-2">
-                <RescheduleDialog
-                  triggerLabel={<><Calendar /> Reschedule</>}
-                  triggerProps={{ variant: "outline", size: "sm" }}
-                  appointment={{ id: apt.id, doctor: apt.clinician, date: dateLabel(apt.date), time: apt.time }}
-                  onConfirm={(slot) => {
-                    rescheduleAppointment(apt.id, apt.date, slot);
-                    toast.success("Appointment rescheduled", { description: `New slot: ${slot} · reminders updated` });
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRescheduleOpen(true)}
+                  disabled={apt.status === "arrived" || apt.status === "in_progress"}
+                >
+                  <Calendar /> Reschedule
+                </Button>
+                <RescheduleAppointmentDialog
+                  open={rescheduleOpen}
+                  onOpenChange={setRescheduleOpen}
+                  currentStartsAt={apt.startsAt}
+                  currentLabel={`${dateLabel(apt.date)} · ${apt.time}`}
+                  clinicianName={apt.clinicianName}
+                  mode="patient_request"
+                  onSubmit={async ({ startsAt }) => {
+                    const ok = await patch({ action: "patient_reschedule", proposedStartsAt: startsAt }, () => {
+                      toast.success("Reschedule sent · clinician will reconfirm", {
+                        description: `New slot: ${new Date(startsAt).toLocaleString("en-IN", { hour12: false })}`,
+                      });
+                      reload();
+                    });
+                    return { ok };
                   }}
                 />
                 <AddToCalendar
                   event={{
                     id: apt.id,
-                    title: `${apt.clinician} · ${apt.department}`,
+                    title: `${apt.clinicianName} · ${apt.clinicianDepartment}`,
                     start: toEventStart(apt.date, apt.time),
-                    durationMinutes: 15,
-                    location:
-                      apt.mode === "telehealth"
-                        ? "Telehealth (video link)"
-                        : `${apt.department} Wing`,
-                    description: apt.reason,
+                    durationMinutes: apt.durationMinutes,
+                    location: apt.mode === "telehealth" ? "Telehealth (video link)" : `${apt.clinicianDepartment} Wing`,
+                    description: reason,
                   }}
                   filename={`appointment-${apt.id}`}
                   triggerProps={{ variant: "outline", size: "sm" }}
@@ -156,19 +279,15 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
                     size: "sm",
                     className: "text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]",
                   }}
-                  appointment={{ id: apt.id, reason: apt.reason, date: dateLabel(apt.date), time: apt.time, doctor: apt.clinician }}
-                  onConfirm={(reason) => {
-                    cancelAppointment(apt.id);
-                    addNotification({
-                      title: "Appointment cancelled",
-                      body: `${apt.clinician} · ${dateLabel(apt.date)}`,
-                      type: "appointment",
-                    });
-                    toast.warning("Appointment cancelled", {
-                      description: reason ? `Reason: ${reason}` : "Reminder jobs cancelled · audit-logged",
-                    });
-                    router.push("/patient/appointments");
-                  }}
+                  appointment={{ id: apt.id, reason, date: dateLabel(apt.date), time: apt.time, doctor: apt.clinicianName }}
+                  onConfirm={(cancelReason) =>
+                    patch({ action: "cancel", reason: cancelReason }, () => {
+                      toast.warning("Appointment cancelled", {
+                        description: cancelReason ? `Reason: ${cancelReason} · audit-logged` : "Reminders cancelled · audit-logged",
+                      });
+                      router.push("/patient/appointments");
+                    })
+                  }
                 />
               </div>
             )}
@@ -177,17 +296,7 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
           {/* Reason */}
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
             <h2 className="text-sm font-semibold">Your reason for visiting</h2>
-            <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">{apt.reason}</p>
-            {docs.length > 0 && (
-              <div className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)]/30 p-4 space-y-2">
-                <p className="text-xs font-medium uppercase tracking-wider text-[var(--color-muted-foreground)]">
-                  Attached ({docs.length})
-                </p>
-                {docs.map((d) => (
-                  <AttachmentRow key={d.id} doc={d} />
-                ))}
-              </div>
-            )}
+            <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">{reason}</p>
           </div>
 
           {/* Timeline */}
@@ -218,18 +327,18 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
             <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Your clinician</p>
             <div className="mt-3 flex items-center gap-3">
               <Avatar className="size-11">
-                <AvatarFallback>{initials(apt.clinician)}</AvatarFallback>
+                <AvatarFallback>{initials(apt.clinicianName)}</AvatarFallback>
               </Avatar>
               <div>
-                <p className="text-sm font-semibold">{apt.clinician}</p>
-                <p className="text-[11px] text-[var(--color-muted-foreground)]">{apt.department}</p>
+                <p className="text-sm font-semibold">{apt.clinicianName}</p>
+                <p className="text-[11px] text-[var(--color-muted-foreground)]">{apt.clinicianDepartment}</p>
               </div>
             </div>
             <ul className="mt-4 space-y-2 text-xs text-[var(--color-muted-foreground)]">
-              <li className="inline-flex items-center gap-2"><Building2 className="size-3.5" /> City General Hospital</li>
-              <li className="inline-flex items-center gap-2"><Stethoscope className="size-3.5" /> {apt.department}</li>
+              <li className="inline-flex items-center gap-2"><Building2 className="size-3.5" /> {apt.clinicianDepartment}</li>
+              <li className="inline-flex items-center gap-2"><Stethoscope className="size-3.5" /> {apt.mode === "telehealth" ? "Telehealth visit" : "In-person visit"}</li>
               <li className="inline-flex items-center gap-2"><Mail className="size-3.5" /> Reach via secure messaging</li>
-              <li className="inline-flex items-center gap-2"><Phone className="size-3.5" /> Reception · +91 22 4567 8910</li>
+              <li className="inline-flex items-center gap-2"><Phone className="size-3.5" /> Contact your clinic reception</li>
             </ul>
             <Button asChild variant="outline" size="sm" className="mt-4 w-full">
               <Link href="/patient/messages">Send a message</Link>
@@ -256,7 +365,7 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 text-xs">
             <p className="font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">Privacy</p>
             <p className="mt-2 text-[var(--color-muted-foreground)]">
-              This appointment shares your name and contact info with {apt.clinician}&apos;s
+              This appointment shares your name and contact info with {apt.clinicianName}&apos;s
               scheduling system. Clinical content remains in HealthSecure under
               your active consent.
             </p>
@@ -271,24 +380,32 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
   );
 }
 
-function timeline(apt: Appointment) {
-  const created = new Date(apt.createdAt);
+function timeline(apt: DbAppointment) {
+  const created = new Date(apt.startsAt);
   const createdLabel = created.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const confirmed = apt.status !== "requested" && apt.status !== "reschedule_requested";
   return [
     { icon: CheckCircle2, label: `Requested`, t: createdLabel, done: true },
     {
       icon: CheckCircle2,
       label: "Confirmed by clinic",
-      t: apt.status !== "requested" ? createdLabel : "Pending",
-      done: apt.status !== "requested",
+      t: confirmed ? "Confirmed" : "Pending",
+      done: confirmed,
     },
     { icon: Bell, label: "Reminder T-24h", t: `Scheduled · ${dateLabel(apt.date)}`, done: apt.status === "completed" },
     { icon: Bell, label: "Reminder T-1h", t: `Scheduled · ${dateLabel(apt.date)}`, done: apt.status === "completed" },
     {
       icon: ClipboardList,
-      label: apt.status === "cancelled" ? "Cancelled" : "Visit completed",
-      t: apt.status === "completed" ? dateLabel(apt.date) : apt.status === "cancelled" ? "Cancelled" : "Pending",
-      done: apt.status === "completed" || apt.status === "cancelled",
+      label: apt.status === "cancelled" ? "Cancelled" : apt.status === "rejected" ? "Declined" : "Visit completed",
+      t:
+        apt.status === "completed"
+          ? dateLabel(apt.date)
+          : apt.status === "cancelled"
+            ? "Cancelled"
+            : apt.status === "rejected"
+              ? "Declined"
+              : "Pending",
+      done: apt.status === "completed" || apt.status === "cancelled" || apt.status === "rejected",
     },
   ];
 }
@@ -300,24 +417,6 @@ function Box({ icon: Icon, label, value }: { icon: React.ComponentType<{ classNa
         <Icon className="size-3.5" /> {label}
       </div>
       <p className="mt-1 text-sm font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function AttachmentRow({ doc }: { doc: PatientDocument }) {
-  const sizeKb = Math.max(1, Math.round(doc.sizeBytes / 1024));
-  return (
-    <div className="flex items-center gap-3 rounded-lg bg-[var(--color-card)] p-3">
-      <span className="flex size-8 items-center justify-center rounded-md bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
-        <FileText className="size-4" />
-      </span>
-      <div className="flex-1 min-w-0">
-        <p className="truncate text-sm font-medium">{doc.name}</p>
-        <p className="text-[10px] text-[var(--color-muted-foreground)]">
-          {sizeKb} KB · {doc.scanStatus === "clean" ? "scanned clean" : "scan pending"} · audit-logged
-        </p>
-      </div>
-      <SecurityBadge variant="encrypted" />
     </div>
   );
 }

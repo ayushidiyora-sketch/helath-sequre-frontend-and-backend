@@ -1,6 +1,9 @@
 import type Stripe from "stripe";
+import { cookies } from "next/headers";
 import { getStripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
+import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
+import { appBaseUrl, sendActionEmail } from "@/lib/notify";
 
 /**
  * Post-payment persistence + tenant activation (finalize-on-return). After
@@ -174,6 +177,46 @@ export async function finalizePayment(paymentIntentId: string): Promise<Finalize
     ON CONFLICT ("stripePaymentIntentId") DO NOTHING
   `;
 
+  // Payment-success + invoice-generated email to the Org Admin (best-effort,
+  // fires once because the idempotent early-return above guards re-entry).
+  try {
+    const orgRows = await prisma.$queryRaw<{ orgName: string | null; adminEmail: string | null }[]>`
+      SELECT o.name AS "orgName",
+             (SELECT u.email FROM users u
+               WHERE u."organizationId" = o.id AND u."roleKind" = 'org_admin' AND u."deletedAt" IS NULL
+               ORDER BY u."createdAt" ASC LIMIT 1) AS "adminEmail"
+      FROM organizations o WHERE o.id = ${orgId}::uuid LIMIT 1
+    `;
+    const orgName = orgRows[0]?.orgName ?? "your organization";
+    const recipient = billingEmail || orgRows[0]?.adminEmail || null;
+    const amount = `${(amountCents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })} ${currency.toUpperCase()}`;
+    const periodEndStr = end.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    await sendActionEmail({
+      orgId,
+      to: recipient,
+      slug: "payment-success",
+      vars: {
+        "organization.name": orgName,
+        "invoice.number": number,
+        "invoice.amount": amount,
+        "subscription.tier": tierName,
+        "subscription.cycle": cycle,
+        "subscription.renews": periodEndStr,
+        action_url: `${appBaseUrl()}/admin/billing`,
+      },
+      fallbackSubject: `Payment received — invoice ${number} (${orgName})`,
+      fallbackText:
+        `Hi,\n\nThank you — your payment for ${orgName} was received successfully.\n\n` +
+        `  Invoice:      ${number}\n` +
+        `  Plan:         ${tierName} (${cycle})\n` +
+        `  Amount paid:  ${amount}\n` +
+        `  Renews on:    ${periodEndStr}\n\n` +
+        `Your subscription is now active. View invoices and billing details in your portal: ${appBaseUrl()}/admin/billing\n\n— HealthSecure`,
+    });
+  } catch (err) {
+    console.error("[billing] payment-success email failed", err);
+  }
+
   return {
     ok: true, paid: true, persisted: true,
     invoice: {
@@ -182,6 +225,24 @@ export async function finalizePayment(paymentIntentId: string): Promise<Finalize
       periodStart: start.toISOString(), periodEnd: end.toISOString(),
     },
   };
+}
+
+/**
+ * The signed-in Org Admin's currently-active subscription tier id (solo |
+ * hospital | enterprise), or null when not signed in / no active subscription.
+ * Used to badge the matching card on the public pricing page.
+ */
+export async function currentUserActiveTierId(): Promise<string | null> {
+  const jar = await cookies();
+  const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
+  if (!claims || claims.role !== "Org Admin" || !isDbUid(claims.uid)) return null;
+  const rows = await prisma.$queryRaw<{ tierId: string }[]>`
+    SELECT "tierId" FROM tenant_subscriptions
+    WHERE status = 'active'
+      AND "organizationId" = (SELECT "organizationId" FROM users WHERE id = ${claims.uid}::uuid)
+    LIMIT 1
+  `;
+  return rows[0]?.tierId ?? null;
 }
 
 /** Whether an org currently has an active subscription (used for the onboarding redirect). */

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { toast } from "sonner";
 import type { ReactNode } from "react";
 import {
@@ -143,6 +144,50 @@ function ConsentRow({
 
 export default function RegisterPatientPage() {
   const router = useRouter();
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleInvite(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (submitting) return;
+    const fd = new FormData(e.currentTarget);
+    const get = (k: string) => String(fd.get(k) ?? "").trim();
+    const payload = {
+      firstName: get("first_name"),
+      lastName: get("last_name"),
+      email: get("email"),
+      phone: get("phone"),
+      dateOfBirth: get("date_of_birth"),
+      gender: get("gender"),
+    };
+    if (!payload.email) {
+      toast.error("Email is required to send the invitation.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const r = await fetch("/api/admin/patients/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = (await r.json()) as { ok?: boolean; error?: string; mailSent?: boolean; templateUsed?: boolean; actionUrl?: string };
+      if (!r.ok || !j.ok) {
+        toast.error("Could not send invitation", { description: j.error ?? `HTTP ${r.status}` });
+        setSubmitting(false);
+        return;
+      }
+      toast.success("Patient invited", {
+        description: j.mailSent
+          ? `Invitation email sent${j.templateUsed ? " (from your template)" : ""} · audit-logged`
+          : `Invite created — email not delivered (no mailer configured). Accept link: ${(j.actionUrl ?? "").slice(0, 54)}…`,
+        duration: j.mailSent ? 5000 : 16000,
+      });
+      router.push("/admin/patients");
+    } catch {
+      toast.error("Network error — could not send invitation.");
+      setSubmitting(false);
+    }
+  }
 
   return (
     <>
@@ -162,16 +207,7 @@ export default function RegisterPatientPage() {
         </p>
       </div>
 
-      <form
-        className="max-w-5xl"
-        onSubmit={(e) => {
-          e.preventDefault();
-          toast.success("Patient registered", {
-            description: "MRN assigned · clinician assigned · enrollment email sent · audit-logged",
-          });
-          router.push("/admin/patients");
-        }}
-      >
+      <form className="max-w-5xl" onSubmit={handleInvite}>
         <div className="grid gap-5 lg:grid-cols-[1.85fr_1fr]">
           {/* Form sections */}
           <div className="space-y-5">
@@ -179,22 +215,22 @@ export default function RegisterPatientPage() {
             <Section icon={UserPlus2} title="A · Personal information">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="First name" htmlFor="first_name">
-                  <Input id="first_name" placeholder="Aarav" required />
+                  <Input id="first_name" name="first_name" placeholder="Aarav" required />
                 </Field>
                 <Field label="Last name" htmlFor="last_name">
-                  <Input id="last_name" placeholder="Mehta" required />
+                  <Input id="last_name" name="last_name" placeholder="Mehta" required />
                 </Field>
-                <Field label="Email" htmlFor="email" hint="Optional for admin-created records.">
-                  <Input id="email" type="email" placeholder="patient@example.com" leadingIcon={<Mail />} />
+                <Field label="Email" htmlFor="email" hint="Required — the invitation link is emailed here.">
+                  <Input id="email" name="email" type="email" placeholder="patient@example.com" leadingIcon={<Mail />} required />
                 </Field>
                 <Field label="Phone" htmlFor="phone">
-                  <Input id="phone" type="tel" placeholder="+91 98765 43210" leadingIcon={<Phone />} required />
+                  <Input id="phone" name="phone" type="tel" placeholder="+91 98765 43210" leadingIcon={<Phone />} required />
                 </Field>
                 <Field label="Date of birth" htmlFor="date_of_birth">
-                  <Input id="date_of_birth" type="date" required />
+                  <Input id="date_of_birth" name="date_of_birth" type="date" required />
                 </Field>
                 <Field label="Gender" htmlFor="gender">
-                  <select id="gender" className={SELECT} defaultValue="" required>
+                  <select id="gender" name="gender" className={SELECT} defaultValue="" required>
                     <option value="" disabled>Select gender</option>
                     <option>Male</option>
                     <option>Female</option>
@@ -325,8 +361,8 @@ export default function RegisterPatientPage() {
             {/* G — Account & Consent */}
             <Section icon={Lock} title="G · Account & consent">
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Password" htmlFor="password" full hint="The patient can reset this after first sign-in.">
-                  <Input id="password" type="password" placeholder="••••••••••••" autoComplete="new-password" required />
+                <Field label="Password" htmlFor="password" full hint="Not set here — the patient creates their own password from the invitation link.">
+                  <Input id="password" type="password" placeholder="Set by the patient on accept" autoComplete="new-password" disabled />
                 </Field>
               </div>
               <div className="mt-4 space-y-2">
@@ -437,8 +473,8 @@ export default function RegisterPatientPage() {
                 <Button asChild variant="outline">
                   <Link href="/admin/patients">Cancel</Link>
                 </Button>
-                <Button type="submit">
-                  <Send /> Register patient
+                <Button type="submit" disabled={submitting}>
+                  <Send /> {submitting ? "Sending…" : "Send invitation"}
                 </Button>
               </div>
             </div>
@@ -453,8 +489,8 @@ export default function RegisterPatientPage() {
               <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
                 Complete all sections, then create the patient record.
               </p>
-              <Button type="submit" className="mt-4 w-full">
-                <Send /> Register patient
+              <Button type="submit" className="mt-4 w-full" disabled={submitting}>
+                <Send /> {submitting ? "Sending…" : "Send invitation"}
               </Button>
               <Button asChild variant="outline" className="mt-2 w-full">
                 <Link href="/admin/patients">Cancel</Link>

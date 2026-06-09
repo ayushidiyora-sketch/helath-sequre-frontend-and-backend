@@ -21,7 +21,7 @@ import { Input, Label } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { usePatientStore, type DocumentCategory } from "@/lib/patient-store";
-import { scanFile } from "@/lib/document-scanner";
+import { scanFile, type ScanResult } from "@/lib/document-scanner";
 
 type UploadPhase = "queued" | "scanning" | "uploading" | "done" | "blocked" | "failed";
 interface UploadItem {
@@ -109,6 +109,9 @@ export default function UploadPage() {
   const { addDocument } = usePatientStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
+  // Pre-upload scan result per file (aligned with `files` by index).
+  // "scanning" while the async scan is in flight.
+  const [scans, setScans] = useState<(ScanResult | "scanning")[]>([]);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -129,7 +132,11 @@ export default function UploadPage() {
       accepted.push(f);
     }
     if (accepted.length) {
+      // Index where the new files will land, so each async scan result can be
+      // written back to the right slot.
+      const baseIndex = files.length;
       setFiles((prev) => [...prev, ...accepted]);
+      setScans((prev) => [...prev, ...accepted.map(() => "scanning" as const)]);
       // Auto-pick a category from the FIRST file (only if the user hasn't
       // overridden the dropdown yet). Multi-file uploads in mixed categories
       // are unusual; if it happens the user can re-pick before submitting.
@@ -142,6 +149,32 @@ export default function UploadPage() {
           });
         }
       }
+      // Pre-scan every newly added file (magic-byte / EICAR / suspicious-PDF-tag
+      // checks) the moment it's selected. Blocked files are flagged inline and
+      // excluded from the upload, so the user can't queue an unsafe file and
+      // doesn't have to click "Start upload" to discover the problem.
+      accepted.forEach((f, j) => {
+        scanFile(f)
+          .then((result) => {
+            setScans((prev) => {
+              const next = [...prev];
+              next[baseIndex + j] = result;
+              return next;
+            });
+            if (result.status === "infected") {
+              toast.error(`Blocked: ${f.name}`, {
+                description: result.reason ?? "Virus scan flagged this file.",
+              });
+            }
+          })
+          .catch(() => {
+            setScans((prev) => {
+              const next = [...prev];
+              next[baseIndex + j] = { status: "infected", reason: "Could not scan this file." };
+              return next;
+            });
+          });
+      });
     }
   }
 
@@ -174,7 +207,10 @@ export default function UploadPage() {
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       patchItem(i, { phase: "scanning", pct: 0 });
-      const scan = await scanFile(f);
+      // Reuse the result from the on-select pre-scan when present; only
+      // re-scan if this file somehow has no result yet.
+      const pre = scans[i];
+      const scan = pre && pre !== "scanning" ? pre : await scanFile(f);
       if (scan.status === "infected") {
         rejected++;
         patchItem(i, { phase: "blocked", error: scan.reason ?? "Virus scan flagged this file." });
@@ -250,8 +286,22 @@ export default function UploadPage() {
     } else if (rejected + netFailed > 0) {
       // Every file was rejected or failed — stay on the page so the user can retry.
       setFiles([]);
+      setScans([]);
+      setItems([]);
     }
   }
+
+  // Upload eligibility is driven by the on-select scan, not the click:
+  //  - `scanning`  → a file is still being inspected (block the button)
+  //  - cleanCount  → how many files are safe to send (the button's "(N)")
+  //  - blockedCount→ flagged files, excluded from the upload entirely
+  const scanning = scans.some((s) => s === "scanning");
+  const cleanCount = scans.filter(
+    (s): s is ScanResult => s !== undefined && s !== "scanning" && s.status === "clean",
+  ).length;
+  const blockedCount = scans.filter(
+    (s): s is ScanResult => s !== undefined && s !== "scanning" && s.status === "infected",
+  ).length;
 
   return (
     <>
@@ -324,31 +374,59 @@ export default function UploadPage() {
             <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
               <h2 className="text-sm font-semibold">
                 Selected files <span className="text-[var(--color-muted-foreground)]">· {files.length}</span>
+                {blockedCount > 0 && (
+                  <span className="text-[var(--color-danger)]"> · {blockedCount} blocked</span>
+                )}
               </h2>
               <ul className="mt-3 space-y-2">
                 {files.map((f, i) => {
                   const it = items[i];
+                  const sc = scans[i];
                   const showBar = it && (it.phase === "uploading" || it.phase === "done");
+                  const blocked = !it && sc !== undefined && sc !== "scanning" && sc.status === "infected";
+                  // Status text: during/after upload use the upload phase;
+                  // before upload use the on-select scan result.
+                  const statusLabel = it
+                    ? PHASE_LABEL[it.phase]
+                    : sc === "scanning"
+                      ? "Scanning…"
+                      : sc?.status === "infected"
+                        ? "Blocked by scanner"
+                        : sc?.status === "clean"
+                          ? "Ready · clean"
+                          : "";
+                  const errorText =
+                    it?.error ?? (blocked ? sc.reason : undefined);
                   return (
                     <li
                       key={`${f.name}-${i}`}
-                      className="flex items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-muted)]/30 px-3 py-2"
+                      className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${
+                        blocked
+                          ? "border-[var(--color-danger)]/40 bg-[var(--color-danger-soft)]/30"
+                          : "border-[var(--color-border)] bg-[var(--color-muted)]/30"
+                      }`}
                     >
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--color-primary-50)] text-[var(--color-primary-700)]">
-                        <FileText className="size-4" />
+                      <span
+                        className={`flex size-8 shrink-0 items-center justify-center rounded-md ${
+                          blocked
+                            ? "bg-[var(--color-danger-soft)] text-[var(--color-danger)]"
+                            : "bg-[var(--color-primary-50)] text-[var(--color-primary-700)]"
+                        }`}
+                      >
+                        {blocked ? <AlertOctagon className="size-4" /> : <FileText className="size-4" />}
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{f.name}</p>
                         <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--color-muted-foreground)]">
-                          <span>
+                          <span className={blocked ? "text-[var(--color-danger)]" : undefined}>
                             {fileSize(f.size)}
-                            {it ? ` · ${PHASE_LABEL[it.phase]}` : ""}
+                            {statusLabel ? ` · ${statusLabel}` : ""}
                           </span>
                           {it?.phase === "uploading" && <span className="tabular-nums">{it.pct}%</span>}
                         </div>
                         {showBar && <Progress value={it.pct} className="mt-1.5" />}
-                        {it?.error && (
-                          <p className="mt-1 text-[11px] text-[var(--color-danger)]">{it.error}</p>
+                        {errorText && (
+                          <p className="mt-1 text-[11px] text-[var(--color-danger)]">{errorText}</p>
                         )}
                       </div>
                       {uploading ? (
@@ -357,7 +435,11 @@ export default function UploadPage() {
                         <button
                           type="button"
                           aria-label="Remove file"
-                          onClick={() => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                          onClick={() => {
+                            setFiles((prev) => prev.filter((_, idx) => idx !== i));
+                            setScans((prev) => prev.filter((_, idx) => idx !== i));
+                            setItems((prev) => prev.filter((_, idx) => idx !== i));
+                          }}
                           className="rounded p-1 text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] hover:text-[var(--color-foreground)]"
                         >
                           <X className="size-4" />
@@ -434,13 +516,21 @@ export default function UploadPage() {
             <Button asChild variant="outline" className="flex-1" disabled={uploading}>
               <Link href="/patient/documents">Cancel</Link>
             </Button>
-            <Button className="flex-1" onClick={startUpload} disabled={files.length === 0 || uploading}>
+            <Button
+              className="flex-1"
+              onClick={startUpload}
+              disabled={files.length === 0 || uploading || scanning || cleanCount === 0}
+            >
               {uploading ? (
                 <>
                   <Loader2 className="animate-spin" /> Uploading…
                 </>
+              ) : scanning ? (
+                <>
+                  <Loader2 className="animate-spin" /> Scanning…
+                </>
               ) : (
-                `Start upload${files.length > 0 ? ` (${files.length})` : ""}`
+                `Start upload${cleanCount > 0 ? ` (${cleanCount})` : ""}`
               )}
             </Button>
           </div>
