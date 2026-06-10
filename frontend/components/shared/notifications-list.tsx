@@ -15,6 +15,8 @@ import {
   ScrollText,
   Cog,
   Hourglass,
+  Building2,
+  ClipboardList,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -30,7 +32,9 @@ export type NotificationCategory =
   | "security"
   | "audit"
   | "system"
-  | "approval";
+  | "approval"
+  | "tenants"
+  | "task";
 
 export interface SimpleNotification {
   id: string;
@@ -56,6 +60,8 @@ export const CATEGORY_META: Record<string, { icon: LucideIcon; color: string }> 
   audit: { icon: ScrollText, color: "from-[oklch(0.6_0.06_250)] to-[oklch(0.42_0.04_250)]" },
   system: { icon: Cog, color: "from-[oklch(0.62_0.18_22)] to-[oklch(0.48_0.16_22)]" },
   approval: { icon: Hourglass, color: "from-[oklch(0.7_0.15_75)] to-[oklch(0.56_0.13_55)]" },
+  tenants: { icon: Building2, color: "from-[oklch(0.64_0.12_265)] to-[oklch(0.5_0.11_270)]" },
+  task: { icon: ClipboardList, color: "from-[oklch(0.68_0.13_145)] to-[oklch(0.52_0.12_150)]" },
 };
 
 type Tab = "all" | "critical";

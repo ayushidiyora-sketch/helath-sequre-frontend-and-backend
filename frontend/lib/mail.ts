@@ -299,6 +299,18 @@ export async function sendMail(args: SendArgs): Promise<SendResult> {
 }
 
 /**
+ * Send an SMS via Twilio ONLY (no email fallback). Used by the per-user SMS
+ * notification channel. Returns a skipped/failed result when Twilio isn't
+ * configured or the number is missing — never throws.
+ */
+export async function sendSms(args: { toPhone: string; text: string }): Promise<SendResult> {
+  if (!twilioConfigured()) {
+    return { ok: false, via: "twilio", error: "Twilio not configured" };
+  }
+  return sendViaTwilio({ to: "", toPhone: args.toPhone, subject: "", text: args.text });
+}
+
+/**
  * Translate per-tenant integration toggles into a transport preference list.
  * Twilio is SMS-only — when ON, it is the FIRST attempt; if it fails (or no
  * phone), the next preferred transport handles the email.

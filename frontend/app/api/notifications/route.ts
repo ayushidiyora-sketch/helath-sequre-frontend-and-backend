@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { prefChannelOn } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -17,7 +18,9 @@ interface Notification {
     | "security"
     | "audit"
     | "system"
-    | "approval";
+    | "approval"
+    | "tenants"
+    | "task";
   title: string;
   body: string;
   time: string;
@@ -65,9 +68,9 @@ async function patientFeed(uid: string): Promise<Notification[]> {
   const rejectedSince = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
   const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
 
-  // All five feeds are independent → fire them in one parallel batch so the
-  // total wall-clock is ~1 DB round-trip instead of 5 (big win on a remote DB).
-  const [reqs, appts, rejected, reminders, rx, dataReqs] = await Promise.all([
+  // All feeds are independent → fire them in one parallel batch so the
+  // total wall-clock is ~1 DB round-trip (big win on a remote DB).
+  const [reqs, appts, rejected, reminders, rx, dataReqs, notes, docs, msgs, expiring] = await Promise.all([
     prisma.$queryRaw<
       {
         id: string;
@@ -162,6 +165,65 @@ async function patientFeed(uid: string): Promise<Notification[]> {
         AND status IN ('approved_partial','approved_full','rejected')
         AND "decidedAt" >= ${past}
       ORDER BY "decidedAt" DESC
+      LIMIT 10
+    `,
+    // Finalized clinical notes (Records) authored for this patient.
+    prisma.$queryRaw<
+      { id: string; template: string; finalizedAt: Date; clinicianFirstName: string | null; clinicianLastName: string | null }[]
+    >`
+      SELECT m.id, m.template, m."finalizedAt",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
+      FROM medical_records m
+      LEFT JOIN users c ON c.id = m."clinicianId"
+      WHERE m."patientId" = ${uid}::uuid
+        AND m.status = 'finalized'
+        AND m."deletedAt" IS NULL
+        AND m."finalizedAt" >= ${past}
+      ORDER BY m."finalizedAt" DESC
+      LIMIT 10
+    `,
+    // Documents the care team shared with this patient.
+    prisma.$queryRaw<
+      { id: string; name: string; category: string; uploadedAt: Date }[]
+    >`
+      SELECT d.id, d.name, d.category, d."uploadedAt"
+      FROM patient_documents d
+      WHERE d."patientId" = ${uid}::uuid
+        AND d."sharedWithPatient" = true
+        AND d."uploadedById" <> ${uid}::uuid
+        AND d."deletedAt" IS NULL
+        AND d."uploadedAt" >= ${past}
+      ORDER BY d."uploadedAt" DESC
+      LIMIT 10
+    `,
+    // Incoming secure messages from the care team (clinician → patient).
+    prisma.$queryRaw<
+      { id: string; body: string; sentAt: Date; readAt: Date | null; clinicianFirstName: string | null; clinicianLastName: string | null }[]
+    >`
+      SELECT m.id, m.body, m."sentAt", m."readAt",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
+      FROM messages m
+      LEFT JOIN users c ON c.id = m."clinicianId"
+      WHERE m."patientId" = ${uid}::uuid
+        AND m."senderRole" = 'clinician'
+        AND m."sentAt" >= ${past}
+      ORDER BY m."sentAt" DESC
+      LIMIT 10
+    `,
+    // Active consents expiring within 7 days.
+    prisma.$queryRaw<
+      { id: string; scopes: Prisma.JsonValue; expiresAt: Date; clinicianFirstName: string | null; clinicianLastName: string | null }[]
+    >`
+      SELECT cr.id, cr.scopes, cr."expiresAt",
+             c."firstName" AS "clinicianFirstName", c."lastName" AS "clinicianLastName"
+      FROM consent_requests cr
+      LEFT JOIN users c ON c.id = cr."clinicianId"
+      WHERE cr."patientId" = ${uid}::uuid
+        AND cr.status = 'approved'
+        AND cr."expiresAt" IS NOT NULL
+        AND cr."expiresAt" > ${now}
+        AND cr."expiresAt" <= ${new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)}
+      ORDER BY cr."expiresAt" ASC
       LIMIT 10
     `,
   ]);
@@ -285,6 +347,59 @@ async function patientFeed(uid: string): Promise<Notification[]> {
     });
   }
 
+  // Finalized clinical notes (Records).
+  for (const n of notes) {
+    const doctor = `Dr. ${[n.clinicianFirstName, n.clinicianLastName].filter(Boolean).join(" ")}`.trim();
+    out.push({
+      id: `note-${n.id}`,
+      category: "record",
+      title: `New ${n.template} note`,
+      body: `Finalized by ${doctor}`,
+      time: relativeTime(n.finalizedAt),
+      href: "/patient/records",
+    });
+  }
+
+  // Documents shared by the care team.
+  for (const d of docs) {
+    out.push({
+      id: `doc-${d.id}`,
+      category: "record",
+      title: `New document: ${d.name}`,
+      body: `${d.category} · shared by your care team`,
+      time: relativeTime(d.uploadedAt),
+      href: "/patient/documents",
+    });
+  }
+
+  // Incoming secure messages from the care team.
+  for (const m of msgs) {
+    const doctor = `Dr. ${[m.clinicianFirstName, m.clinicianLastName].filter(Boolean).join(" ")}`.trim();
+    const snippet = (m.body ?? "").trim().slice(0, 80) || "Sent you an attachment";
+    out.push({
+      id: `msg-${m.id}`,
+      category: "message",
+      title: `New message from ${doctor}`,
+      body: snippet,
+      time: relativeTime(m.sentAt),
+      href: "/patient/messages",
+      read: !!m.readAt,
+    });
+  }
+
+  // Consents expiring within 7 days.
+  for (const e of expiring) {
+    const doctor = `Dr. ${[e.clinicianFirstName, e.clinicianLastName].filter(Boolean).join(" ")}`.trim();
+    out.push({
+      id: `ce-${e.id}`,
+      category: "consent",
+      title: `Consent expiring soon`,
+      body: `${fmtScopes(e.scopes)} for ${doctor} · expires ${e.expiresAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+      time: relativeTime(e.expiresAt),
+      href: "/patient/consents",
+    });
+  }
+
   return out;
 }
 
@@ -293,8 +408,8 @@ async function clinicianFeed(uid: string): Promise<Notification[]> {
   const now = new Date();
   const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
 
-  // All three feeds are independent → fetch in parallel (one DB round-trip).
-  const [decided, appts, assigns] = await Promise.all([
+  // All feeds are independent → fetch in parallel (one DB round-trip).
+  const [decided, appts, assigns, msgs, cancelled, rescheduled, expiring, draftNotes] = await Promise.all([
     prisma.$queryRaw<
       {
         id: string;
@@ -342,6 +457,75 @@ async function clinicianFeed(uid: string): Promise<Notification[]> {
       ORDER BY pa."startedAt" DESC
       LIMIT 10
     `,
+    // Incoming secure messages FROM patients (replies to the care team).
+    prisma.$queryRaw<
+      { id: string; body: string; sentAt: Date; readAt: Date | null; patientFirstName: string; patientLastName: string }[]
+    >`
+      SELECT m.id, m.body, m."sentAt", m."readAt",
+             p."firstName" AS "patientFirstName", p."lastName" AS "patientLastName"
+      FROM messages m
+      JOIN users p ON p.id = m."patientId"
+      WHERE m."clinicianId" = ${uid}::uuid
+        AND m."senderRole" = 'patient'
+        AND m."sentAt" >= ${past}
+      ORDER BY m."sentAt" DESC
+      LIMIT 10
+    `,
+    // Appointments the patient cancelled (last 14d).
+    prisma.$queryRaw<{ id: string; startsAt: Date; updatedAt: Date; patientName: string | null }[]>`
+      SELECT id, "startsAt", "updatedAt", "patientName"
+      FROM appointments
+      WHERE "clinicianId" = ${uid}::uuid
+        AND "deletedAt" IS NULL
+        AND status::text = 'cancelled'
+        AND "updatedAt" >= ${past}
+      ORDER BY "updatedAt" DESC
+      LIMIT 10
+    `,
+    // Appointments the patient rescheduled (back to `requested` with a new
+    // time — detected via updatedAt clearly after createdAt).
+    prisma.$queryRaw<{ id: string; startsAt: Date; updatedAt: Date; patientName: string | null }[]>`
+      SELECT id, "startsAt", "updatedAt", "patientName"
+      FROM appointments
+      WHERE "clinicianId" = ${uid}::uuid
+        AND "deletedAt" IS NULL
+        AND status::text = 'requested'
+        AND "updatedAt" >= ${past}
+        AND "updatedAt" > "createdAt" + interval '2 minutes'
+      ORDER BY "updatedAt" DESC
+      LIMIT 10
+    `,
+    // Consents the clinician holds that expire within 7 days.
+    prisma.$queryRaw<
+      { id: string; scopes: Prisma.JsonValue; expiresAt: Date; patientFirstName: string; patientLastName: string }[]
+    >`
+      SELECT cr.id, cr.scopes, cr."expiresAt",
+             p."firstName" AS "patientFirstName", p."lastName" AS "patientLastName"
+      FROM consent_requests cr
+      JOIN users p ON p.id = cr."patientId"
+      WHERE cr."clinicianId" = ${uid}::uuid
+        AND cr.status = 'approved'
+        AND cr."expiresAt" IS NOT NULL
+        AND cr."expiresAt" > ${now}
+        AND cr."expiresAt" <= ${new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)}
+      ORDER BY cr."expiresAt" ASC
+      LIMIT 10
+    `,
+    // Pending tasks — the clinician's own draft (un-finalized) clinical notes.
+    prisma.$queryRaw<
+      { id: string; template: string; updatedAt: Date; patientFirstName: string; patientLastName: string }[]
+    >`
+      SELECT m.id, m.template, m."updatedAt",
+             p."firstName" AS "patientFirstName", p."lastName" AS "patientLastName"
+      FROM medical_records m
+      JOIN users p ON p.id = m."patientId"
+      WHERE m."clinicianId" = ${uid}::uuid
+        AND m.status = 'draft'
+        AND m."deletedAt" IS NULL
+        AND m."updatedAt" >= ${past}
+      ORDER BY m."updatedAt" DESC
+      LIMIT 10
+    `,
   ]);
 
   // Decided consent requests where I'm the requesting clinician (last 14d).
@@ -380,6 +564,70 @@ async function clinicianFeed(uid: string): Promise<Notification[]> {
       body: "Open the chart to review their history and consents",
       time: relativeTime(a.startedAt),
       href: `/clinician/patients/${a.id}`,
+    });
+  }
+
+  // Incoming patient messages (Messages category).
+  for (const m of msgs) {
+    const patient = `${m.patientFirstName} ${m.patientLastName}`.trim();
+    out.push({
+      id: `msg-${m.id}`,
+      category: "message",
+      title: `New message from ${patient}`,
+      body: (m.body ?? "").trim().slice(0, 80) || "Sent you an attachment",
+      time: relativeTime(m.sentAt),
+      href: "/clinician/messages",
+      read: !!m.readAt,
+    });
+  }
+
+  // Patient-cancelled appointments (Schedule category).
+  for (const a of cancelled) {
+    out.push({
+      id: `apc-${a.id}`,
+      category: "appointment",
+      title: `${a.patientName ?? "A patient"} cancelled their appointment`,
+      body: a.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+      time: relativeTime(a.updatedAt),
+      href: "/clinician/schedule",
+    });
+  }
+
+  // Patient-rescheduled appointments — back to `requested`, needs reconfirm.
+  for (const a of rescheduled) {
+    out.push({
+      id: `apr-${a.id}`,
+      category: "appointment",
+      title: `${a.patientName ?? "A patient"} rescheduled — needs your confirmation`,
+      body: `New time: ${a.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+      time: relativeTime(a.updatedAt),
+      href: "/clinician/schedule",
+    });
+  }
+
+  // Consents expiring within 7 days (Consent requests category).
+  for (const e of expiring) {
+    const patient = `${e.patientFirstName} ${e.patientLastName}`.trim();
+    out.push({
+      id: `ce-${e.id}`,
+      category: "consent",
+      title: `Consent expiring soon`,
+      body: `${patient}'s ${fmtScopes(e.scopes)} · expires ${e.expiresAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+      time: relativeTime(e.expiresAt),
+      href: `/clinician/patients`,
+    });
+  }
+
+  // Pending tasks — draft notes awaiting finalization (Tasks & reviews).
+  for (const n of draftNotes) {
+    const patient = `${n.patientFirstName} ${n.patientLastName}`.trim();
+    out.push({
+      id: `task-note-${n.id}`,
+      category: "task",
+      title: `Draft ${n.template} note to finalize`,
+      body: `For ${patient} · open the chart to review & sign`,
+      time: relativeTime(n.updatedAt),
+      href: "/clinician/notes",
     });
   }
 
@@ -648,14 +896,24 @@ async function superFeed(): Promise<Notification[]> {
   const now = new Date();
   const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
 
-  // Both feeds are independent → fetch in parallel.
-  const [tenants, admins] = await Promise.all([
+  // All feeds are independent → fetch in parallel.
+  const [tenants, suspended, admins] = await Promise.all([
     prisma.$queryRaw<{ id: string; name: string; createdAt: Date }[]>`
       SELECT id, name, "createdAt"
       FROM organizations
       WHERE "createdAt" >= ${past}
       ORDER BY "createdAt" DESC
       LIMIT 15
+    `,
+    // Tenant lifecycle: currently-suspended tenants (recently changed).
+    prisma.$queryRaw<{ id: string; name: string; updatedAt: Date }[]>`
+      SELECT id, name, "updatedAt"
+      FROM organizations
+      WHERE status = 'suspended'::"TenantStatus"
+        AND "archivedAt" IS NULL
+        AND "updatedAt" >= ${past}
+      ORDER BY "updatedAt" DESC
+      LIMIT 10
     `,
     prisma.$queryRaw<
       { id: string; firstName: string; lastName: string; createdAt: Date; orgName: string | null }[]
@@ -671,24 +929,37 @@ async function superFeed(): Promise<Notification[]> {
     `,
   ]);
 
-  // Recent tenants.
+  // Tenant lifecycle — onboarding (new tenants) + suspensions, tagged with the
+  // `tenants` category so the Settings → Alerts "Tenant lifecycle" toggle
+  // governs them.
   for (const t of tenants) {
     out.push({
       id: `tn-${t.id}`,
-      category: "system",
-      title: `New tenant provisioned: ${t.name}`,
+      category: "tenants",
+      title: `Tenant onboarded: ${t.name}`,
       body: "Configure billing tier and onboarding link from the tenant detail page",
       time: relativeTime(t.createdAt),
       href: `/super/tenants/${t.id}`,
     });
   }
+  for (const s of suspended) {
+    out.push({
+      id: `sp-${s.id}`,
+      category: "tenants",
+      title: `Tenant suspended: ${s.name}`,
+      body: "Review the suspension on the tenant detail page",
+      time: relativeTime(s.updatedAt),
+      href: `/super/tenants/${s.id}`,
+    });
+  }
 
-  // Recent org-admin signups (across all tenants).
+  // Recent org-admin signups (across all tenants) — part of the onboarding
+  // lifecycle, so also under `tenants`.
   for (const a of admins) {
     const name = `${a.firstName} ${a.lastName}`.trim();
     out.push({
       id: `oa-${a.id}`,
-      category: "audit",
+      category: "tenants",
       title: `Org admin onboarded: ${name}`,
       body: a.orgName ?? "Unassigned tenant",
       time: relativeTime(a.createdAt),
@@ -698,6 +969,25 @@ async function superFeed(): Promise<Notification[]> {
 
   return out;
 }
+
+/**
+ * Maps a derived-feed `category` to the per-user preference key shown in
+ * Settings → Notifications. Anything not listed (or with no saved pref) keeps
+ * the channel default (in-app ON) — so the filter only ever hides categories
+ * the user explicitly turned off; it never hides something unexpectedly.
+ */
+const FEED_TO_PREF_KEY: Record<string, string> = {
+  appointment: "appointments",
+  consent: "consents",
+  message: "messages",
+  record: "records",
+  security: "security", // critical → always on (clamped in prefChannelOn)
+  audit: "audit",
+  system: "system",
+  approval: "approvals",
+  tenants: "tenants",
+  task: "tasks",
+};
 
 export async function GET() {
   const jar = await cookies();
@@ -718,6 +1008,16 @@ export async function GET() {
       case "Super Admin":        items = await superFeed(); break;
       default: items = [];
     }
+
+    // Honour the viewer's IN-APP toggle per category (Settings → Notifications):
+    // drop items whose category's in-app channel is off. `security`/`incidents`
+    // are clamped on by prefChannelOn, so critical alerts are never hidden.
+    const prefRows = await prisma.$queryRaw<{ prefs: Prisma.JsonValue }[]>`
+      SELECT prefs FROM notification_preferences WHERE "userId" = ${claims.uid}::uuid LIMIT 1
+    `;
+    const prefs = prefRows[0]?.prefs ?? null;
+    items = items.filter((n) => prefChannelOn(prefs, FEED_TO_PREF_KEY[n.category] ?? n.category, "inApp"));
+
     // Most recent first.
     items.sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
     return NextResponse.json({ ok: true, items });

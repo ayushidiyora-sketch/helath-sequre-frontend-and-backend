@@ -46,7 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-[var(--color-background)] antialiased">
         <BrandingThemeProvider>{children}</BrandingThemeProvider>
         <Toaster
-          position="bottom-right"
+          position="top-right"
           richColors
           closeButton
           toastOptions={{

@@ -239,7 +239,8 @@ export default function AppointmentDetailPage({ params }: { params: Promise<{ id
                   variant="outline"
                   size="sm"
                   onClick={() => setRescheduleOpen(true)}
-                  disabled={apt.status === "arrived" || apt.status === "in_progress"}
+                  disabled={apt.status === "confirmed" || apt.status === "arrived" || apt.status === "in_progress"}
+                  title={apt.status === "confirmed" ? "This appointment is confirmed — cancel and rebook to change the time." : undefined}
                 >
                   <Calendar /> Reschedule
                 </Button>

@@ -273,6 +273,7 @@ export function MessagesView() {
   // Poll every 10s for inbound updates.
   useEffect(() => {
     const tick = setInterval(() => {
+      if (document.hidden) return; // pause polling while the tab is hidden
       void reloadThreads();
       if (activeId) {
         fetch(`/api/messages?withUserId=${activeId}`, { cache: "no-store" })

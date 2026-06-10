@@ -28,7 +28,7 @@ import {
   Syringe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, PasswordInput } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Switch } from "@/components/ui/switch";
@@ -1019,12 +1019,14 @@ function Field({
   mono?: boolean;
   error?: string | null;
 }) {
+  const FieldInput = type === "password" ? PasswordInput : Input;
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <Input
+      <FieldInput
         id={id}
-        type={type}
+        // PasswordInput owns its own type; only forward type for non-password fields.
+        {...(type === "password" ? {} : { type })}
         value={value ?? ""}
         onChange={onChange ? (e) => onChange(e.target.value) : undefined}
         leadingIcon={leadingIcon}

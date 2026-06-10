@@ -31,6 +31,7 @@ function MfaSetupInner() {
 
   const [secret, setSecret] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [devCode, setDevCode] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [code, setCode] = useState("");
@@ -50,6 +51,7 @@ function MfaSetupInner() {
         }
         setSecret(data.secret);
         setQrDataUrl(data.qrDataUrl);
+        if (typeof data.devCode === "string") setDevCode(data.devCode);
       })
       .catch(() => {
         if (!cancelled) setLoadError("Network error — could not start enrollment.");
@@ -59,10 +61,10 @@ function MfaSetupInner() {
     };
   }, []);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit(e?: React.FormEvent, codeOverride?: string) {
+    e?.preventDefault();
     setVerifyError(null);
-    const cleaned = code.replace(/\s+/g, "");
+    const cleaned = (codeOverride ?? code).replace(/\s+/g, "");
     if (!/^\d{6}$/.test(cleaned)) {
       setVerifyError("Enter the 6-digit code from your authenticator app.");
       return;
@@ -89,6 +91,23 @@ function MfaSetupInner() {
     } catch {
       setVerifyError("Network error — could not verify.");
       setVerifying(false);
+    }
+  }
+
+  // DEV ONLY: fetch a fresh server-clock code and verify with it directly, so
+  // enrollment isn't blocked when the dev machine's clock differs from a phone.
+  async function useDevCode() {
+    try {
+      const r = await fetch("/api/auth/mfa/dev-code");
+      const d = await r.json();
+      if (!r.ok || !d.ok || !d.devCode) {
+        toast.error(d.error ?? "Could not fetch dev code");
+        return;
+      }
+      setCode(d.devCode);
+      await submit(undefined, d.devCode);
+    } catch {
+      toast.error("Could not fetch dev code");
     }
   }
 
@@ -162,6 +181,25 @@ function MfaSetupInner() {
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {devCode && (
+        <div className="rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning-soft)]/40 px-3.5 py-3 text-xs">
+          <p className="font-semibold text-[oklch(0.45_0.14_75)] dark:text-[oklch(0.85_0.13_80)]">
+            Dev mode — server clock differs from real time
+          </p>
+          <p className="mt-0.5 text-[var(--color-muted-foreground)]">
+            A phone-generated code won&apos;t match this server. Use the current server code instead:
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="rounded-md bg-[var(--color-card)] px-2.5 py-1 font-mono text-base font-semibold tracking-widest ring-1 ring-[var(--color-border)]">
+              {devCode}
+            </code>
+            <Button type="button" size="sm" variant="outline" onClick={useDevCode} disabled={verifying}>
+              Use code &amp; activate
+            </Button>
           </div>
         </div>
       )}

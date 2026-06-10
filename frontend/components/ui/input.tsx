@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
@@ -38,6 +39,42 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
 );
 Input.displayName = "Input";
 
+/**
+ * Password field with a built-in show/hide eye toggle. Drop-in replacement for
+ * `<Input type="password" />` — it owns the `type` and `trailingIcon`, so don't
+ * pass those. The toggle is `tabIndex={-1}` so it doesn't interrupt tabbing
+ * from the field to the submit button, and `::-ms-reveal` is hidden so Edge
+ * doesn't render a second native eye next to ours.
+ */
+export type PasswordInputProps = Omit<InputProps, "type" | "trailingIcon">;
+
+const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputProps>(
+  ({ className, ...props }, ref) => {
+    const [show, setShow] = React.useState(false);
+    return (
+      <Input
+        {...props}
+        ref={ref}
+        type={show ? "text" : "password"}
+        className={cn("[&::-ms-reveal]:hidden [&::-ms-clear]:hidden", className)}
+        trailingIcon={
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => setShow((v) => !v)}
+            aria-label={show ? "Hide password" : "Show password"}
+            aria-pressed={show}
+            className="flex items-center rounded p-0.5 text-[var(--color-muted-foreground)] transition-colors hover:text-[var(--color-foreground)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]/40"
+          >
+            {show ? <EyeOff /> : <Eye />}
+          </button>
+        }
+      />
+    );
+  },
+);
+PasswordInput.displayName = "PasswordInput";
+
 const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(
   ({ className, ...props }, ref) => (
     <textarea
@@ -64,4 +101,4 @@ const Label = React.forwardRef<HTMLLabelElement, React.LabelHTMLAttributes<HTMLL
 );
 Label.displayName = "Label";
 
-export { Input, Textarea, Label };
+export { Input, PasswordInput, Textarea, Label };

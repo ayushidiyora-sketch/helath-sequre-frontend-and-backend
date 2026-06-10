@@ -5,23 +5,54 @@ import { toast } from "sonner";
 import { Stethoscope, KeyRound, Bell, Monitor, ShieldCheck, Award, Building2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SecurityBadge } from "@/components/shared/security-badge";
 import { ActionButton } from "@/components/shared/action-button";
 import { NotificationPreferences } from "@/components/shared/notification-preferences";
-import { useClinicianStore, type ClinicianProfile } from "@/lib/clinician-store";
 import { validateName } from "@/lib/validate-name";
 import { LoginOtpToggle } from "@/components/shared/login-otp-toggle";
 
-export default function ClinicianSettings() {
-  const { state, updateProfile } = useClinicianStore();
-  const [draft, setDraft] = useState<ClinicianProfile>(state.profile);
+/** DB-backed clinician profile (GET/PATCH /api/clinician/profile). */
+interface ClinicianProfile {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  department: string;
+  designation: string;
+  organization: string;
+  profilePhotoUrl: string | null;
+}
 
+const EMPTY_PROFILE: ClinicianProfile = {
+  firstName: "", lastName: "", email: "", phone: "",
+  department: "", designation: "", organization: "", profilePhotoUrl: null,
+};
+
+export default function ClinicianSettings() {
+  const [profile, setProfile] = useState<ClinicianProfile>(EMPTY_PROFILE);
+  const [draft, setDraft] = useState<ClinicianProfile>(EMPTY_PROFILE);
+  const [saving, setSaving] = useState(false);
+
+  // Load the real DB profile (was previously a localStorage demo store, which
+  // showed stale "vodey sddddd" data unrelated to the signed-in clinician).
   useEffect(() => {
-    if (state.hydrated) setDraft(state.profile);
-  }, [state.hydrated, state.profile]);
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/clinician/profile", { cache: "no-store" });
+        const j = await r.json();
+        if (!alive || !r.ok || !j?.ok) return;
+        setProfile(j.profile as ClinicianProfile);
+        setDraft(j.profile as ClinicianProfile);
+      } catch {
+        /* keep empty form on error */
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const update = <K extends keyof ClinicianProfile>(key: K, value: ClinicianProfile[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -29,16 +60,40 @@ export default function ClinicianSettings() {
   const firstNameError = validateName(draft.firstName, "First name");
   const lastNameError = validateName(draft.lastName, "Last name");
 
-  function handleSave() {
+  async function handleSave() {
     if (firstNameError || lastNameError) {
       toast.error(firstNameError ?? lastNameError ?? "Please fix the highlighted fields.");
       return;
     }
-    updateProfile(draft);
-    toast.success("Profile saved", { description: "audit-logged · user.update" });
+    setSaving(true);
+    try {
+      const r = await fetch("/api/clinician/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          firstName: draft.firstName,
+          lastName: draft.lastName,
+          phone: draft.phone,
+          department: draft.department,
+          designation: draft.designation,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j?.ok) {
+        toast.error(j?.error ?? "Could not save profile");
+        return;
+      }
+      setProfile(j.profile as ClinicianProfile);
+      setDraft(j.profile as ClinicianProfile);
+      toast.success("Profile saved", { description: "audit-logged · user.update" });
+    } catch {
+      toast.error("Network error — could not save");
+    } finally {
+      setSaving(false);
+    }
   }
   function handleDiscard() {
-    setDraft(state.profile);
+    setDraft(profile);
     toast.info("Changes discarded");
   }
 
@@ -61,36 +116,34 @@ export default function ClinicianSettings() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field id="first" label="First name" value={draft.firstName} onChange={(v) => update("firstName", v)} error={firstNameError} />
                   <Field id="last" label="Last name" value={draft.lastName} onChange={(v) => update("lastName", v)} error={lastNameError} />
-                  <Field id="spec" label="Specialty" value={draft.specialization} onChange={(v) => update("specialization", v)} />
-                  <Field id="lic" label="License number" value={draft.licenseNumber} onChange={(v) => update("licenseNumber", v)} mono readOnly />
-                  <Field id="email" label="Email" value={draft.email} onChange={(v) => update("email", v)} readOnly />
+                  <Field id="spec" label="Specialty / title" value={draft.designation} onChange={(v) => update("designation", v)} leadingIcon={<Award />} />
+                  <Field id="dept" label="Department" value={draft.department} onChange={(v) => update("department", v)} />
+                  <Field id="email" label="Email" value={draft.email} onChange={() => {}} readOnly />
                   <Field id="phone" label="Phone" value={draft.phone} onChange={(v) => update("phone", v)} />
                 </div>
               </Section>
-              <Section title="Practice" desc="Department, slot duration, and clinic affiliation.">
+              <Section title="Practice" desc="Clinic affiliation.">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field id="dept" label="Department" value={draft.department} onChange={(v) => update("department", v)} />
-                  <Field id="lic-exp" label="License expiry" value={draft.licenseExpiry} onChange={(v) => update("licenseExpiry", v)} />
-                  <Field id="org" label="Organization" value="City General Hospital" onChange={() => {}} leadingIcon={<Building2 />} readOnly />
-                  <Field id="years" label="Specialization tag" value={draft.specialization} onChange={(v) => update("specialization", v)} leadingIcon={<Award />} />
+                  <Field id="org" label="Organization" value={draft.organization || "—"} onChange={() => {}} leadingIcon={<Building2 />} readOnly />
                 </div>
               </Section>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={handleDiscard}>Discard</Button>
-                <Button onClick={handleSave} disabled={!!firstNameError || !!lastNameError}>Save changes</Button>
+                <Button variant="outline" onClick={handleDiscard} disabled={saving}>Discard</Button>
+                <Button onClick={handleSave} disabled={saving || !!firstNameError || !!lastNameError}>Save changes</Button>
               </div>
             </div>
             <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
               <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
                 <div className="flex items-center gap-3">
                   <Avatar className="size-14">
+                    {profile.profilePhotoUrl && <AvatarImage src={profile.profilePhotoUrl} alt={`${profile.firstName} ${profile.lastName}`} />}
                     <AvatarFallback>
-                      {(state.profile.firstName[0] ?? "") + (state.profile.lastName[0] ?? "")}
+                      {((profile.firstName[0] ?? "") + (profile.lastName[0] ?? "")).toUpperCase() || "·"}
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="text-sm font-semibold">Dr. {state.profile.firstName} {state.profile.lastName}</p>
-                    <p className="text-xs text-[var(--color-muted-foreground)]">{state.profile.specialization}</p>
+                    <p className="text-sm font-semibold">Dr. {profile.firstName} {profile.lastName}</p>
+                    <p className="text-xs text-[var(--color-muted-foreground)]">{profile.designation || profile.department}</p>
                   </div>
                 </div>
                 <ActionButton variant="outline" size="sm" className="mt-4 w-full" toastMessage="Photo upload opened" toastVariant="info">

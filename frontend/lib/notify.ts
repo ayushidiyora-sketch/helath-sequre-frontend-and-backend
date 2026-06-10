@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import {
   mailerConfigured,
   sendMail,
+  sendSms,
   transportsFromIntegrations,
   type Transport,
 } from "@/lib/mail";
@@ -72,6 +73,14 @@ export interface NotifyArgs {
   /** Branded HTML — only attached when the built-in copy is used (admin
    *  templates are authored as plain text). */
   fallbackHtml?: string;
+  /**
+   * When set, the email is sent ONLY if the recipient (resolved by `to`) has
+   * the EMAIL channel enabled for this preference category (defaults on for
+   * unknown users / categories). Use the recipient role's category key, e.g.
+   * "appointments" / "records" / "consents". Omit for transactional / always-on
+   * mail (invites, OTP, password reset, security) which must never be gated.
+   */
+  categoryKey?: string;
 }
 
 export interface NotifyResult {
@@ -90,6 +99,15 @@ export async function sendActionEmail(args: NotifyArgs): Promise<NotifyResult> {
   const to = (args.to ?? "").trim();
   if (!to) return { ok: false, skipped: true, error: "no recipient" };
   if (!mailerConfigured()) return { ok: false, skipped: true, error: "mailer not configured" };
+
+  // Channel enforcement: honour the recipient's EMAIL toggle for this category.
+  if (args.categoryKey) {
+    const allowed = await emailAllowedForEmail(to, args.categoryKey);
+    if (!allowed) {
+      console.log(`[notify] ${args.slug} → ${to} skipped (EMAIL off for "${args.categoryKey}")`);
+      return { ok: false, skipped: true, error: "recipient disabled email for this category" };
+    }
+  }
 
   let subject = args.fallbackSubject;
   let text = args.fallbackText;
@@ -115,7 +133,9 @@ export async function sendActionEmail(args: NotifyArgs): Promise<NotifyResult> {
       html: usedTemplate ? undefined : args.fallbackHtml,
       prefer,
     });
-    if (!res.ok) {
+    if (res.ok) {
+      console.log(`[notify] ${args.slug} → ${to} via ${res.via}`);
+    } else {
       console.warn(`[notify] ${args.slug} → ${to} failed (via ${res.via}): ${res.error}`);
     }
     return { ok: res.ok, via: res.via, error: res.error, usedTemplate };
@@ -155,6 +175,7 @@ export async function sendAppointmentEmail(
       organizationId: string;
       patientName: string | null;
       patientEmail: string | null;
+      patientPhone: string | null;
       startsAt: Date;
       proposedStartsAt: Date | null;
       room: string | null;
@@ -164,10 +185,12 @@ export async function sendAppointmentEmail(
     }[]>`
       SELECT a."organizationId"::text AS "organizationId",
              a."patientName", a."patientEmail", a."startsAt", a."proposedStartsAt", a.room,
+             pu.phone AS "patientPhone",
              c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
              o.name AS "orgName"
       FROM appointments a
       LEFT JOIN users c          ON c.id = a."clinicianId"
+      LEFT JOIN users pu         ON LOWER(pu.email) = LOWER(a."patientEmail")
       LEFT JOIN organizations o  ON o.id = a."organizationId"
       WHERE a.id = ${appointmentId}::uuid
       LIMIT 1
@@ -184,6 +207,7 @@ export async function sendAppointmentEmail(
       await sendActionEmail({
         orgId: a.organizationId,
         to: a.patientEmail,
+        categoryKey: "appointments",
         slug: "appointment-confirmed",
         vars: {
           "patient.first_name": first,
@@ -206,6 +230,7 @@ export async function sendAppointmentEmail(
       await sendActionEmail({
         orgId: a.organizationId,
         to: a.patientEmail,
+        categoryKey: "appointments",
         slug: "reschedule-request",
         vars: {
           "patient.first_name": first,
@@ -228,6 +253,7 @@ export async function sendAppointmentEmail(
       await sendActionEmail({
         orgId: a.organizationId,
         to: a.patientEmail,
+        categoryKey: "appointments",
         slug: "appointment-rejected",
         vars: {
           "patient.first_name": first,
@@ -244,8 +270,141 @@ export async function sendAppointmentEmail(
           `Please open your portal to request another time: ${portal}\n\n— ${orgName}`,
       });
     }
+
+    // SMS leg — only when the patient turned SMS on for appointments + has a phone.
+    const newAtSms = a.proposedStartsAt ?? a.startsAt;
+    const smsText =
+      status === "confirmed"
+        ? `${orgName}: appointment confirmed for ${fmtDate(a.startsAt)} at ${fmtTime(a.startsAt)}.`
+        : status === "reschedule_requested"
+          ? `${orgName}: ${clinician} proposed a new time — ${fmtDate(newAtSms)} at ${fmtTime(newAtSms)}. Open your portal to confirm.`
+          : `${orgName}: your requested appointment on ${fmtDate(a.startsAt)} could not be confirmed. Please pick another time in your portal.`;
+    await sendActionSms({
+      toPhone: a.patientPhone,
+      recipientEmail: a.patientEmail,
+      categoryKey: "appointments",
+      text: smsText,
+    });
   } catch (err) {
     console.error("[notify] sendAppointmentEmail failed", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notification-preference helpers — read `notification_preferences.prefs`
+// (category × channel matrix) so event dispatch honours what the recipient
+// chose in Settings → Alerts. Defaults mirror `NotificationPreferences`'
+// `defaultsFor`, so a user with no saved row still gets sensible channels.
+// ---------------------------------------------------------------------------
+
+const CRITICAL_CATEGORY_KEYS = new Set(["security", "incidents"]);
+
+/** Default on/off for a category × channel when the user has no saved pref. */
+export function channelDefault(key: string, channel: "inApp" | "email" | "sms"): boolean {
+  const critical = CRITICAL_CATEGORY_KEYS.has(key);
+  if (channel === "inApp") return true;
+  if (channel === "email") return critical ? true : key !== "marketing";
+  return critical; // sms — off by default except for critical categories
+}
+
+/** Whether a stored prefs blob has `channel` enabled for `key` (critical clamp). */
+export function prefChannelOn(
+  prefs: unknown,
+  key: string,
+  channel: "inApp" | "email" | "sms",
+): boolean {
+  // Critical categories keep in-app + email on no matter what.
+  if (CRITICAL_CATEGORY_KEYS.has(key) && (channel === "inApp" || channel === "email")) return true;
+  const map =
+    prefs && typeof prefs === "object" && !Array.isArray(prefs)
+      ? (prefs as Record<string, unknown>)
+      : null;
+  const cat = map?.[key];
+  const state =
+    cat && typeof cat === "object" && !Array.isArray(cat) ? (cat as Record<string, unknown>) : null;
+  const v = state?.[channel];
+  return typeof v === "boolean" ? v : channelDefault(key, channel);
+}
+
+/**
+ * Channel enforcement for outbound email: resolve the recipient by email and
+ * return whether they have EMAIL enabled for `categoryKey`. Returns `true`
+ * (don't block) when the address isn't a known user (external/invite) or on
+ * any error — so transactional mail to non-users is never accidentally dropped.
+ */
+export async function emailAllowedForEmail(email: string, categoryKey: string): Promise<boolean> {
+  const addr = email.trim().toLowerCase();
+  if (!addr) return true;
+  try {
+    const rows = await prisma.$queryRaw<{ prefs: unknown }[]>`
+      SELECT np.prefs
+      FROM users u
+      LEFT JOIN notification_preferences np ON np."userId" = u.id
+      WHERE LOWER(u.email) = ${addr} AND u."deletedAt" IS NULL
+      LIMIT 1
+    `;
+    if (rows.length === 0) return true; // not a portal user → don't gate
+    return prefChannelOn(rows[0].prefs ?? null, categoryKey, "email");
+  } catch {
+    return true; // best-effort: never block delivery on a lookup error
+  }
+}
+
+/**
+ * SMS channel gate: resolve the recipient by email and return whether they
+ * have SMS enabled for `categoryKey`. Unlike email, SMS is OPT-IN — unknown
+ * addresses / errors return false so we never text a non-user, and the
+ * per-category default is off (except critical, see `channelDefault`).
+ */
+export async function smsAllowedForEmail(email: string | null | undefined, categoryKey: string): Promise<boolean> {
+  const addr = (email ?? "").trim().toLowerCase();
+  if (!addr) return false;
+  try {
+    const rows = await prisma.$queryRaw<{ prefs: unknown }[]>`
+      SELECT np.prefs
+      FROM users u
+      LEFT JOIN notification_preferences np ON np."userId" = u.id
+      WHERE LOWER(u.email) = ${addr} AND u."deletedAt" IS NULL
+      LIMIT 1
+    `;
+    if (rows.length === 0) return false;
+    return prefChannelOn(rows[0].prefs ?? null, categoryKey, "sms");
+  } catch {
+    return false;
+  }
+}
+
+export interface SmsArgs {
+  toPhone: string | null | undefined;
+  text: string;
+  /** Recipient email used to resolve their SMS preference. */
+  recipientEmail?: string | null;
+  /** Preference category to gate on (omit to always send when a phone exists). */
+  categoryKey?: string;
+}
+
+/**
+ * Send a notification SMS via Twilio, honouring the recipient's SMS toggle for
+ * `categoryKey`. Best-effort; never throws. No-op (skipped) when there's no
+ * phone, Twilio isn't configured, or the recipient disabled SMS for the category.
+ */
+export async function sendActionSms(args: SmsArgs): Promise<NotifyResult> {
+  const phone = (args.toPhone ?? "").trim();
+  if (!phone) return { ok: false, skipped: true, error: "no phone" };
+  if (args.categoryKey) {
+    const allowed = await smsAllowedForEmail(args.recipientEmail, args.categoryKey);
+    if (!allowed) {
+      console.log(`[notify] sms → ${phone} skipped (SMS off for "${args.categoryKey}")`);
+      return { ok: false, skipped: true, error: "recipient disabled sms for this category" };
+    }
+  }
+  try {
+    const res = await sendSms({ toPhone: phone, text: args.text });
+    if (res.ok) console.log(`[notify] sms → ${phone} via ${res.via}`);
+    else console.warn(`[notify] sms → ${phone} failed: ${res.error}`);
+    return { ok: res.ok, via: res.via, error: res.error };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

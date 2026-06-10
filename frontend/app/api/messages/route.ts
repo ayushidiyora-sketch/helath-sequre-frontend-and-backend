@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -198,6 +199,56 @@ export async function POST(req: Request) {
        ${text}, ${attachmentsJson}::jsonb, NOW(), NOW(), NOW())
     RETURNING id, "sentAt"
   `;
+
+  // Notify the recipient of the new message (email + opt-in SMS), gated by their
+  // "messages" preference. Best-effort — never blocks the send.
+  try {
+    const ctx = await prisma.$queryRaw<{
+      toEmail: string | null; toPhone: string | null; toFirst: string | null;
+      fromFirst: string | null; fromLast: string | null; orgName: string | null;
+    }[]>`
+      SELECT t.email AS "toEmail", t.phone AS "toPhone", t."firstName" AS "toFirst",
+             f."firstName" AS "fromFirst", f."lastName" AS "fromLast", o.name AS "orgName"
+      FROM users t
+      LEFT JOIN users f         ON f.id = ${claims.uid}::uuid
+      LEFT JOIN organizations o ON o.id = ${orgId}::uuid
+      WHERE t.id = ${toUserId}::uuid LIMIT 1
+    `;
+    const cx = ctx[0];
+    if (cx?.toEmail) {
+      const senderName = isClinician
+        ? `Dr. ${[cx.fromFirst, cx.fromLast].filter(Boolean).join(" ")}`.trim()
+        : ([cx.fromFirst, cx.fromLast].filter(Boolean).join(" ").trim() || "Your patient");
+      const portal = `${appBaseUrl()}${isClinician ? "/patient/messages" : "/clinician/messages"}`;
+      const snippet = text ? (text.length > 140 ? `${text.slice(0, 140)}…` : text) : "Sent you an attachment";
+      const orgName = cx.orgName ?? "HealthSecure";
+      await sendActionEmail({
+        orgId,
+        to: cx.toEmail,
+        categoryKey: "messages",
+        slug: "new-message",
+        vars: {
+          "patient.first_name": cx.toFirst?.trim() || "there",
+          "sender.name": senderName,
+          "organization.name": orgName,
+          action_url: portal,
+        },
+        fallbackSubject: `New secure message from ${senderName}`,
+        fallbackText:
+          `Hi ${cx.toFirst?.trim() || "there"},\n\n` +
+          `${senderName} sent you a secure message:\n\n"${snippet}"\n\n` +
+          `Open your portal to read & reply: ${portal}\n\n— ${orgName}`,
+      });
+      await sendActionSms({
+        toPhone: cx.toPhone,
+        recipientEmail: cx.toEmail,
+        categoryKey: "messages",
+        text: `${orgName}: new secure message from ${senderName}. Open your portal to read it.`,
+      });
+    }
+  } catch (err) {
+    console.error("[messages] recipient notify failed", err);
+  }
 
   return NextResponse.json(
     {

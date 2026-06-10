@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { appBaseUrl, scopeLabels, sendActionEmail } from "@/lib/notify";
+import { appBaseUrl, scopeLabels, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -145,9 +145,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Clinician has no tenant." }, { status: 400 });
 
   const patientRows = await prisma.$queryRaw<
-    { id: string; roleKind: string; email: string | null; firstName: string | null }[]
+    { id: string; roleKind: string; email: string | null; firstName: string | null; phone: string | null }[]
   >`
-    SELECT id, "roleKind"::text AS "roleKind", email, "firstName"
+    SELECT id, "roleKind"::text AS "roleKind", email, "firstName", phone
     FROM users WHERE id = ${patientId}::uuid AND "deletedAt" IS NULL LIMIT 1
   `;
   if (!patientRows[0] || patientRows[0].roleKind !== "patient")
@@ -186,6 +186,7 @@ export async function POST(req: Request) {
   await sendActionEmail({
     orgId: clinician.organizationId,
     to: patientRows[0].email,
+    categoryKey: "consents",
     slug: "consent-request",
     vars: {
       "patient.first_name": patientRows[0].firstName?.trim() || "there",
@@ -202,6 +203,12 @@ export async function POST(req: Request) {
       `Reason: ${reason}\n\n` +
       `Review and approve or decline this request in your portal: ${appBaseUrl()}/patient/consents\n\n` +
       `You can revoke any consent at any time.\n\n— ${clinician.orgName ?? "HealthSecure"}`,
+  });
+  await sendActionSms({
+    toPhone: patientRows[0].phone,
+    recipientEmail: patientRows[0].email,
+    categoryKey: "consents",
+    text: `${clinician.orgName ?? "HealthSecure"}: ${clinicianName} is requesting access to your ${scopeLabels(scopes)}. Review it in your portal.`,
   });
 
   return NextResponse.json(

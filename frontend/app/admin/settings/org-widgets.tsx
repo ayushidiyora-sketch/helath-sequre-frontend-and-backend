@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Upload, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, PasswordInput } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -154,7 +154,7 @@ export function ConfigureChannelButton({ name }: { name: string }) {
         >
           <div className="space-y-1.5">
             <Label htmlFor="ch-key">API key</Label>
-            <Input id="ch-key" type="password" placeholder="••••••••••••••••" className="font-mono" />
+            <PasswordInput id="ch-key" placeholder="••••••••••••••••" className="font-mono" />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ch-sender">Sender identity</Label>

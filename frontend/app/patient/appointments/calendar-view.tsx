@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, Clock3, Stethoscope, MapPin, Plus, CalendarX2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock3, Stethoscope, MapPin, Plus, CalendarX2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface Evt {
@@ -15,16 +15,19 @@ interface Evt {
   kind: "upcoming" | "requested" | "past";
 }
 
-/** Appointments shown on the calendar (span Mar–Jun 2026). */
-const EVENTS: Evt[] = [
-  { id: "apt-8612", date: "2026-03-14", title: "Dermatology consult", time: "11:00 AM", clinician: "Dr. Neha Kapoor", location: "Room 212", kind: "past" },
-  { id: "apt-8755", date: "2026-04-20", title: "General review", time: "3:00 PM", clinician: "Dr. Rohan Iyer", location: "Room 108", kind: "past" },
-  { id: "apt-8841", date: "2026-05-12", title: "Cardiology consult", time: "9:30 AM", clinician: "Dr. Priya Shah", location: "Room 304", kind: "past" },
-  { id: "apt-9081", date: "2026-05-25", title: "Cardiology follow-up", time: "9:30 – 9:45 AM", clinician: "Dr. Priya Shah", location: "Room 304", kind: "upcoming" },
-  { id: "apt-9092", date: "2026-06-05", title: "Annual physical", time: "2:15 – 2:30 PM", clinician: "Dr. Rohan Iyer", location: "Telehealth", kind: "requested" },
-];
+/** Shape from GET /api/patient/appointments. */
+interface DbAppt {
+  id: string;
+  clinicianName: string;
+  clinicianDepartment: string;
+  date: string;
+  time: string;
+  room: string | null;
+  notes: string | null;
+  status: string;
+  mode: "in-person" | "telehealth";
+}
 
-const TODAY = new Date(2026, 4, 21); // demo "today" — 21 May 2026
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
@@ -40,10 +43,66 @@ const DOT: Record<Evt["kind"], string> = {
   past: "bg-[var(--color-success)]",
 };
 
-/** Interactive month calendar for patient appointments. */
+const PAST_STATUSES = new Set(["completed", "cancelled", "no_show", "rejected"]);
+
+function mapKind(status: string, dateStr: string, todayKey: string): Evt["kind"] {
+  if (PAST_STATUSES.has(status)) return "past";
+  if (status === "requested" || status === "reschedule_requested") return "requested";
+  if (dateStr < todayKey) return "past";
+  return "upcoming";
+}
+
+/** Interactive month calendar — shows the patient's real (DB) appointments. */
 export function CalendarView() {
-  const [view, setView] = useState({ y: TODAY.getFullYear(), m: TODAY.getMonth() });
-  const [selected, setSelected] = useState(key(2026, 4, 25)); // May 25 selected by default
+  const now = useMemo(() => new Date(), []);
+  const todayKey = key(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const [view, setView] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const [selected, setSelected] = useState(todayKey);
+  const [events, setEvents] = useState<Evt[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/patient/appointments", { cache: "no-store" });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!alive || !data?.ok) return;
+        const list = (data.appointments as DbAppt[]).map(
+          (a): Evt => ({
+            id: a.id,
+            date: a.date,
+            title: a.notes?.trim() || a.clinicianDepartment || "Appointment",
+            time: a.time,
+            clinician: a.clinicianName,
+            location: a.room || (a.mode === "telehealth" ? "Telehealth" : `${a.clinicianDepartment} Wing`),
+            kind: mapKind(a.status, a.date, todayKey),
+          }),
+        );
+        setEvents(list);
+        // If today has nothing, jump to the nearest upcoming appointment.
+        if (!list.some((e) => e.date === todayKey)) {
+          const upcoming = list
+            .filter((e) => e.date >= todayKey)
+            .sort((a, b) => a.date.localeCompare(b.date))[0];
+          if (upcoming) {
+            setSelected(upcoming.date);
+            const [yy, mm] = upcoming.date.split("-").map(Number);
+            setView({ y: yy, m: mm - 1 });
+          }
+        }
+      } catch {
+        /* keep empty calendar on error */
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [todayKey]);
 
   const firstDow = new Date(view.y, view.m, 1).getDay();
   const daysInMonth = new Date(view.y, view.m + 1, 0).getDate();
@@ -53,8 +112,7 @@ export function CalendarView() {
     return day > 0 && day <= daysInMonth ? day : null;
   });
 
-  const todayKey = key(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate());
-  const selectedEvents = EVENTS.filter((e) => e.date === selected);
+  const selectedEvents = events.filter((e) => e.date === selected);
   const selDate = (() => {
     const [y, m, d] = selected.split("-").map(Number);
     return `${MONTHS[m - 1]} ${d}, ${y}`;
@@ -69,7 +127,7 @@ export function CalendarView() {
     });
   }
   function goToday() {
-    setView({ y: TODAY.getFullYear(), m: TODAY.getMonth() });
+    setView({ y: now.getFullYear(), m: now.getMonth() });
     setSelected(todayKey);
   }
 
@@ -111,7 +169,7 @@ export function CalendarView() {
               return <div key={i} className="min-h-24 border-b border-r border-[var(--color-border)] bg-[var(--color-muted)]/15" />;
             }
             const k = key(view.y, view.m, d);
-            const evt = EVENTS.find((e) => e.date === k);
+            const dayEvents = events.filter((e) => e.date === k);
             const isSelected = k === selected;
             const isToday = k === todayKey;
             return (
@@ -133,12 +191,19 @@ export function CalendarView() {
                 >
                   {d}
                 </span>
-                {evt && (
-                  <div className="absolute inset-x-1 bottom-1 rounded-md bg-[var(--color-card)] px-2 py-1 shadow-[var(--shadow-soft)] ring-1 ring-inset ring-[var(--color-border)]">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`size-1.5 shrink-0 rounded-full ${DOT[evt.kind]}`} />
-                      <span className="truncate text-[10px] font-medium">{evt.title}</span>
-                    </div>
+                {dayEvents.length > 0 && (
+                  <div className="absolute inset-x-1 bottom-1 space-y-1">
+                    {dayEvents.slice(0, 2).map((evt) => (
+                      <div key={evt.id} className="rounded-md bg-[var(--color-card)] px-2 py-1 shadow-[var(--shadow-soft)] ring-1 ring-inset ring-[var(--color-border)]">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`size-1.5 shrink-0 rounded-full ${DOT[evt.kind]}`} />
+                          <span className="truncate text-[10px] font-medium">{evt.title}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {dayEvents.length > 2 && (
+                      <p className="px-1 text-[9px] font-medium text-[var(--color-muted-foreground)]">+{dayEvents.length - 2} more</p>
+                    )}
                   </div>
                 )}
               </button>
@@ -149,7 +214,11 @@ export function CalendarView() {
 
       {/* Side panel — selected day */}
       <div className="space-y-3">
-        {selectedEvents.length > 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-6 text-sm text-[var(--color-muted-foreground)]">
+            <Loader2 className="size-4 animate-spin" /> Loading…
+          </div>
+        ) : selectedEvents.length > 0 ? (
           selectedEvents.map((e) => (
             <div key={e.id} className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
               <p className="text-xs font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">

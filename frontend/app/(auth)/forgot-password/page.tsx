@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 
@@ -32,14 +33,19 @@ export default function ForgotPasswordPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data.error ?? "Could not request a reset.");
+        const msg = data.error ?? "Could not request a reset.";
+        setError(msg);
+        toast.error(msg);
         setLoading(false);
         return;
       }
       setDevLink(typeof data.devLink === "string" ? data.devLink : null);
       setSent(true);
+      toast.success("If that email exists, a reset link is on its way");
     } catch {
-      setError("Network error — could not reach the server.");
+      const msg = "Network error — could not reach the server.";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

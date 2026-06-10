@@ -180,7 +180,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: SESSION_MAX_AGE,
+    // "Keep me signed in" (carried from the password step) → persistent 12h
+    // cookie; otherwise a session cookie cleared when the browser closes.
+    ...(pending.remember ? { maxAge: SESSION_MAX_AGE } : {}),
   });
   return res;
 }

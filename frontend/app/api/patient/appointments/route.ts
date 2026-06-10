@@ -4,6 +4,7 @@ import { RoleKind } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/lib/appointment-lifecycle";
+import { appBaseUrl, sendActionEmail } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -143,11 +144,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Invalid time." }, { status: 400 });
 
   const [y, m, d] = date.split("-").map(Number);
-  // Construct as LOCAL time so "9:30 AM" on the client's calendar matches the
-  // clinician's local schedule. Postgres stores it as a timestamp.
   const startsAt = new Date(y, m - 1, d, Math.floor(minutes / 60), minutes % 60, 0, 0);
   if (Number.isNaN(startsAt.getTime()))
     return NextResponse.json({ ok: false, error: "Could not parse start time." }, { status: 400 });
+  // Store the UTC instant's wall-clock as a tz-naive literal (e.g. "2026-06-10
+  // 11:00:00" for 4:30 PM IST) so it round-trips correctly: every read formats
+  // startsAt in local time, which recovers the original slot. Binding the JS
+  // Date directly stored the LOCAL wall-clock instead, so reads came back +offset
+  // (4:30 PM booked → 10:00 PM shown). Matches the clinician + reschedule paths.
+  const startsAtSql = startsAt.toISOString().replace("T", " ").replace("Z", "");
 
   const durationMinutes = Number.isFinite(body.durationMinutes) ? Number(body.durationMinutes) : 15;
   if (durationMinutes < 5 || durationMinutes > 240)
@@ -178,7 +183,7 @@ export async function POST(req: Request) {
   const conflict = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM appointments
     WHERE "clinicianId" = ${clinicianId}::uuid
-      AND "startsAt" = ${startsAt}
+      AND "startsAt" = ${startsAtSql}::timestamp
       AND "deletedAt" IS NULL
       AND status NOT IN ('cancelled','no_show')
     LIMIT 1
@@ -206,7 +211,7 @@ export async function POST(req: Request) {
     VALUES
       (gen_random_uuid(), ${clinician.organizationId}::uuid, ${clinicianId}::uuid,
        ${patientName}, ${me.email},
-       ${startsAt}, ${durationMinutes}, 'requested'::"AppointmentStatus",
+       ${startsAtSql}::timestamp, ${durationMinutes}, 'requested'::"AppointmentStatus",
        ${room}, ${notes}, NOW(), NOW())
     RETURNING id, "startsAt", "durationMinutes", status::text AS status, room, notes
   `;
@@ -294,11 +299,15 @@ export async function PATCH(req: Request) {
   // Ownership + lookup via raw SQL (handles new enum values).
   const rows = await prisma.$queryRaw<{
     id: string; status: string; organizationId: string;
-    patientEmail: string | null; proposedStartsAt: Date | null;
+    patientEmail: string | null; patientName: string | null; startsAt: Date; proposedStartsAt: Date | null;
+    clinicianEmail: string | null; clinicianFirst: string | null; clinicianLast: string | null;
   }[]>`
-    SELECT id, status::text AS status, "organizationId"::text AS "organizationId",
-           "patientEmail", "proposedStartsAt"
-    FROM appointments WHERE id = ${id}::uuid AND "deletedAt" IS NULL LIMIT 1
+    SELECT a.id, a.status::text AS status, a."organizationId"::text AS "organizationId",
+           a."patientEmail", a."patientName", a."startsAt", a."proposedStartsAt",
+           c.email AS "clinicianEmail", c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast"
+    FROM appointments a
+    LEFT JOIN users c ON c.id = a."clinicianId"
+    WHERE a.id = ${id}::uuid AND a."deletedAt" IS NULL LIMIT 1
   `;
   const appt = rows[0];
   if (!appt) return NextResponse.json({ ok: false, error: "Appointment not found." }, { status: 404 });
@@ -403,6 +412,21 @@ export async function PATCH(req: Request) {
     });
     if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
     await cancelReminders(id);
+    // Notify the clinician (Schedule category) — best-effort.
+    if (appt.clinicianEmail) {
+      const when = newStart.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      await sendActionEmail({
+        orgId: appt.organizationId,
+        to: appt.clinicianEmail,
+        categoryKey: "appointments",
+        slug: "appointment-rescheduled-clinician",
+        vars: { action_url: `${appBaseUrl()}/clinician/schedule` },
+        fallbackSubject: `${appt.patientName ?? "A patient"} rescheduled their appointment`,
+        fallbackText:
+          `${appt.patientName ?? "A patient"} moved their appointment to ${when} and it needs your confirmation.\n\n` +
+          `Review your schedule: ${appBaseUrl()}/clinician/schedule\n\n— HealthSecure`,
+      });
+    }
     return NextResponse.json({ ok: true });
   }
 
@@ -418,6 +442,21 @@ export async function PATCH(req: Request) {
     });
     if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: 409 });
     await cancelReminders(id);
+    // Notify the clinician their slot opened up (Schedule category) — best-effort.
+    if (appt.clinicianEmail) {
+      const when = appt.startsAt.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      await sendActionEmail({
+        orgId: appt.organizationId,
+        to: appt.clinicianEmail,
+        categoryKey: "appointments",
+        slug: "appointment-cancelled-clinician",
+        vars: { action_url: `${appBaseUrl()}/clinician/schedule` },
+        fallbackSubject: `${appt.patientName ?? "A patient"} cancelled their appointment`,
+        fallbackText:
+          `${appt.patientName ?? "A patient"} cancelled their appointment (${when}); the slot is now free.\n\n` +
+          `Review your schedule: ${appBaseUrl()}/clinician/schedule\n\n— HealthSecure`,
+      });
+    }
     return NextResponse.json({ ok: true });
   }
 

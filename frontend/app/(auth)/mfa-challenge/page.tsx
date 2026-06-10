@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ShieldCheck, ArrowRight, Clock, AlertCircle, Mail, Loader2, KeyRound } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { SecurityBadge } from "@/components/shared/security-badge";
 
@@ -61,7 +62,9 @@ export default function MfaChallengePage() {
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
-          setError(data.error ?? "Verification failed.");
+          const msg = data.error ?? "Verification failed.";
+          setError(msg);
+          toast.error(msg);
           setDigits(Array(OTP_LENGTH).fill(""));
           inputs.current[0]?.focus();
           if (data.expired) {
@@ -72,6 +75,7 @@ export default function MfaChallengePage() {
           setVerifying(false);
           return;
         }
+        toast.success("Verified — signing you in");
         sessionStorage.removeItem("hs_otp_email");
         sessionStorage.removeItem("hs_otp_dev");
         const next = sessionStorage.getItem("hs_otp_next");
@@ -79,7 +83,9 @@ export default function MfaChallengePage() {
         router.push(next && next.startsWith("/") ? next : data.redirect);
         router.refresh();
       } catch {
-        setError("Network error — could not reach the server.");
+        const msg = "Network error — could not reach the server.";
+        setError(msg);
+        toast.error(msg);
         setVerifying(false);
       }
     },
@@ -122,7 +128,9 @@ export default function MfaChallengePage() {
       const res = await fetch("/api/auth/resend-otp", { method: "POST" });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data.error ?? "Could not resend the code.");
+        const msg = data.error ?? "Could not resend the code.";
+        setError(msg);
+        toast.error(msg);
         if (data.expired) setTimeout(() => router.push("/login"), 2500);
         setResending(false);
         return;
@@ -131,11 +139,14 @@ export default function MfaChallengePage() {
         setDevOtp(data.devOtp);
         sessionStorage.setItem("hs_otp_dev", data.devOtp);
       }
+      toast.success("A new code is on its way to your email");
       setDigits(Array(OTP_LENGTH).fill(""));
       setSecondsLeft(OTP_TTL_SECONDS);
       inputs.current[0]?.focus();
     } catch {
-      setError("Network error — could not reach the server.");
+      const msg = "Network error — could not reach the server.";
+      setError(msg);
+      toast.error(msg);
     }
     setResending(false);
   }

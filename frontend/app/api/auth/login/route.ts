@@ -25,6 +25,9 @@ interface LoginBody {
   email?: string;
   password?: string;
   scope?: LoginScope;
+  /** "Keep me signed in for 12 hours" — when true the session cookie persists
+   *  across browser restarts; otherwise it's a session cookie cleared on close. */
+  rememberMe?: boolean;
 }
 
 function sha256(s: string): string {
@@ -49,6 +52,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const { email, password, scope } = body;
+  const remember = body.rememberMe === true;
   if (!email || !password || !scope) {
     return NextResponse.json(
       { ok: false, error: "Email, password, and scope are required." },
@@ -130,7 +134,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: SESSION_MAX_AGE,
+      // "Keep me signed in" → persistent cookie (12h); otherwise a session
+      // cookie cleared when the browser closes (JWT still expires in 12h).
+      ...(remember ? { maxAge: SESSION_MAX_AGE } : {}),
     });
     return res;
   }
@@ -154,6 +160,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       otpHash: "",
       attempts: 0,
       mode: "totp",
+      remember,
     });
     const res = NextResponse.json({
       ok: true,
@@ -177,6 +184,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     otpHash,
     attempts: 0,
     mode: "email",
+    remember,
   });
 
   // Mirror the challenge into mfa_challenges for the compliance audit + Failed

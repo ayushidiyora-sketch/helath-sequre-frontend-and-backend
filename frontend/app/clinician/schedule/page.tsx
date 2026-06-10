@@ -10,6 +10,9 @@ import {
   Video,
   MapPin,
   Loader2,
+  CheckCheck,
+  Play,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -147,7 +150,7 @@ export default function ClinicianSchedulePage() {
     date: string;
     time: string;
     durationMinutes: number;
-    status: "requested" | "reschedule_requested" | "confirmed" | "arrived" | "in_progress" | "no_show" | "blocked" | "cancelled" | "completed";
+    status: "requested" | "reschedule_requested" | "confirmed" | "arrived" | "in_progress" | "no_show" | "blocked" | "cancelled" | "completed" | "rejected";
     mode: "in-person" | "telehealth";
     notes: string | null;
   };
@@ -184,7 +187,7 @@ export default function ClinicianSchedulePage() {
     void pull();
     // Auto-refresh so lifecycle changes (Mark arrived / Start consultation /
     // Complete) propagate from the patient chart without a manual reload.
-    const tick = setInterval(pull, 15000);
+    const tick = setInterval(() => { if (!document.hidden) void pull(); }, 15000);
     function onFocus() { void pull(); }
     window.addEventListener("focus", onFocus);
     return () => {
@@ -211,7 +214,7 @@ export default function ClinicianSchedulePage() {
   type SlotRow = {
     time: string;
     patient: string;
-    status: "completed" | "next" | "upcoming" | "arrived" | "in-progress" | "no-show" | "cancelled" | "blocked" | "available" | "requested" | "reschedule-requested";
+    status: "completed" | "next" | "upcoming" | "confirmed" | "arrived" | "in-progress" | "no-show" | "cancelled" | "rejected" | "blocked" | "available" | "requested" | "reschedule-requested";
     mode: "office" | "telehealth";
     sortKey: string;
     /** Set when this row maps to a real DB appointment (vs a block / open slot). */
@@ -232,6 +235,8 @@ export default function ClinicianSchedulePage() {
       else if (a.status === "cancelled") status = "cancelled";
       else if (a.status === "requested") status = "requested";
       else if (a.status === "reschedule_requested") status = "reschedule-requested";
+      else if (a.status === "confirmed") status = "confirmed";
+      else if (a.status === "rejected") status = "rejected";
       else status = "upcoming";
       out.push({
         time: a.time,
@@ -314,16 +319,13 @@ export default function ClinicianSchedulePage() {
             {/* Header row — md+ only. */}
             <div className="hidden md:grid grid-cols-12 gap-4 border-b border-[var(--color-border)] bg-[var(--color-muted)]/40 px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
               <div className="col-span-2">Time</div>
-              <div className="col-span-7">Patient · Reason</div>
+              <div className="col-span-5">Patient · Reason</div>
               <div className="col-span-1 text-center">Mode</div>
-              <div className="col-span-2 text-right">Status</div>
+              <div className="col-span-4 text-right">Status</div>
             </div>
             <ul className="divide-y divide-[var(--color-border)]">
               {slots.map((s, i) => {
                 const ModeIcon = s.mode === "office" ? MapPin : Video;
-                const canReschedule = !!s.appointmentId && !!s.startsAtIso &&
-                  (s.status === "requested" || s.status === "upcoming" || s.status === "next" ||
-                   s.status === "reschedule-requested");
                 return (
                   <li
                     key={i}
@@ -336,7 +338,7 @@ export default function ClinicianSchedulePage() {
                         <span>{s.mode === "office" ? "In-person" : "Telehealth"}</span>
                       </div>
                     </div>
-                    <div className="text-sm md:col-span-7">
+                    <div className="text-sm md:col-span-5">
                       {s.status === "blocked" ? (
                         <span className="italic text-[var(--color-muted-foreground)]">Blocked · personal time</span>
                       ) : s.status === "available" ? (
@@ -348,26 +350,23 @@ export default function ClinicianSchedulePage() {
                     <div className="hidden md:col-span-1 md:flex justify-center text-[var(--color-muted-foreground)]">
                       <ModeIcon className="size-4" />
                     </div>
-                    <div className="flex items-center justify-start gap-2 md:col-span-2 md:justify-end">
+                    <div className="flex flex-wrap items-center justify-start gap-2 md:col-span-4 md:justify-end">
+                      {s.appointmentId && s.startsAtIso && (
+                        <RowActions s={s} onDone={refetchAppointments} />
+                      )}
                       {s.status === "completed" && <Badge variant="success" size="sm" dot>Completed</Badge>}
                       {s.status === "arrived" && <Badge variant="warning" size="sm" dot>Arrived</Badge>}
                       {s.status === "in-progress" && <Badge variant="info" size="sm" dot>In progress</Badge>}
                       {s.status === "no-show" && <Badge variant="danger" size="sm" dot>No-show</Badge>}
                       {s.status === "cancelled" && <Badge variant="muted" size="sm">Cancelled</Badge>}
+                      {s.status === "rejected" && <Badge variant="danger" size="sm" dot>Rejected</Badge>}
                       {s.status === "requested" && <Badge variant="warning" size="sm" dot>Requested</Badge>}
                       {s.status === "reschedule-requested" && <Badge variant="warning" size="sm" dot>Reschedule</Badge>}
+                      {s.status === "confirmed" && <Badge variant="info" size="sm" dot>Confirmed</Badge>}
                       {s.status === "next" && <Badge variant="info" size="sm" dot>Next</Badge>}
                       {s.status === "upcoming" && <Badge variant="muted" size="sm">Upcoming</Badge>}
                       {s.status === "blocked" && <Badge variant="warning" size="sm" dot>Blocked</Badge>}
                       {s.status === "available" && <Badge variant="outline" size="sm">Available</Badge>}
-                      {canReschedule && (
-                        <RescheduleRowButton
-                          appointmentId={s.appointmentId!}
-                          startsAtIso={s.startsAtIso!}
-                          label={`${s.time} · ${s.patient}`}
-                          onDone={refetchAppointments}
-                        />
-                      )}
                     </div>
                   </li>
                 );
@@ -983,6 +982,102 @@ function EditTemplateForm({
   );
 }
 
+
+/**
+ * Per-row appointment lifecycle actions, status-driven:
+ *   requested / reschedule-requested → Confirm · Reschedule · Reject
+ *   confirmed                         → Mark arrived · Start consultation · Complete · No-show
+ *   arrived                           → Start consultation · Complete · No-show
+ *   in-progress                       → Complete
+ *   rejected                          → Reschedule (re-offer a slot)
+ *   completed / cancelled / no-show   → (terminal, no actions)
+ */
+function RowActions({
+  s,
+  onDone,
+}: {
+  s: { appointmentId?: string; startsAtIso?: string; time: string; patient: string; status: string };
+  onDone: () => void;
+}) {
+  const id = s.appointmentId;
+  const btn = "h-7 px-2 text-[11px]";
+  async function transition(status: string, okMsg: string) {
+    if (!id) return;
+    try {
+      const r = await fetch(`/api/clinician/appointments/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j?.ok) {
+        toast.error(j?.error ?? "Could not update appointment");
+        return;
+      }
+      toast.success(okMsg);
+      onDone();
+    } catch {
+      toast.error("Network error");
+    }
+  }
+
+  const pending = s.status === "requested" || s.status === "reschedule-requested";
+  const reschedule = id && s.startsAtIso ? (
+    <RescheduleRowButton appointmentId={id} startsAtIso={s.startsAtIso} label={`${s.time} · ${s.patient}`} onDone={onDone} />
+  ) : null;
+  const noShowBtn = (
+    <Button variant="ghost" size="sm" className={`${btn} text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]`} onClick={() => transition("no_show", "Marked no-show")}>
+      No-show
+    </Button>
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {pending && (
+        <>
+          <Button size="sm" className={btn} onClick={() => transition("confirmed", "Appointment confirmed")}>
+            <CheckCheck className="size-3.5" /> Confirm
+          </Button>
+          {reschedule}
+          <Button variant="ghost" size="sm" className={`${btn} text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]`} onClick={() => transition("rejected", "Appointment rejected")}>
+            <XCircle className="size-3.5" /> Reject
+          </Button>
+        </>
+      )}
+      {s.status === "confirmed" && (
+        <>
+          <Button size="sm" className={btn} onClick={() => transition("arrived", "Marked arrived")}>
+            <CheckCheck className="size-3.5" /> Mark arrived
+          </Button>
+          <Button variant="outline" size="sm" className={btn} onClick={() => transition("in_progress", "Consultation started")}>
+            <Play className="size-3.5" /> Start consultation
+          </Button>
+          <Button variant="outline" size="sm" className={btn} onClick={() => transition("completed", "Visit completed")}>
+            <CheckCheck className="size-3.5" /> Complete
+          </Button>
+          {noShowBtn}
+        </>
+      )}
+      {s.status === "arrived" && (
+        <>
+          <Button size="sm" className={btn} onClick={() => transition("in_progress", "Consultation started")}>
+            <Play className="size-3.5" /> Start consultation
+          </Button>
+          <Button variant="outline" size="sm" className={btn} onClick={() => transition("completed", "Visit completed")}>
+            <CheckCheck className="size-3.5" /> Complete
+          </Button>
+          {noShowBtn}
+        </>
+      )}
+      {s.status === "in-progress" && (
+        <Button size="sm" className={btn} onClick={() => transition("completed", "Visit completed")}>
+          <CheckCheck className="size-3.5" /> Complete
+        </Button>
+      )}
+      {s.status === "rejected" && reschedule}
+    </div>
+  );
+}
 
 function RescheduleRowButton({
   appointmentId,

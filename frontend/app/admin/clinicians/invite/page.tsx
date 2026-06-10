@@ -21,7 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Label, Textarea } from "@/components/ui/input";
+import { Input, Label, PasswordInput, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 
 const SELECT =
@@ -323,10 +323,10 @@ export default function AddClinicianPage() {
             <Section icon={Lock} title="F · Security & access">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Password" htmlFor="password">
-                  <Input id="password" type="password" placeholder="••••••••••••" autoComplete="new-password" required />
+                  <PasswordInput id="password" placeholder="••••••••••••" autoComplete="new-password" required />
                 </Field>
                 <Field label="Confirm password" htmlFor="confirm_password">
-                  <Input id="confirm_password" type="password" placeholder="••••••••••••" autoComplete="new-password" required />
+                  <PasswordInput id="confirm_password" placeholder="••••••••••••" autoComplete="new-password" required />
                 </Field>
                 <Field label="Account status" htmlFor="account_status">
                   <select id="account_status" className={`${SELECT} bg-[var(--color-muted)]`} defaultValue="Pending verification" disabled>

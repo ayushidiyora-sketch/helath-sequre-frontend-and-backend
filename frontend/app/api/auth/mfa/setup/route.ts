@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import QRCode from "qrcode";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { buildOtpAuthUri, newSecret } from "@/lib/mfa";
+import { buildOtpAuthUri, currentToken, newSecret } from "@/lib/mfa";
 
 export const runtime = "nodejs";
 
@@ -52,5 +52,8 @@ export async function POST() {
     otpAuthUri,
     qrDataUrl,
     alreadyEnrolled: !!user.mfaEnrolledAt,
+    // DEV ONLY: the code valid at the server clock, so enrollment isn't blocked
+    // when the dev machine's clock differs from a real phone. Never sent in prod.
+    ...(process.env.NODE_ENV !== "production" ? { devCode: currentToken(secret) } : {}),
   });
 }

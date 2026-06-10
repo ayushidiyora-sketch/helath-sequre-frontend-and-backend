@@ -478,7 +478,8 @@ function UpcomingCard({
             variant="outline"
             size="sm"
             onClick={() => setRescheduleOpen(true)}
-            disabled={apt.status === "arrived" || apt.status === "in-progress"}
+            disabled={apt.status === "confirmed" || apt.status === "arrived" || apt.status === "in-progress"}
+            title={apt.status === "confirmed" ? "This appointment is confirmed — cancel and rebook to change the time." : undefined}
           >
             Reschedule
           </Button>

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { appBaseUrl, sendActionEmail } from "@/lib/notify";
+import { appBaseUrl, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -161,12 +161,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   // Notify the patient that a new document is available (best-effort).
   const notifyCtx = await prisma.$queryRaw<{
     patientEmail: string | null;
+    patientPhone: string | null;
     patientFirst: string | null;
     clinicianFirst: string | null;
     clinicianLast: string | null;
     orgName: string | null;
   }[]>`
-    SELECT p.email AS "patientEmail", p."firstName" AS "patientFirst",
+    SELECT p.email AS "patientEmail", p.phone AS "patientPhone", p."firstName" AS "patientFirst",
            c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
            o.name AS "orgName"
     FROM users p
@@ -182,6 +183,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     await sendActionEmail({
       orgId: g.orgId,
       to: c.patientEmail,
+      categoryKey: "records",
       slug: "new-record-available",
       vars: {
         "patient.first_name": c.patientFirst?.trim() || "there",
@@ -196,6 +198,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         `Hi ${c.patientFirst?.trim() || "there"},\n\n` +
         `${clinicianName} added a new ${category} document ("${name}") to your records on ${today}.\n\n` +
         `Open your portal to view it: ${appBaseUrl()}/patient/documents\n\n— ${c.orgName ?? "HealthSecure"}`,
+    });
+    await sendActionSms({
+      toPhone: c.patientPhone,
+      recipientEmail: c.patientEmail,
+      categoryKey: "records",
+      text: `${c.orgName ?? "HealthSecure"}: a new ${category} document is available in your portal.`,
     });
   }
 

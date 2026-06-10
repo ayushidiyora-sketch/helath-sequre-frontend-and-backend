@@ -229,7 +229,7 @@ export default function PatientChartPage({ params }: { params: Promise<{ id: str
       }
     }
     void pullStatus();
-    const handle = window.setInterval(pullStatus, 15_000);
+    const handle = window.setInterval(() => { if (!document.hidden) void pullStatus(); }, 15_000);
     return () => {
       cancelled = true;
       window.clearInterval(handle);

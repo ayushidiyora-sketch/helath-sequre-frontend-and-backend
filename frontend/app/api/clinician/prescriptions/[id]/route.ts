@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -158,6 +159,59 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
               duration, refills, "patientInstructions", status,
               "createdAt", "updatedAt", "finalizedAt", "deletedAt"
   `;
+
+  // On finalize, email the patient that a new prescription is available
+  // (gated by their Records EMAIL preference). Drafts don't notify.
+  if (finalize) {
+    const ctx = await prisma.$queryRaw<{
+      patientEmail: string | null;
+      patientPhone: string | null;
+      patientFirst: string | null;
+      clinicianFirst: string | null;
+      clinicianLast: string | null;
+      orgId: string | null;
+      orgName: string | null;
+    }[]>`
+      SELECT p.email AS "patientEmail", p.phone AS "patientPhone", p."firstName" AS "patientFirst",
+             c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
+             c."organizationId"::text AS "orgId", o.name AS "orgName"
+      FROM users p
+      LEFT JOIN users c         ON c.id = ${g.claims.uid}::uuid
+      LEFT JOIN organizations o ON o.id = c."organizationId"
+      WHERE p.id = ${updated[0].patientId}::uuid LIMIT 1
+    `;
+    const cx = ctx[0];
+    if (cx?.patientEmail && cx.orgId) {
+      const clinicianName = `Dr. ${[cx.clinicianFirst, cx.clinicianLast].filter(Boolean).join(" ")}`.trim();
+      const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      await sendActionEmail({
+        orgId: cx.orgId,
+        to: cx.patientEmail,
+        categoryKey: "records",
+        slug: "new-record-available",
+        vars: {
+          "patient.first_name": cx.patientFirst?.trim() || "there",
+          "clinician.name": clinicianName,
+          "record.category": "Prescription",
+          "record.date": today,
+          "organization.name": cx.orgName ?? "HealthSecure",
+          action_url: `${appBaseUrl()}/patient/prescriptions`,
+        },
+        fallbackSubject: `A new prescription is available in your portal`,
+        fallbackText:
+          `Hi ${cx.patientFirst?.trim() || "there"},\n\n` +
+          `${clinicianName} issued a new prescription (${updated[0].drugName}) on ${today}.\n\n` +
+          `Open your portal to view it: ${appBaseUrl()}/patient/prescriptions\n\n— ${cx.orgName ?? "HealthSecure"}`,
+      });
+      await sendActionSms({
+        toPhone: cx.patientPhone,
+        recipientEmail: cx.patientEmail,
+        categoryKey: "records",
+        text: `${cx.orgName ?? "HealthSecure"}: a new prescription (${updated[0].drugName}) is available in your portal.`,
+      });
+    }
+  }
+
   return NextResponse.json({ ok: true, prescription: shape(updated[0]) });
 }
 

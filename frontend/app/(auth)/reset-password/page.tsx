@@ -11,8 +11,9 @@ import {
   CheckCircle2,
   Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, PasswordInput } from "@/components/ui/input";
 import { SecurityBadge } from "@/components/shared/security-badge";
 
 function ResetPasswordInner() {
@@ -65,6 +66,7 @@ function ResetPasswordInner() {
     setError(null);
     if (password !== confirm) {
       setError("Passwords do not match.");
+      toast.error("Passwords do not match.");
       return;
     }
     setLoading(true);
@@ -76,14 +78,19 @@ function ResetPasswordInner() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data.error ?? "Could not update password.");
+        const msg = data.error ?? "Could not update password.";
+        setError(msg);
+        toast.error(msg);
         setLoading(false);
         return;
       }
       setDone(true);
+      toast.success("Password updated — redirecting to sign in…");
       setTimeout(() => router.push("/login"), 2200);
     } catch {
-      setError("Network error — could not reach the server.");
+      const msg = "Network error — could not reach the server.";
+      setError(msg);
+      toast.error(msg);
       setLoading(false);
     }
   }
@@ -167,9 +174,8 @@ function ResetPasswordInner() {
 
         <div className="space-y-1.5">
           <Label htmlFor="pw">New password</Label>
-          <Input
+          <PasswordInput
             id="pw"
-            type="password"
             leadingIcon={<Lock />}
             placeholder="Min 12 chars · upper, lower, digit, symbol"
             value={password}
@@ -181,9 +187,8 @@ function ResetPasswordInner() {
 
         <div className="space-y-1.5">
           <Label htmlFor="confirm">Confirm new password</Label>
-          <Input
+          <PasswordInput
             id="confirm"
-            type="password"
             leadingIcon={<Lock />}
             placeholder="Repeat password"
             value={confirm}

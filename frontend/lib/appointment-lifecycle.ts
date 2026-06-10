@@ -55,13 +55,16 @@ const ALL_STATUSES = new Set<AppointmentLifecycleStatus>([
 const TRANSITIONS: Record<AppointmentLifecycleStatus, AppointmentLifecycleStatus[]> = {
   requested:            ["confirmed", "reschedule_requested", "cancelled", "rejected"],
   reschedule_requested: ["confirmed", "cancelled", "requested", "rejected"],
-  confirmed:            ["arrived", "in_progress", "no_show", "cancelled", "reschedule_requested"],
+  // `completed` allowed directly so the schedule's "Complete" works from a
+  // confirmed slot without forcing arrived/in_progress first.
+  confirmed:            ["arrived", "in_progress", "completed", "no_show", "cancelled", "reschedule_requested"],
   arrived:              ["in_progress", "completed", "no_show", "cancelled"],
   in_progress:          ["completed", "cancelled"],
   no_show:              [],
   blocked:              ["cancelled"],
   cancelled:            [],
-  rejected:             [],
+  // A rejected request can be re-offered to the patient with a new slot.
+  rejected:             ["reschedule_requested", "requested"],
   completed:            [],
 };
 

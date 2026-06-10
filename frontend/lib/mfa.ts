@@ -9,7 +9,7 @@
  * Uses `epochTolerance: 30` (SECONDS, not periods) to allow ±30 s of
  * phone-clock drift — matches Google Authenticator UX.
  */
-import { generateSecret, generateURI, verifySync } from "otplib";
+import { generateSecret, generateSync, generateURI, verifySync } from "otplib";
 
 const ISSUER = "HealthSecure Portal";
 const PERIOD = 30;
@@ -30,6 +30,18 @@ export function buildOtpAuthUri(args: { email: string; secret: string }): string
     digits: DIGITS,
     period: PERIOD,
   });
+}
+
+/**
+ * The TOTP code valid *right now* for `secret`, computed at the server clock.
+ * DEV-ONLY convenience: the dev machine's clock can be far from a real phone's
+ * (e.g. set to a future date), so a phone-generated code never matches. The
+ * setup/sign-in flows surface this in non-production so enrollment isn't blocked
+ * by clock skew. Never expose in production.
+ */
+export function currentToken(secret: string): string {
+  const r = generateSync({ secret, strategy: "totp", digits: DIGITS, period: PERIOD });
+  return typeof r === "string" ? r : String((r as { token?: string }).token ?? "");
 }
 
 export function verifyToken(args: { token: string; secret: string }): boolean {

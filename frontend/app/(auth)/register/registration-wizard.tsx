@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, PasswordInput } from "@/components/ui/input";
 
 const STEPS = ["Account type", "Your details"] as const;
 
@@ -115,7 +115,9 @@ export function RegistrationWizard() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data.error ?? "Registration failed. Please try again.");
+        const msg = data.error ?? "Registration failed. Please try again.";
+        setError(msg);
+        toast.error(msg);
         setSubmitting(false);
         return;
       }
@@ -128,7 +130,9 @@ export function RegistrationWizard() {
       router.push(dest);
       router.refresh();
     } catch {
-      setError("Network error — could not reach the server.");
+      const msg = "Network error — could not reach the server.";
+      setError(msg);
+      toast.error(msg);
       setSubmitting(false);
     }
   }
@@ -231,7 +235,7 @@ export function RegistrationWizard() {
             </Field>
           </div>
           <Field label="Password">
-            <Input type="password" value={form.password} onChange={(e) => set("password", e.target.value)} leadingIcon={<Lock />} placeholder="At least 12 characters, mixed case, number, symbol" required />
+            <PasswordInput value={form.password} onChange={(e) => set("password", e.target.value)} leadingIcon={<Lock />} placeholder="At least 12 characters, mixed case, number, symbol" required />
             <ul className="grid grid-cols-2 gap-x-3 gap-y-1 pt-0.5 text-[11px]">
               <PasswordRule ok={rules.length} label="12+ characters" />
               <PasswordRule ok={rules.capital} label="One capital letter" />
@@ -240,7 +244,7 @@ export function RegistrationWizard() {
             </ul>
           </Field>
           <Field label="Confirm password">
-            <Input type="password" value={form.confirmPassword} onChange={(e) => set("confirmPassword", e.target.value)} leadingIcon={<Lock />} placeholder="Re-enter your password" required />
+            <PasswordInput value={form.confirmPassword} onChange={(e) => set("confirmPassword", e.target.value)} leadingIcon={<Lock />} placeholder="Re-enter your password" required />
             {form.confirmPassword.length > 0 && !passwordsMatch && (
               <p className="text-[11px] text-[var(--color-danger)]">Passwords don&apos;t match.</p>
             )}

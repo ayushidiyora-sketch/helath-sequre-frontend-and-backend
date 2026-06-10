@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -150,6 +151,59 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
               NULL::text AS "patientLastName"
   `;
   const withPatient = await findOne(updated[0].id);
+
+  // On finalize (draft → finalized), email the patient that a new record is
+  // available — gated by their Records EMAIL preference.
+  if (finalize) {
+    const ctx2 = await prisma.$queryRaw<{
+      patientEmail: string | null;
+      patientPhone: string | null;
+      patientFirst: string | null;
+      clinicianFirst: string | null;
+      clinicianLast: string | null;
+      orgId: string | null;
+      orgName: string | null;
+    }[]>`
+      SELECT p.email AS "patientEmail", p.phone AS "patientPhone", p."firstName" AS "patientFirst",
+             c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
+             c."organizationId"::text AS "orgId", o.name AS "orgName"
+      FROM users p
+      LEFT JOIN users c         ON c.id = ${g.claims.uid}::uuid
+      LEFT JOIN organizations o ON o.id = c."organizationId"
+      WHERE p.id = ${updated[0].patientId}::uuid LIMIT 1
+    `;
+    const cx = ctx2[0];
+    if (cx?.patientEmail && cx.orgId) {
+      const clinicianName = `Dr. ${[cx.clinicianFirst, cx.clinicianLast].filter(Boolean).join(" ")}`.trim();
+      const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      await sendActionEmail({
+        orgId: cx.orgId,
+        to: cx.patientEmail,
+        categoryKey: "records",
+        slug: "new-record-available",
+        vars: {
+          "patient.first_name": cx.patientFirst?.trim() || "there",
+          "clinician.name": clinicianName,
+          "record.category": `${updated[0].template} note`,
+          "record.date": today,
+          "organization.name": cx.orgName ?? "HealthSecure",
+          action_url: `${appBaseUrl()}/patient/records`,
+        },
+        fallbackSubject: `A new ${updated[0].template} note is available in your portal`,
+        fallbackText:
+          `Hi ${cx.patientFirst?.trim() || "there"},\n\n` +
+          `${clinicianName} finalized a new ${updated[0].template} note on ${today}.\n\n` +
+          `Open your portal to view it: ${appBaseUrl()}/patient/records\n\n— ${cx.orgName ?? "HealthSecure"}`,
+      });
+      await sendActionSms({
+        toPhone: cx.patientPhone,
+        recipientEmail: cx.patientEmail,
+        categoryKey: "records",
+        text: `${cx.orgName ?? "HealthSecure"}: a new ${updated[0].template} note is available in your portal.`,
+      });
+    }
+  }
+
   return NextResponse.json({ ok: true, note: shape(withPatient!) });
 }
 

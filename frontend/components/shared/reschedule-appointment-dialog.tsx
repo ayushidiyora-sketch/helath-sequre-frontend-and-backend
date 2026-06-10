@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Calendar, Clock3, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
+/** "09:15" → "9:15 AM". */
+function hhmmToLabel(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return "";
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+/** "9:15 AM" → "09:15". */
+function labelToHhmm(label: string): string {
+  const m = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(label.trim());
+  if (!m) return "";
+  let h = parseInt(m[1], 10);
+  const ap = m[3].toUpperCase();
+  if (ap === "PM" && h < 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}
 
 /**
  * Reschedule dialog used by BOTH sides of the appointment lifecycle:
@@ -58,6 +77,34 @@ export function RescheduleAppointmentDialog({
   );
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Available slot labels for the picked date (clinician_propose only) — the
+  // New time field becomes a dropdown of real, open slots minus booked times.
+  const [slots, setSlots] = useState<string[]>([]);
+  const [slotsLoaded, setSlotsLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!open || mode !== "clinician_propose") return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    let cancelled = false;
+    setSlotsLoaded(false);
+    (async () => {
+      try {
+        const r = await fetch(`/api/clinician/slots?date=${date}`, { cache: "no-store" });
+        const j = await r.json();
+        if (cancelled) return;
+        const times: string[] = r.ok && j?.ok && Array.isArray(j.times) ? j.times : [];
+        setSlots(times);
+        setSlotsLoaded(true);
+        // Default to the first open slot whenever the date changes.
+        if (times.length > 0) setTime(labelToHhmm(times[0]));
+      } catch {
+        if (!cancelled) { setSlots([]); setSlotsLoaded(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+    // `time` intentionally omitted — it's set inside, including it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, date]);
 
   async function submit() {
     const [y, m, d] = date.split("-").map(Number);
@@ -131,12 +178,31 @@ export function RescheduleAppointmentDialog({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="r-time">New time</Label>
-              <Input
-                id="r-time"
-                type="time"
-                value={time}
-                onChange={(e) => setTime(e.target.value)}
-              />
+              {mode === "clinician_propose" && slots.length > 0 ? (
+                <select
+                  id="r-time"
+                  className="flex h-10 w-full rounded-lg border border-[var(--color-input)] bg-[var(--color-card)] px-3 text-sm focus:border-[var(--color-primary)] focus:outline-none focus:ring-4 focus:ring-[var(--color-primary)]/15"
+                  value={hhmmToLabel(time)}
+                  onChange={(e) => setTime(labelToHhmm(e.target.value))}
+                >
+                  {!slots.includes(hhmmToLabel(time)) && <option value="">Select a slot…</option>}
+                  {slots.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              ) : (
+                <Input
+                  id="r-time"
+                  type="time"
+                  value={time}
+                  onChange={(e) => setTime(e.target.value)}
+                />
+              )}
+              {mode === "clinician_propose" && slotsLoaded && slots.length === 0 && (
+                <p className="text-[11px] text-[var(--color-muted-foreground)]">
+                  No open slots for this date — pick another day (booked &amp; off-hours are excluded).
+                </p>
+              )}
             </div>
           </div>
 

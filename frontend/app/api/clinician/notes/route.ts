@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { appBaseUrl, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -136,10 +137,12 @@ export async function POST(req: Request) {
 
   // Validate users + grab clinician.organizationId.
   const clinicianRows = await prisma.$queryRaw<
-    { id: string; organizationId: string | null; roleKind: string }[]
+    { id: string; organizationId: string | null; roleKind: string; firstName: string | null; lastName: string | null; orgName: string | null }[]
   >`
-    SELECT id, "organizationId", "roleKind"::text AS "roleKind"
-    FROM users WHERE id = ${g.claims.uid}::uuid AND "deletedAt" IS NULL LIMIT 1
+    SELECT u.id, u."organizationId", u."roleKind"::text AS "roleKind",
+           u."firstName", u."lastName", o.name AS "orgName"
+    FROM users u LEFT JOIN organizations o ON o.id = u."organizationId"
+    WHERE u.id = ${g.claims.uid}::uuid AND u."deletedAt" IS NULL LIMIT 1
   `;
   const clinician = clinicianRows[0];
   if (!clinician || clinician.roleKind !== "clinician")
@@ -147,8 +150,10 @@ export async function POST(req: Request) {
   if (!clinician.organizationId)
     return NextResponse.json({ ok: false, error: "Clinician has no tenant." }, { status: 400 });
 
-  const patientRows = await prisma.$queryRaw<{ id: string; roleKind: string }[]>`
-    SELECT id, "roleKind"::text AS "roleKind"
+  const patientRows = await prisma.$queryRaw<
+    { id: string; roleKind: string; email: string | null; firstName: string | null; phone: string | null }[]
+  >`
+    SELECT id, "roleKind"::text AS "roleKind", email, "firstName", phone
     FROM users WHERE id = ${patientId}::uuid AND "deletedAt" IS NULL LIMIT 1
   `;
   if (!patientRows[0] || patientRows[0].roleKind !== "patient")
@@ -199,5 +204,39 @@ export async function POST(req: Request) {
     LEFT JOIN users u ON u.id = m."patientId"
     WHERE m.id = ${inserted[0].id}::uuid
   `;
+
+  // Email the patient that a new record is available — only when FINALIZED
+  // (drafts aren't visible to the patient). Gated by the patient's Records
+  // EMAIL preference (categoryKey "records").
+  if (finalize && patientRows[0].email) {
+    const clinicianName = `Dr. ${[clinician.firstName, clinician.lastName].filter(Boolean).join(" ")}`.trim();
+    const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    await sendActionEmail({
+      orgId: clinician.organizationId,
+      to: patientRows[0].email,
+      categoryKey: "records",
+      slug: "new-record-available",
+      vars: {
+        "patient.first_name": patientRows[0].firstName?.trim() || "there",
+        "clinician.name": clinicianName,
+        "record.category": `${template} note`,
+        "record.date": today,
+        "organization.name": clinician.orgName ?? "HealthSecure",
+        action_url: `${appBaseUrl()}/patient/records`,
+      },
+      fallbackSubject: `A new ${template} note is available in your portal`,
+      fallbackText:
+        `Hi ${patientRows[0].firstName?.trim() || "there"},\n\n` +
+        `${clinicianName} finalized a new ${template} note on ${today}.\n\n` +
+        `Open your portal to view it: ${appBaseUrl()}/patient/records\n\n— ${clinician.orgName ?? "HealthSecure"}`,
+    });
+    await sendActionSms({
+      toPhone: patientRows[0].phone,
+      recipientEmail: patientRows[0].email,
+      categoryKey: "records",
+      text: `${clinician.orgName ?? "HealthSecure"}: a new ${template} note is available in your portal.`,
+    });
+  }
+
   return NextResponse.json({ ok: true, note: shape(withPatient[0]) }, { status: 201 });
 }

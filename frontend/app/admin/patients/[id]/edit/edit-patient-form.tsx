@@ -22,7 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Label, Textarea } from "@/components/ui/input";
+import { Input, Label, PasswordInput, Textarea } from "@/components/ui/input";
 import type { PatientRecord } from "../../patients-data";
 
 const SELECT =
@@ -332,7 +332,7 @@ export function EditPatientForm({ patient: p }: { patient: PatientRecord }) {
                   full
                   hint="Leave blank to keep the current password unchanged."
                 >
-                  <Input id="password" type="password" placeholder="••••••••••••" autoComplete="new-password" />
+                  <PasswordInput id="password" placeholder="••••••••••••" autoComplete="new-password" />
                 </Field>
               </div>
               <div className="mt-4 space-y-2">

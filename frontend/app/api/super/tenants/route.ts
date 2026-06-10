@@ -70,13 +70,13 @@ interface CreateTenantBody {
   integrations?: IntegrationFlags;
 }
 
-async function requireSuperAdmin() {
+async function requireSuperAdmin(): Promise<{ denied: NextResponse } | { uid: string }> {
   const jar = await cookies();
   const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
   if (!claims || claims.role !== "Super Admin") {
-    return NextResponse.json({ ok: false, error: "Forbidden — Super Admin only." }, { status: 403 });
+    return { denied: NextResponse.json({ ok: false, error: "Forbidden — Super Admin only." }, { status: 403 }) };
   }
-  return null;
+  return { uid: claims.uid };
 }
 
 function slugifyTenantId(name: string): string {
@@ -163,14 +163,14 @@ async function shapeTenants(): Promise<PublicTenant[]> {
 }
 
 export async function GET() {
-  const denied = await requireSuperAdmin();
-  if (denied) return denied;
+  const guard = await requireSuperAdmin();
+  if ("denied" in guard) return guard.denied;
   return NextResponse.json({ ok: true, tenants: await shapeTenants() });
 }
 
 export async function POST(req: Request) {
-  const denied = await requireSuperAdmin();
-  if (denied) return denied;
+  const guard = await requireSuperAdmin();
+  if ("denied" in guard) return guard.denied;
 
   let body: CreateTenantBody;
   try {
@@ -339,6 +339,9 @@ export async function POST(req: Request) {
       "[super/tenants] no mail transport configured — surfacing temp password in API response as dev fallback",
     );
   }
+  // Onboarding: the new tenant's Org Admin already receives the welcome email
+  // above (their credentials + sign-in link), so no extra lifecycle email is
+  // sent here.
 
   const publicTenant: PublicTenant = {
     id: created.org.slug,

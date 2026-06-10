@@ -31,7 +31,7 @@ export function useMessagesUnread(): number {
       }
     };
     void load();
-    const tick = window.setInterval(load, 30_000);
+    const tick = window.setInterval(() => { if (!document.hidden) void load(); }, 30_000);
     return () => {
       cancelled = true;
       window.clearInterval(tick);

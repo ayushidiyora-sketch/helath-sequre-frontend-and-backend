@@ -1,6 +1,6 @@
 import { CheckCircle2, ArrowRight, Building2, Lock, Mail, Stethoscope, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, PasswordInput } from "@/components/ui/input";
 import { SecurityBadge } from "@/components/shared/security-badge";
 
 type InviteRole = "patient" | "clinician" | "staff";
@@ -129,9 +129,8 @@ export default async function InvitationAcceptPage({ params, searchParams }: Inv
 
         <div className="space-y-1.5">
           <Label htmlFor="pw">Set a password</Label>
-          <Input
+          <PasswordInput
             id="pw"
-            type="password"
             leadingIcon={<Lock />}
             placeholder="12+ chars · capital · number · symbol"
             required

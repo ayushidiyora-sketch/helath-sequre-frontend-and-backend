@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { SESSION_COOKIE, isDbUid, verifySession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { appBaseUrl, scopeLabels, sendActionEmail } from "@/lib/notify";
+import { appBaseUrl, scopeLabels, sendActionEmail, sendActionSms } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -154,13 +154,15 @@ export async function DELETE(req: Request) {
     organizationId: string | null;
     scopes: unknown;
     clinicianEmail: string | null;
+    clinicianPhone: string | null;
     clinicianFirst: string | null;
     clinicianLast: string | null;
     patientName: string | null;
     orgName: string | null;
   }[]>`
     SELECT cr."patientId", cr.status, cr."organizationId"::text AS "organizationId", cr.scopes,
-           c.email AS "clinicianEmail", c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
+           c.email AS "clinicianEmail", c.phone AS "clinicianPhone",
+           c."firstName" AS "clinicianFirst", c."lastName" AS "clinicianLast",
            TRIM(CONCAT(p."firstName", ' ', p."lastName")) AS "patientName",
            o.name AS "orgName"
     FROM consent_requests cr
@@ -196,6 +198,7 @@ export async function DELETE(req: Request) {
     await sendActionEmail({
       orgId: row.organizationId,
       to: row.clinicianEmail,
+      categoryKey: "consents",
       slug: "consent-revoked",
       vars: {
         "clinician.name": clinicianName,
@@ -210,6 +213,12 @@ export async function DELETE(req: Request) {
         `${patientLabel} has revoked your access to their ${scopeLabels(scopes)} records.\n\n` +
         `Any active sessions relying on this consent will no longer have access. ` +
         `You can request consent again from the patient's chart if clinically necessary.\n\n— ${row.orgName ?? "HealthSecure"}`,
+    });
+    await sendActionSms({
+      toPhone: row.clinicianPhone,
+      recipientEmail: row.clinicianEmail,
+      categoryKey: "consents",
+      text: `${row.orgName ?? "HealthSecure"}: ${patientLabel} revoked your access to their ${scopeLabels(scopes)} records.`,
     });
   }
 

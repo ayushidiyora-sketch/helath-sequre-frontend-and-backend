@@ -87,6 +87,9 @@ export interface PendingClaims {
   attempts: number; // wrong-code attempts so far
   /** "email" = code emailed by server; "totp" = code from the user's app. */
   mode?: "email" | "totp";
+  /** "Keep me signed in" — carried from the password step to OTP so the final
+   *  session cookie persists across browser restarts. */
+  remember?: boolean;
 }
 
 /** Sign a short-lived pending-auth JWT (10 min). */
@@ -109,6 +112,7 @@ export async function verifyPending(token: string | undefined): Promise<PendingC
       otpHash: String(payload.otpHash ?? ""),
       attempts: Number(payload.attempts ?? 0),
       mode,
+      remember: payload.remember === true,
     };
   } catch {
     return null;

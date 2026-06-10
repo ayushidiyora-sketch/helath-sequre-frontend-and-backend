@@ -58,7 +58,8 @@ export function RoleHeader({
   useEffect(() => {
     const ping = () => void fetch("/api/me/heartbeat", { method: "POST", cache: "no-store" }).catch(() => {});
     ping();
-    const tick = window.setInterval(ping, 60_000);
+    // Pause the presence heartbeat while the tab is hidden (no active user).
+    const tick = window.setInterval(() => { if (!document.hidden) ping(); }, 60_000);
     return () => window.clearInterval(tick);
   }, []);
 

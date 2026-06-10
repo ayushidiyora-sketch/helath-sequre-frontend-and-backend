@@ -4,8 +4,9 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Mail, Lock, ArrowRight, AlertCircle, Loader2, Sparkles } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, PasswordInput } from "@/components/ui/input";
 import { SecurityBadge } from "@/components/shared/security-badge";
 
 interface CredentialsFormProps {
@@ -20,6 +21,7 @@ function CredentialsFormInner({ scope }: CredentialsFormProps) {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [onboardNote, setOnboardNote] = useState<
@@ -66,22 +68,30 @@ function CredentialsFormInner({ scope }: CredentialsFormProps) {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, scope }),
+        body: JSON.stringify({ email, password, scope, rememberMe }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setError(data.error ?? "Sign-in failed. Please try again.");
+        const msg = data.error ?? "Sign-in failed. Please try again.";
+        setError(msg);
+        toast.error(msg);
         setLoading(false);
         return;
       }
       // Fast-path: server skipped MFA (typical for patients) — session cookie
       // is already set, follow the redirect straight to the portal.
       if (data.skipMfa && typeof data.redirect === "string") {
+        toast.success("Signed in — welcome back!");
         const next = new URLSearchParams(window.location.search).get("next");
         router.push(next && next.startsWith("/") ? next : data.redirect);
         router.refresh();
         return;
       }
+      toast.success(
+        data.mode === "totp"
+          ? "Enter the code from your authenticator app"
+          : "Verification code sent to your email",
+      );
       sessionStorage.setItem("hs_otp_email", data.email ?? email);
       sessionStorage.setItem("hs_otp_mode", data.mode === "totp" ? "totp" : "email");
       if (data.devOtp) sessionStorage.setItem("hs_otp_dev", data.devOtp);
@@ -91,7 +101,9 @@ function CredentialsFormInner({ scope }: CredentialsFormProps) {
       else sessionStorage.removeItem("hs_otp_next");
       router.push("/mfa-challenge");
     } catch {
-      setError("Network error — could not reach the server.");
+      const msg = "Network error — could not reach the server.";
+      setError(msg);
+      toast.error(msg);
       setLoading(false);
     }
   }
@@ -158,9 +170,8 @@ function CredentialsFormInner({ scope }: CredentialsFormProps) {
               Forgot password?
             </Link>
           </div>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
             placeholder="At least 12 characters"
             autoComplete="current-password"
             leadingIcon={<Lock />}
@@ -170,9 +181,11 @@ function CredentialsFormInner({ scope }: CredentialsFormProps) {
           />
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
+        <label className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)] cursor-pointer select-none">
           <input
             type="checkbox"
+            checked={rememberMe}
+            onChange={(e) => setRememberMe(e.target.checked)}
             className="size-4 rounded border-[var(--color-border)] text-[var(--color-primary)] focus:ring-[var(--color-primary)]/30"
           />
           Keep me signed in for 12 hours
