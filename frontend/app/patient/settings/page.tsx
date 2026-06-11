@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2 } from "lucide-react";
 import { SecurityBadge } from "@/components/shared/security-badge";
+import { exportPhiPdf } from "@/lib/phi-export";
 import { ActionButton } from "@/components/shared/action-button";
 import { ChangePhotoButton, RecoveryCodesButton, AddPasskeyButton } from "./account-widgets";
 import { FamilyManager } from "../family/family-manager";
@@ -850,8 +851,6 @@ function SessionsTab() {
 }
 
 function DataTab() {
-  const { state } = usePatientStore();
-
   // Log a data request (deletion/export) to the Compliance queue.
   async function submitDataRequest(type: "deletion" | "export"): Promise<boolean> {
     try {
@@ -877,34 +876,29 @@ function DataTab() {
     }
   }
 
+  const [exporting, setExporting] = useState(false);
+
   async function exportPhi() {
-    // Bundle every entity from the store as a single JSON payload — this
-    // mirrors what a real HIPAA right-of-access export would include, just
-    // as a one-file download instead of a signed S3 link.
-    const bundle = {
-      generatedAt: new Date().toISOString(),
-      profile: state.profile,
-      appointments: state.appointments,
-      documents: state.documents,
-      consents: state.consents,
-      messageThreads: state.threads,
-      notifications: state.notifications,
-      security: { mfaEnabled: state.security.mfaEnabled, sessionCount: state.security.sessions.length },
-    };
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `healthsecure-phi-export-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast.success("PHI export downloaded", {
-      description: `${state.appointments.length} appointments · ${state.documents.length} docs · ${state.consents.length} consents`,
-    });
-    // Also log the right-of-access request to the Compliance queue.
-    void submitDataRequest("export");
+    // Generate a complete, brand-styled PDF from the patient's REAL DB data
+    // (medical records, prescriptions, appointments, documents, consents) —
+    // not the demo store. Mirrors a HIPAA right-of-access export as a single
+    // structured document.
+    setExporting(true);
+    try {
+      const { counts } = await exportPhiPdf();
+      toast.success("PHI export downloaded (PDF)", {
+        description:
+          `${counts.records} records · ${counts.prescriptions} prescriptions · ` +
+          `${counts.appointments} appointments · ${counts.documents} docs · ${counts.consents} consents`,
+      });
+      // Also log the right-of-access request to the Compliance queue.
+      void submitDataRequest("export");
+    } catch (err) {
+      console.error("[settings] PHI export failed", err);
+      toast.error("Could not generate the export. Please try again.");
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -915,15 +909,15 @@ function DataTab() {
         </div>
         <h3 className="mt-4 text-base font-semibold">Export your PHI</h3>
         <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
-          Get a complete bundle of your records, prescriptions, imaging metadata, and
-          documents in PDF and CSV. HIPAA right-of-access · delivered within 7 days.
+          Get a complete bundle of your medical records, prescriptions, appointments,
+          documents, and consents as a single structured PDF. HIPAA right-of-access · audit-logged.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           <SecurityBadge variant="encrypted" />
           <SecurityBadge variant="audited" />
         </div>
-        <Button className="mt-5" onClick={exportPhi}>
-          <Download /> Download export now
+        <Button className="mt-5" onClick={exportPhi} disabled={exporting}>
+          <Download /> {exporting ? "Generating PDF…" : "Download export now"}
         </Button>
       </div>
 

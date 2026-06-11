@@ -93,6 +93,7 @@ function mapDbStatus(s: string): Appointment["status"] {
   if (s === "no_show") return "no-show";
   if (s === "requested") return "requested";
   if (s === "reschedule_requested") return "reschedule-requested";
+  if (s === "rejected") return "rejected";
   if (s === "arrived") return "arrived";
   if (s === "in_progress") return "in-progress";
   return "confirmed";
